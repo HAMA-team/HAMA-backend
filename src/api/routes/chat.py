@@ -3,7 +3,10 @@ Chat API endpoints - Main interface for user interaction
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
+import uuid
+
+from src.agents.graph_master import run_graph
 
 router = APIRouter()
 
@@ -42,22 +45,87 @@ async def chat(request: ChatRequest):
     4. Master Agent aggregates results
     5. HITL check and response generation
     """
-    # TODO: Implement actual master agent logic
-    # For now, return mock response
+    try:
+        # Generate conversation ID if not provided
+        conversation_id = request.conversation_id or str(uuid.uuid4())
 
-    mock_response = {
-        "message": f"[MOCK] Received: {request.message}\n\n"
-                   f"Automation Level: {request.automation_level}\n"
-                   f"TODO: Master Agent will process this request.",
-        "conversation_id": request.conversation_id or "conv_mock_001",
-        "requires_approval": False,
-        "metadata": {
-            "agents_called": ["mock"],
-            "processing_time_ms": 0,
-        }
-    }
+        # Run LangGraph
+        result = await run_graph(
+            query=request.message,
+            automation_level=request.automation_level,
+            request_id=conversation_id
+        )
 
-    return ChatResponse(**mock_response)
+        # Extract data
+        data = result or {}
+
+        # Get summary and details
+        summary = data.get("summary", "분석 완료")
+        details = data.get("details", {})
+
+        # Build detailed message
+        message_parts = [f"📊 분석 결과\n\n{summary}\n"]
+
+        # Add details if available
+        if "research_agent" in details:
+            research = details["research_agent"]
+            message_parts.append(
+                f"\n🔍 **리서치**\n"
+                f"  - 종목: {research.get('stock_name', 'N/A')}\n"
+                f"  - 평가: {research.get('rating', 'N/A')}/5\n"
+                f"  - 추천: {research.get('recommendation', 'N/A')}"
+            )
+
+        if "strategy_agent" in details:
+            strategy = details["strategy_agent"]
+            message_parts.append(
+                f"\n📈 **전략**\n"
+                f"  - 의견: {strategy.get('action', 'N/A')}\n"
+                f"  - 신뢰도: {strategy.get('confidence', 'N/A')}"
+            )
+
+        if "risk_agent" in details:
+            risk = details["risk_agent"]
+            message_parts.append(
+                f"\n⚠️ **리스크**\n"
+                f"  - 수준: {risk.get('risk_level', 'N/A')}\n"
+                f"  - 경고: {', '.join(risk.get('warnings', []))}"
+            )
+
+        message = "\n".join(message_parts)
+
+        # Build approval request if needed
+        approval_request = None
+        hitl_required = data.get("hitl_required", False)
+
+        if hitl_required:
+            approval_request = {
+                "type": "approval_needed",
+                "intent": data.get("intent"),
+                "risk_level": data.get("risk_level"),
+                "message": "이 작업은 승인이 필요합니다.",
+            }
+
+        return ChatResponse(
+            message=message,
+            conversation_id=conversation_id,
+            requires_approval=hitl_required,
+            approval_request=approval_request,
+            metadata={
+                "intent": data.get("intent"),
+                "agents_called": data.get("agents_called", []),
+                "automation_level": request.automation_level,
+                "langgraph_enabled": True,
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )
 
 
 @router.get("/history/{conversation_id}")

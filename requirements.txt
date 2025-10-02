@@ -9,11 +9,12 @@ psycopg2-binary==2.9.9
 alembic==1.13.1
 
 # AI & LLM
-langchain==0.1.6
-langgraph==0.0.20
-langchain-openai==0.0.5
-langchain-community==0.0.18
-openai==1.10.0
+langchain==0.3.26
+langgraph==0.2.60
+langchain-openai==0.3.28
+langchain-community==0.3.21
+langchain-core==0.3.69
+openai==1.59.7
 
 # Data APIs
 pykrx==1.0.46
