@@ -97,11 +97,22 @@ async def chat(request: ChatRequest):
         # Build approval request if needed
         approval_request = None
         hitl_required = data.get("hitl_required", False)
+        intent = data.get("intent")
 
         if hitl_required:
+            # 의도에 따라 적절한 타입 설정
+            approval_type_map = {
+                "trade_execution": "trade_execution",
+                "rebalancing": "rebalancing",
+                "portfolio_adjustment": "portfolio_adjustment",
+                "portfolio_evaluation": "portfolio_change",
+            }
+
+            approval_type = approval_type_map.get(intent, "approval_needed")
+
             approval_request = {
-                "type": "approval_needed",
-                "intent": data.get("intent"),
+                "type": approval_type,
+                "intent": intent,
                 "risk_level": data.get("risk_level"),
                 "message": "이 작업은 승인이 필요합니다.",
             }

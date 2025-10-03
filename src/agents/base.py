@@ -50,13 +50,13 @@ class BaseAgent(ABC):
         start_time = time.time()
 
         try:
-            logger.info(f"[{self.agent_id}] Starting execution")
-            logger.debug(f"[{self.agent_id}] Input: {input_data}")
+            logger.info(f"🤖 [{self.agent_id}] 실행 시작")
+            logger.debug(f"📥 [{self.agent_id}] 입력: {input_data}")
 
             output = await self.process(input_data)
 
             execution_time = int((time.time() - start_time) * 1000)
-            logger.info(f"[{self.agent_id}] Completed in {execution_time}ms")
+            logger.info(f"✅ [{self.agent_id}] 완료 ({execution_time}ms)")
 
             # Add metadata
             if output.metadata is None:

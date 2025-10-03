@@ -73,23 +73,30 @@ def analyze_intent_node(state: AgentState) -> AgentState:
     """
     query = state["query"].lower()
 
-    # 키워드 기반 의도 분석
-    if any(word in query for word in ["분석", "어때", "평가"]):
-        intent = IntentCategory.STOCK_ANALYSIS
+    # 키워드 기반 의도 분석 (우선순위 순서 중요!)
+    # 1. 리밸런싱 (가장 구체적)
+    if any(word in query for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
+        intent = IntentCategory.REBALANCING
+    # 2. 매매 실행
     elif any(word in query for word in ["매수", "매도", "사", "팔"]):
         intent = IntentCategory.TRADE_EXECUTION
+    # 3. 수익률/현황 조회
+    elif any(word in query for word in ["수익률", "현황"]):
+        intent = IntentCategory.PERFORMANCE_CHECK
+    # 4. 포트폴리오 관련 (리밸런싱 제외)
     elif any(word in query for word in ["포트폴리오", "자산배분"]):
         intent = IntentCategory.PORTFOLIO_EVALUATION
-    elif "리밸런싱" in query:
-        intent = IntentCategory.REBALANCING
-    elif any(word in query for word in ["수익률", "현황", "상태"]):
-        intent = IntentCategory.PERFORMANCE_CHECK
+    # 5. 종목 분석
+    elif any(word in query for word in ["분석", "어때", "평가", "투자"]):
+        intent = IntentCategory.STOCK_ANALYSIS
+    # 6. 시장 상황
     elif "시장" in query:
         intent = IntentCategory.MARKET_STATUS
+    # 7. 일반 질문
     else:
         intent = IntentCategory.GENERAL_QUESTION
 
-    logger.info(f"Detected intent: {intent}")
+    logger.info(f"🔍 의도 감지: {intent} (쿼리: '{state['query']}')")
 
     return {
         **state,
@@ -108,14 +115,14 @@ def determine_agents_node(state: AgentState) -> AgentState:
         IntentCategory.STOCK_ANALYSIS: ["research_agent", "strategy_agent", "risk_agent"],
         IntentCategory.TRADE_EXECUTION: ["strategy_agent", "risk_agent"],
         IntentCategory.PORTFOLIO_EVALUATION: ["portfolio_agent", "risk_agent"],
-        IntentCategory.REBALANCING: ["portfolio_agent", "strategy_agent"],
+        IntentCategory.REBALANCING: ["portfolio_agent", "strategy_agent", "risk_agent"],
         IntentCategory.PERFORMANCE_CHECK: ["portfolio_agent"],
         IntentCategory.MARKET_STATUS: ["research_agent", "monitoring_agent"],
         IntentCategory.GENERAL_QUESTION: ["education_agent"],
     }
 
     agents = routing_map.get(intent, ["education_agent"])
-    logger.info(f"Agents to call: {agents}")
+    logger.info(f"🎯 호출할 에이전트: {agents}")
 
     return {
         **state,
@@ -161,7 +168,7 @@ async def call_agents_node(state: AgentState) -> AgentState:
             except Exception as e:
                 logger.error(f"Agent {agent_id} failed: {str(e)}")
 
-    logger.info(f"Called agents: {list(results.keys())}")
+    logger.info(f"✅ 호출 완료된 에이전트: {list(results.keys())}")
 
     return {
         **state,
@@ -183,7 +190,7 @@ def check_risk_node(state: AgentState) -> AgentState:
         risk_data = agent_results["risk_agent"]
         risk_level = risk_data.get("risk_level")
 
-    logger.info(f"Risk level: {risk_level}")
+    logger.info(f"⚠️ 리스크 레벨: {risk_level}")
 
     return {
         **state,
@@ -221,7 +228,7 @@ def check_hitl_node(state: AgentState) -> AgentState:
     ]:
         hitl_required = True
 
-    logger.info(f"HITL required: {hitl_required}")
+    logger.info(f"🤝 HITL 필요: {hitl_required} (레벨={automation_level}, 의도={intent})")
 
     return {
         **state,
