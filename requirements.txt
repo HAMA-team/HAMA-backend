@@ -7,23 +7,27 @@ python-multipart==0.0.6
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.9
 alembic==1.13.1
+redis==5.0.1
 
 # AI & LLM
 langchain==0.3.26
 langgraph==0.2.60
 langchain-openai==0.3.28
 langchain-community==0.3.21
-langchain-core==0.3.69
+langchain-core==0.3.77
+langchain-anthropic==0.3.1
 openai==1.59.7
+anthropic==0.69.0
 
 # Data APIs
 pykrx==1.0.46
 dart-fss==0.4.6
+finance-datareader==0.9.50
 # pykis - 한국투자증권 (Phase 2에서 추가 예정)
 
 # Data Processing
 pandas==2.2.0
-numpy==1.26.3
+numpy==1.26.4  # finance-datareader requires numpy<2
 python-dateutil==2.8.2
 
 # HTTP & Web
@@ -34,8 +38,8 @@ lxml==5.1.0
 
 # Configuration & Environment
 python-dotenv==1.0.1
-pydantic==2.5.3
-pydantic-settings==2.1.0
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.2.0
 
 # Testing
 pytest==7.4.4

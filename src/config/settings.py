@@ -25,7 +25,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_MODEL: str = "gpt-4o"
     ANTHROPIC_API_KEY: str | None = None
-    DEFAULT_LLM_MODEL: str = "gpt-4o"
+    DEFAULT_LLM_MODEL: str = "claude-sonnet-4-5-20250929"
+    CLAUDE_MODEL: str = "claude-sonnet-4-5-20250929"
 
     # LLM Settings
     LLM_TIMEOUT: int = 30

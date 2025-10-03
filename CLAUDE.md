@@ -229,3 +229,4 @@ class Stock(Base):
 - 실제 매매 실행은 Phase 2 이후
 - 데모/발표용 Mock 데이터 충실히 준비
 - Remember to ask me 3 questions before you plan the execution plans
+- 테스트 파일을 작성할 때는 해당 파일에 있는 모든 테스트를 한 번에 실행가능하도록 if __name__ == "__main__": 를 구성해야 합니다

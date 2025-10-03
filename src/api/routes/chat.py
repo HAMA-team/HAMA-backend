@@ -2,7 +2,7 @@
 Chat API endpoints - Main interface for user interaction
 """
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 
@@ -21,7 +21,7 @@ class ChatRequest(BaseModel):
     """Chat request schema"""
     message: str
     conversation_id: Optional[str] = None
-    automation_level: int = 2  # 1: Pilot, 2: Copilot, 3: Advisor
+    automation_level: int = Field(default=2, ge=1, le=3, description="자동화 레벨: 1=Pilot, 2=Copilot, 3=Advisor")
 
 
 class ChatResponse(BaseModel):
