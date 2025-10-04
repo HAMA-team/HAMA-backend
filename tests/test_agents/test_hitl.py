@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.graph_master import build_graph
 from langgraph.types import Command
+from langchain_core.messages import HumanMessage
 
 
 async def test_trade_execution_with_hitl():
@@ -37,10 +38,11 @@ async def test_trade_execution_with_hitl():
         }
     }
 
-    # 2. 초기 상태
+    # 2. 초기 상태 - LangGraph 표준: messages 사용
     initial_state = {
-        "query": "삼성전자 매수",
-        "request_id": "test_req_001",
+        "messages": [HumanMessage(content="삼성전자 매수")],
+        "user_id": "test_user",
+        "conversation_id": "test_thread_001",
         "automation_level": 2,
         "intent": None,
         "agent_results": {},
@@ -132,8 +134,9 @@ async def test_trade_rejection():
     }
 
     initial_state = {
-        "query": "SK하이닉스 100주 매수",
-        "request_id": "test_req_002",
+        "messages": [HumanMessage(content="SK하이닉스 100주 매수")],
+        "user_id": "test_user",
+        "conversation_id": "test_thread_002",
         "automation_level": 2,
         "intent": None,
         "agent_results": {},
@@ -206,8 +209,9 @@ async def test_level_1_auto():
     }
 
     initial_state = {
-        "query": "네이버 매수",
-        "request_id": "test_req_003",
+        "messages": [HumanMessage(content="네이버 매수")],
+        "user_id": "test_user",
+        "conversation_id": "test_thread_003",
         "automation_level": 1,
         "intent": None,
         "agent_results": {},

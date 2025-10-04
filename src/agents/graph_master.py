@@ -3,12 +3,12 @@ LangGraph 기반 마스터 에이전트
 
 StateGraph를 사용한 에이전트 오케스트레이션
 """
-from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.types import interrupt
-import operator
+from langchain_core.messages import AIMessage, HumanMessage
 import logging
 
 from src.agents.research import research_agent
@@ -18,47 +18,9 @@ from src.agents.portfolio import portfolio_agent
 from src.agents.monitoring import monitoring_agent
 from src.agents.education import education_agent
 from src.schemas.agent import AgentInput, AgentOutput
+from src.schemas.graph_state import GraphState
 
 logger = logging.getLogger(__name__)
-
-
-# ==================== State Definition ====================
-
-class AgentState(TypedDict):
-    """
-    LangGraph State for HAMA
-
-    Reducer 함수를 사용하여 상태를 누적합니다.
-    """
-    # 기본 정보
-    query: str
-    request_id: str
-    automation_level: int
-
-    # 의도 분석
-    intent: Optional[str]
-
-    # 에이전트 결과 (누적)
-    agent_results: Annotated[Dict[str, Any], operator.or_]
-
-    # 라우팅 정보
-    agents_to_call: List[str]
-    agents_called: Annotated[List[str], operator.add]
-
-    # 리스크 및 HITL
-    risk_level: Optional[str]
-    hitl_required: bool
-
-    # 매매 실행 상태 플래그 (패턴 1: 상태 플래그)
-    trade_prepared: bool
-    trade_approved: bool
-    trade_executed: bool
-    trade_order_id: Optional[str]
-    trade_result: Optional[Dict[str, Any]]
-
-    # 최종 결과
-    summary: Optional[str]
-    final_response: Optional[Dict[str, Any]]
 
 
 # ==================== Intent Categories ====================
@@ -76,37 +38,42 @@ class IntentCategory:
 
 # ==================== Node Functions ====================
 
-def analyze_intent_node(state: AgentState) -> AgentState:
+def analyze_intent_node(state: GraphState) -> GraphState:
     """
     의도 분석 노드
     사용자 쿼리를 분석하여 의도를 파악
+
+    LangGraph 표준: messages에서 마지막 사용자 메시지 추출
     """
-    query = state["query"].lower()
+    # messages에서 마지막 메시지 추출
+    last_message = state["messages"][-1]
+    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
+    query_lower = query.lower()
 
     # 키워드 기반 의도 분석 (우선순위 순서 중요!)
     # 1. 리밸런싱 (가장 구체적)
-    if any(word in query for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
+    if any(word in query_lower for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
         intent = IntentCategory.REBALANCING
     # 2. 매매 실행
-    elif any(word in query for word in ["매수", "매도", "사", "팔"]):
+    elif any(word in query_lower for word in ["매수", "매도", "사", "팔"]):
         intent = IntentCategory.TRADE_EXECUTION
     # 3. 수익률/현황 조회
-    elif any(word in query for word in ["수익률", "현황"]):
+    elif any(word in query_lower for word in ["수익률", "현황"]):
         intent = IntentCategory.PERFORMANCE_CHECK
     # 4. 포트폴리오 관련 (리밸런싱 제외)
-    elif any(word in query for word in ["포트폴리오", "자산배분"]):
+    elif any(word in query_lower for word in ["포트폴리오", "자산배분"]):
         intent = IntentCategory.PORTFOLIO_EVALUATION
     # 5. 종목 분석
-    elif any(word in query for word in ["분석", "어때", "평가", "투자"]):
+    elif any(word in query_lower for word in ["분석", "어때", "평가", "투자"]):
         intent = IntentCategory.STOCK_ANALYSIS
     # 6. 시장 상황
-    elif "시장" in query:
+    elif "시장" in query_lower:
         intent = IntentCategory.MARKET_STATUS
     # 7. 일반 질문
     else:
         intent = IntentCategory.GENERAL_QUESTION
 
-    logger.info(f"🔍 의도 감지: {intent} (쿼리: '{state['query']}')")
+    logger.info(f"🔍 의도 감지: {intent} (쿼리: '{query}')")
 
     return {
         **state,
@@ -114,7 +81,7 @@ def analyze_intent_node(state: AgentState) -> AgentState:
     }
 
 
-def determine_agents_node(state: AgentState) -> AgentState:
+def determine_agents_node(state: GraphState) -> GraphState:
     """
     에이전트 결정 노드
     의도에 따라 호출할 에이전트 결정
@@ -140,7 +107,7 @@ def determine_agents_node(state: AgentState) -> AgentState:
     }
 
 
-async def call_agents_node(state: AgentState) -> AgentState:
+async def call_agents_node(state: GraphState) -> GraphState:
     """
     에이전트 호출 노드
     결정된 에이전트들을 병렬로 호출
@@ -156,12 +123,16 @@ async def call_agents_node(state: AgentState) -> AgentState:
         "education_agent": education_agent,
     }
 
+    # messages에서 query 추출
+    last_message = state["messages"][-1]
+    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
+
     # AgentInput 생성
     agent_input = AgentInput(
-        request_id=state["request_id"],
+        request_id=state["conversation_id"],
         automation_level=state["automation_level"],
         context={
-            "query": state["query"],
+            "query": query,
             "intent": state["intent"],
         }
     )
@@ -187,7 +158,7 @@ async def call_agents_node(state: AgentState) -> AgentState:
     }
 
 
-def check_risk_node(state: AgentState) -> AgentState:
+def check_risk_node(state: GraphState) -> GraphState:
     """
     리스크 체크 노드
     에이전트 결과에서 리스크 수준 추출
@@ -208,7 +179,7 @@ def check_risk_node(state: AgentState) -> AgentState:
     }
 
 
-def check_hitl_node(state: AgentState) -> AgentState:
+def check_hitl_node(state: GraphState) -> GraphState:
     """
     HITL 트리거 체크 노드
     자동화 레벨과 리스크를 고려하여 HITL 필요 여부 판단
@@ -248,7 +219,7 @@ def check_hitl_node(state: AgentState) -> AgentState:
 
 # ==================== Trade Execution Nodes (HITL 패턴) ====================
 
-def prepare_trade_node(state: AgentState) -> AgentState:
+def prepare_trade_node(state: GraphState) -> GraphState:
     """
     1단계: 거래 준비 (부작용)
 
@@ -281,7 +252,7 @@ def prepare_trade_node(state: AgentState) -> AgentState:
     }
 
 
-def approval_trade_node(state: AgentState) -> AgentState:
+def approval_trade_node(state: GraphState) -> GraphState:
     """
     2단계: HITL 승인 (interrupt 발생)
 
@@ -297,11 +268,15 @@ def approval_trade_node(state: AgentState) -> AgentState:
 
     order_id = state.get("trade_order_id", "UNKNOWN")
 
+    # messages에서 query 추출
+    last_message = state["messages"][-1]
+    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
+
     # 🔴 Interrupt 발생 - 사용자 승인 대기
     approval = interrupt({
         "type": "trade_approval",
         "order_id": order_id,
-        "query": state["query"],
+        "query": query,
         "automation_level": state["automation_level"],
         "message": f"매매 주문 '{order_id}'을(를) 승인하시겠습니까?"
     })
@@ -317,7 +292,7 @@ def approval_trade_node(state: AgentState) -> AgentState:
     }
 
 
-def execute_trade_node(state: AgentState) -> AgentState:
+def execute_trade_node(state: GraphState) -> GraphState:
     """
     3단계: 거래 실행 (부작용)
 
@@ -368,10 +343,12 @@ def execute_trade_node(state: AgentState) -> AgentState:
 
 # ==================== Aggregation ====================
 
-def aggregate_results_node(state: AgentState) -> AgentState:
+def aggregate_results_node(state: GraphState) -> GraphState:
     """
     결과 통합 노드
     모든 에이전트 결과를 통합하여 최종 응답 생성
+
+    LangGraph 표준: AIMessage를 messages에 추가
     """
     agent_results = state.get("agent_results", {})
 
@@ -413,8 +390,12 @@ def aggregate_results_node(state: AgentState) -> AgentState:
         "trade_result": state.get("trade_result"),  # 매매 결과 추가
     }
 
+    # ⭐ LangGraph 표준: AIMessage 추가
+    ai_message = AIMessage(content=summary)
+
     return {
         **state,
+        "messages": [ai_message],  # add_messages reducer가 자동 병합
         "summary": summary,
         "final_response": final_response,
     }
@@ -422,7 +403,7 @@ def aggregate_results_node(state: AgentState) -> AgentState:
 
 # ==================== Router Functions ====================
 
-def route_after_determine_agents(state: AgentState) -> str:
+def route_after_determine_agents(state: GraphState) -> str:
     """
     의도에 따라 다음 노드 결정
 
@@ -439,7 +420,7 @@ def route_after_determine_agents(state: AgentState) -> str:
         return "call_agents"
 
 
-def should_continue(state: AgentState) -> str:
+def should_continue(state: GraphState) -> str:
     """
     다음 노드 결정
     """
@@ -459,8 +440,8 @@ def build_graph(automation_level: int = 2):
             - Level 2 (Copilot): 매매/리밸런싱 승인 필요 (기본값)
             - Level 3 (Advisor): 모든 결정 승인 필요
     """
-    # 그래프 생성
-    workflow = StateGraph(AgentState)
+    # 그래프 생성 - LangGraph 표준 GraphState 사용
+    workflow = StateGraph(GraphState)
 
     # 기본 노드
     workflow.add_node("analyze_intent", analyze_intent_node)
@@ -571,10 +552,11 @@ async def run_graph(
         }
     }
 
-    # 초기 상태
+    # 초기 상태 - LangGraph 표준: messages 사용
     initial_state = {
-        "query": query,
-        "request_id": request_id,
+        "messages": [HumanMessage(content=query)],
+        "user_id": "user_001",  # TODO: 실제 인증 시스템 연동
+        "conversation_id": thread_id,
         "automation_level": automation_level,
         "intent": None,
         "agent_results": {},

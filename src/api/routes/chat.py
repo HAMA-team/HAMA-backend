@@ -8,6 +8,7 @@ import uuid
 
 from src.agents.graph_master import run_graph, build_graph
 from langgraph.types import Command
+from langchain_core.messages import HumanMessage, AIMessage
 
 router = APIRouter()
 
@@ -61,10 +62,11 @@ async def chat(request: ChatRequest):
             }
         }
 
-        # Initial state
+        # Initial state - LangGraph 표준: messages 사용
         initial_state = {
-            "query": request.message,
-            "request_id": conversation_id,
+            "messages": [HumanMessage(content=request.message)],
+            "user_id": "user_001",  # TODO: 실제 인증 시스템 연동
+            "conversation_id": conversation_id,
             "automation_level": request.automation_level,
             "intent": None,
             "agent_results": {},
@@ -117,11 +119,16 @@ async def chat(request: ChatRequest):
         # No interrupt - 정상 완료
         data = result.get("final_response", {})
 
-        # Get summary and details
+        # LangGraph 표준: messages에서 AI 응답 추출
+        ai_messages = [msg for msg in result.get("messages", []) if isinstance(msg, AIMessage)]
+        last_ai_message = ai_messages[-1] if ai_messages else None
+
+        # Get summary and details (하위 호환성)
         summary = data.get("summary", "분석 완료")
         details = data.get("details", {})
 
         # Build detailed message
+        # 우선 summary 사용 (상세 응답), 필요시 last_ai_message.content로 대체 가능
         message_parts = [f"📊 분석 결과\n\n{summary}\n"]
 
         # Add details if available
