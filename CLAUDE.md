@@ -230,3 +230,4 @@ class Stock(Base):
 - 데모/발표용 Mock 데이터 충실히 준비
 - Remember to ask me 3 questions before you plan the execution plans
 - 테스트 파일을 작성할 때는 해당 파일에 있는 모든 테스트를 한 번에 실행가능하도록 if __name__ == "__main__": 를 구성해야 합니다
+- 매 작업을 한 뒤에는 커밋을 하고 컨벤션에 맞게 메시지도 작성해야 해. 단, 메시지는 한글로, 써야 해. <example> Feat: 메시지는 한글로 작성 </example> 그리고 claude가 함께 작업했다는 내용을 포함시키지 마
