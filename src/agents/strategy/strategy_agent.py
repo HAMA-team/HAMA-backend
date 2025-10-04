@@ -42,6 +42,14 @@ class StrategyAgent(BaseAgent):
 
     def __init__(self):
         super().__init__("strategy_agent")
+        # 서브모듈 import
+        from src.agents.strategy.market_analyzer import market_analyzer
+        from src.agents.strategy.sector_rotator import sector_rotator
+        from src.agents.strategy.risk_stance import risk_stance_analyzer
+
+        self.market_analyzer = market_analyzer
+        self.sector_rotator = sector_rotator
+        self.risk_stance = risk_stance_analyzer
 
     async def process(self, input_data: AgentInput) -> AgentOutput:
         """
@@ -64,17 +72,17 @@ class StrategyAgent(BaseAgent):
             print(f"\n🎯 [Strategy Agent] 거시 대전략 수립 시작...")
             print(f"   리스크 허용도: {risk_tolerance}")
 
-            # 1. 시장 사이클 분석 (Mock)
-            market_outlook = await self._analyze_market_cycle()
+            # 1. 시장 사이클 분석 (LLM 기반 실제 구현)
+            market_outlook = await self.market_analyzer.analyze()
 
-            # 2. 섹터 전략 수립 (Mock)
-            sector_strategy = await self._create_sector_strategy(
+            # 2. 섹터 전략 수립 (LLM 기반 실제 구현)
+            sector_strategy = await self.sector_rotator.create_strategy(
                 market_cycle=market_outlook.cycle,
                 user_preferences=user_preferences
             )
 
-            # 3. 자산 배분 결정 (Mock)
-            asset_allocation = await self._determine_asset_allocation(
+            # 3. 자산 배분 결정
+            asset_allocation = await self.risk_stance.determine_allocation(
                 market_cycle=market_outlook.cycle,
                 risk_tolerance=risk_tolerance
             )
@@ -117,94 +125,20 @@ class StrategyAgent(BaseAgent):
                 },
                 metadata={
                     "agent_version": "v2.0",
-                    "implementation": "mock",
-                    "market_cycle": market_outlook.cycle
+                    "implementation": "real",  # Week 14: 실제 구현
+                    "market_cycle": market_outlook.cycle,
+                    "data_sources": ["BOK API", "FinanceDataReader", "LLM"]
                 }
             )
 
         except Exception as e:
             print(f"❌ [Strategy Agent] Error: {e}")
+            import traceback
+            traceback.print_exc()
             return AgentOutput(
                 status="failure",
                 error=str(e)
             )
-
-    async def _analyze_market_cycle(self) -> MarketCycle:
-        """
-        시장 사이클 분석 (Mock)
-
-        Week 14 실제 구현:
-        - 거시경제 지표 수집 (금리, CPI, GDP)
-        - LLM 기반 사이클 판단
-        - 신뢰도 계산
-        """
-        # Mock: 중기 강세장
-        return MarketCycle(
-            cycle="mid_bull_market",
-            confidence=0.72,
-            summary="IT 섹터 주도의 중기 강세장. 금리 안정화로 기술주 선호 지속"
-        )
-
-    async def _create_sector_strategy(
-        self,
-        market_cycle: str,
-        user_preferences: dict
-    ) -> SectorStrategy:
-        """
-        섹터 전략 수립 (Mock)
-
-        Week 14 실제 구현:
-        - LLM 기반 섹터 평가
-        - 사용자 선호도 통합
-        - 동적 비중 조정
-        """
-        # Mock: IT/반도체 중심 전략
-        sectors = [
-            SectorWeight(sector="IT", weight=Decimal("0.40"), stance="overweight"),
-            SectorWeight(sector="반도체", weight=Decimal("0.20"), stance="overweight"),
-            SectorWeight(sector="헬스케어", weight=Decimal("0.15"), stance="neutral"),
-            SectorWeight(sector="금융", weight=Decimal("0.15"), stance="neutral"),
-            SectorWeight(sector="에너지", weight=Decimal("0.10"), stance="underweight"),
-        ]
-
-        # 사용자 선호도 반영
-        preferred_sectors = user_preferences.get("sectors", [])
-        if preferred_sectors:
-            print(f"   사용자 선호 섹터 반영: {preferred_sectors}")
-
-        return SectorStrategy(
-            sectors=sectors,
-            overweight=["IT", "반도체"],
-            underweight=["에너지"],
-            rationale="중기 강세장에서 IT 섹터 주도 상승 예상. 금리 안정화로 기술주 선호 지속"
-        )
-
-    async def _determine_asset_allocation(
-        self,
-        market_cycle: str,
-        risk_tolerance: str
-    ) -> AssetAllocation:
-        """
-        자산 배분 결정 (Mock)
-
-        리스크 허용도별 주식/현금 비율:
-        - conservative: 60% / 40%
-        - moderate: 75% / 25%
-        - aggressive: 90% / 10%
-        """
-        allocation_map = {
-            "conservative": (Decimal("0.60"), Decimal("0.40")),
-            "moderate": (Decimal("0.75"), Decimal("0.25")),
-            "aggressive": (Decimal("0.90"), Decimal("0.10")),
-        }
-
-        stocks, cash = allocation_map.get(risk_tolerance, (Decimal("0.75"), Decimal("0.25")))
-
-        return AssetAllocation(
-            stocks=stocks,
-            cash=cash,
-            rationale=f"{risk_tolerance} 리스크 허용도에 맞춘 자산 배분. 중기 강세장 기조 반영"
-        )
 
     def _determine_investment_style(self, user_preferences: dict) -> InvestmentStyle:
         """투자 스타일 결정"""
