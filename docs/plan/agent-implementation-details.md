@@ -1,8 +1,14 @@
 # 에이전트 구현 상세 가이드
 
-**버전**: 1.0
+**버전**: 2.0
 **작성일**: 2025-10-01
+**최종 수정일**: 2025-10-04
 **기반 문서**: 에이전트 아키텍쳐 v2.0
+
+**주요 변경사항 (v2.0)**:
+- **Strategy Agent**: 개별 종목 시그널 → 투자 대전략(거시경제, 섹터 로테이션)
+- **Research Agent**: Bull/Bear 서브에이전트 통합, 종합 평가 강화
+- **Portfolio Agent**: 전략 구현 전 과정 책임 (스크리닝 → 분석 → 최적화)
 
 ---
 
@@ -521,19 +527,28 @@ class DataCollectionAgent(AgentInterface):
 
 ---
 
-## 4. 리서치 에이전트
+## 4. 리서치 에이전트 (Research Agent)
 
 ### 역할
 
-- 기업 재무제표 분석
-- 기술적 지표 계산
-- 산업/경쟁사 비교
+**개별 종목 심층 분석 및 평가**
 
-### Mock 구현
+- 기업 재무제표 분석 (수익성, 성장성, 안정성)
+- 기술적 지표 계산 및 분석
+- Bull/Bear 서브에이전트 운용 ⭐ **핵심**
+- 산업/경쟁사 비교 분석
+- 종합 평가 점수 산정
+- 목표가 제시
+
+**출력물**: 종목 분석 리포트 → Portfolio Agent에 제공
+
+---
+
+### Phase 1: Mock 버전
 
 ```python
 class ResearchAgent(AgentInterface):
-    """리서치 에이전트 - Mock"""
+    """리서치 에이전트 - Mock 버전"""
 
     @property
     def agent_id(self) -> str:
@@ -546,26 +561,78 @@ class ResearchAgent(AgentInterface):
         mock_analysis = {
             "ticker": ticker,
             "company_name": "삼성전자",
-            "rating": 4,  # 1-5
+
+            # 종합 평가
+            "overall_rating": 4.2,  # 1-5점
+            "recommendation": "BUY",  # BUY/HOLD/SELL
+            "target_price": 82000,
+
+            # 재무 분석
             "profitability": {
                 "roe": 0.0857,
                 "roa": 0.0543,
-                "net_margin": 0.0892
+                "net_margin": 0.0892,
+                "score": 4.0
             },
+
+            # 성장성 분석
             "growth": {
-                "revenue_growth": 0.101,
-                "profit_growth": 0.152
+                "revenue_growth_yoy": 0.101,
+                "profit_growth_yoy": 0.152,
+                "revenue_growth_3y_cagr": 0.085,
+                "score": 4.5
             },
+
+            # 안정성 분석
             "stability": {
                 "debt_ratio": 0.35,
-                "current_ratio": 1.8
+                "current_ratio": 1.8,
+                "interest_coverage": 12.5,
+                "score": 4.2
             },
+
+            # 기술적 분석
             "technical": {
+                "current_price": 74500,
                 "ma20": 74200,
                 "ma60": 73500,
-                "rsi": 58.3
+                "rsi": 58.3,
+                "trend": "상승 추세",
+                "score": 3.8
             },
-            "summary": "실적 양호, 기술적으로 중립"
+
+            # Bull/Bear 분석 ⭐ 추가
+            "bull_analysis": {
+                "confidence": 0.75,
+                "key_factors": [
+                    "AI 수요 증가로 HBM 매출 급증",
+                    "2분기 실적 예상 상회",
+                    "밸류에이션 매력적 (PER 12배)"
+                ],
+                "target_price": 85000,
+                "probability": 0.65
+            },
+
+            "bear_analysis": {
+                "confidence": 0.25,
+                "key_factors": [
+                    "글로벌 경기 둔화 우려",
+                    "중국 반도체 경쟁 심화",
+                    "스마트폰 수요 정체"
+                ],
+                "downside_risk": 68000,
+                "probability": 0.35
+            },
+
+            # Consensus (Bull/Bear 통합)
+            "consensus": {
+                "direction": "bullish",
+                "conviction": "strong",
+                "summary": "강한 매수. Bull 요인이 Bear 리스크를 압도"
+            },
+
+            # 종합 의견
+            "summary": "실적 양호, 기술적으로 중립. AI 수요 증가가 핵심 상승 동력"
         }
 
         return self._create_output(
@@ -575,14 +642,46 @@ class ResearchAgent(AgentInterface):
         )
 ```
 
-### 실제 구현
+---
+
+### Phase 2: 실제 구현
 
 ```python
+from dataclasses import dataclass
+from typing import Dict, List
+
+@dataclass
+class BullAnalysis:
+    """Bull 분석 결과"""
+    confidence: float
+    key_factors: List[str]
+    target_price: float
+    probability: float
+    reasoning: str
+
+@dataclass
+class BearAnalysis:
+    """Bear 분석 결과"""
+    confidence: float
+    key_factors: List[str]
+    downside_risk: float
+    probability: float
+    reasoning: str
+
 class ResearchAgent(AgentInterface):
     """리서치 에이전트 - 실제 구현"""
 
-    def __init__(self, data_collector: DataCollectionAgent):
+    def __init__(
+        self,
+        data_collector: DataCollectionAgent,
+        bull_analyst,  # 서브에이전트
+        bear_analyst,  # 서브에이전트
+        llm_client
+    ):
         self.data_collector = data_collector
+        self.bull_analyst = bull_analyst
+        self.bear_analyst = bear_analyst
+        self.llm = llm_client
 
     async def process(self, input: AgentInput) -> AgentOutput:
         ticker = input.data.get("ticker")
@@ -598,34 +697,63 @@ class ResearchAgent(AgentInterface):
         )
 
         # 2. 재무 분석
-        profitability = self._analyze_profitability(
-            data.data['financials']
+        profitability = self._analyze_profitability(data.data['financials'])
+        growth = await self._analyze_growth(ticker, data.data)
+        stability = self._analyze_stability(data.data['financials'])
+        technical = await self._analyze_technical(ticker)
+
+        # 3. Bull/Bear 병렬 분석 ⭐ 핵심
+        bull_result, bear_result = await asyncio.gather(
+            self.bull_analyst.analyze(
+                ticker,
+                {
+                    "financials": data.data['financials'],
+                    "news": data.data.get('news', []),
+                    "profitability": profitability,
+                    "growth": growth,
+                    "technical": technical
+                }
+            ),
+            self.bear_analyst.analyze(
+                ticker,
+                {
+                    "financials": data.data['financials'],
+                    "news": data.data.get('news', []),
+                    "stability": stability,
+                    "technical": technical
+                }
+            )
         )
 
-        # 3. 성장성 분석
-        growth = self._analyze_growth(ticker)
+        # 4. Consensus 계산
+        consensus = self._calculate_consensus(bull_result, bear_result)
 
-        # 4. 안정성 분석
-        stability = self._analyze_stability(
-            data.data['financials']
+        # 5. 종합 평가
+        overall_rating = self._calculate_overall_rating(
+            profitability, growth, stability, technical, consensus
         )
 
-        # 5. 기술적 분석
-        technical = self._analyze_technical(ticker)
-
-        # 6. 종합 평가
-        rating = self._calculate_rating(
-            profitability, growth, stability, technical
+        # 6. 목표가 산정
+        target_price = self._calculate_target_price(
+            bull_result, bear_result, technical
         )
 
+        # 7. 최종 분석 결과
         analysis = {
             "ticker": ticker,
-            "rating": rating,
+            "overall_rating": overall_rating,
+            "recommendation": self._get_recommendation(overall_rating, consensus),
+            "target_price": target_price,
             "profitability": profitability,
             "growth": growth,
             "stability": stability,
             "technical": technical,
-            "summary": self._generate_summary(rating, profitability, technical)
+            "bull_analysis": bull_result.__dict__,
+            "bear_analysis": bear_result.__dict__,
+            "consensus": consensus,
+            "summary": self._generate_summary(
+                overall_rating, consensus, bull_result, bear_result
+            )
         }
 
         return self._create_output(
@@ -634,259 +762,533 @@ class ResearchAgent(AgentInterface):
             data=analysis
         )
 
-    def _analyze_profitability(self, financials: Dict) -> Dict:
-        """수익성 분석"""
-        roe = financials['net_income'] / financials['equity']
-        roa = financials['net_income'] / financials['total_assets']
-        net_margin = financials['net_income'] / financials['revenue']
+    def _calculate_consensus(
+        self,
+        bull: BullAnalysis,
+        bear: BearAnalysis
+    ) -> Dict:
+        """Bull/Bear Consensus 계산"""
+
+        confidence_diff = bull.confidence - bear.confidence
+
+        if confidence_diff > 0.3:
+            direction = "bullish"
+            conviction = "strong"
+        elif confidence_diff > 0.1:
+            direction = "bullish"
+            conviction = "moderate"
+        elif confidence_diff < -0.3:
+            direction = "bearish"
+            conviction = "strong"
+        elif confidence_diff < -0.1:
+            direction = "bearish"
+            conviction = "moderate"
+        else:
+            direction = "neutral"
+            conviction = "weak"
 
         return {
-            "roe": round(roe, 4),
-            "roa": round(roa, 4),
-            "net_margin": round(net_margin, 4)
+            "direction": direction,
+            "conviction": conviction,
+            "bull_confidence": bull.confidence,
+            "bear_confidence": bear.confidence,
+            "summary": f"{conviction.title()} {direction}"
         }
 
-    def _analyze_technical(self, ticker: str) -> Dict:
-        """기술적 분석"""
-        from pykrx import stock
-        today = pd.Timestamp.now().strftime("%Y%m%d")
-        start = (pd.Timestamp.now() - pd.Timedelta(days=120)).strftime("%Y%m%d")
-
-        df = stock.get_market_ohlcv(start, today, ticker)
-
-        # 이동평균
-        df['MA20'] = df['종가'].rolling(window=20).mean()
-        df['MA60'] = df['종가'].rolling(window=60).mean()
-
-        # RSI
-        delta = df['종가'].diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-        loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-
-        latest = df.iloc[-1]
-        return {
-            "current_price": latest['종가'],
-            "ma20": latest['MA20'],
-            "ma60": latest['MA60'],
-            "rsi": rsi.iloc[-1]
-        }
+    def _calculate_target_price(
+        self,
+        bull: BullAnalysis,
+        bear: BearAnalysis,
+        technical: Dict
+    ) -> float:
+        """목표가 산정 (확률 가중)"""
+        target = (
+            bull.target_price * bull.probability +
+            bear.downside_risk * bear.probability
+        )
+        return round(target, -2)
 ```
-
-### 체크리스트
-
-**Mock 구현** (1일):
-- [ ] 기본 분석 구조
-- [ ] Mock 분석 결과
-
-**실제 구현** (2주):
-- [ ] 재무 분석 로직
-- [ ] 기술적 지표 (TA-Lib 활용)
-- [ ] 산업 분석
-- [ ] 평가 시스템
 
 ---
 
-## 5. 전략 에이전트
+### Bull/Bear 서브에이전트
+
+#### Bull Analyst (긍정적 시나리오)
+
+```python
+class BullAnalyst:
+    """Bull 분석 서브에이전트"""
+
+    def __init__(self, llm_client):
+        self.llm = llm_client
+
+    async def analyze(self, ticker: str, context: Dict) -> BullAnalysis:
+        """Bull 케이스 분석"""
+
+        prompt = f"""
+        종목: {ticker}
+
+        다음 데이터를 바탕으로 Bull 케이스를 분석하세요:
+        - 재무 지표: {context['profitability']}
+        - 성장성: {context['growth']}
+        - 최근 뉴스: {context.get('news', [])}
+
+        다음을 분석:
+        1. 긍정적 요인 (최대 5개)
+        2. 상승 시나리오 확률
+        3. 목표가
+        4. 확신도 (0-1)
+
+        JSON 형식으로 답변하세요.
+        """
+
+        response = await self.llm.complete(prompt)
+        data = json.loads(response)
+        return BullAnalysis(**data)
+```
+
+#### Bear Analyst (부정적 시나리오)
+
+```python
+class BearAnalyst:
+    """Bear 분석 서브에이전트"""
+
+    def __init__(self, llm_client):
+        self.llm = llm_client
+
+    async def analyze(self, ticker: str, context: Dict) -> BearAnalysis:
+        """Bear 케이스 분석"""
+
+        prompt = f"""
+        종목: {ticker}
+
+        다음 데이터를 바탕으로 Bear 케이스를 분석하세요:
+        - 안정성: {context['stability']}
+        - 기술적: {context['technical']}
+
+        다음을 분석:
+        1. 부정적 요인 (최대 5개)
+        2. 하락 시나리오 확률
+        3. 하방 리스크
+        4. 확신도 (0-1)
+
+        JSON 형식으로 답변하세요.
+        """
+
+        response = await self.llm.complete(prompt)
+        data = json.loads(response)
+        return BearAnalysis(**data)
+```
+
+---
+
+### 체크리스트
+
+**Mock 구현** (2일):
+- [ ] 기본 분석 구조
+- [ ] Mock Bull/Bear 분석
+- [ ] Mock 재무/기술적 지표
+
+**실제 구현** (3주):
+- [ ] 재무 분석 로직
+- [ ] 기술적 지표 (TA-Lib)
+- [ ] Bull Analyst 서브에이전트
+- [ ] Bear Analyst 서브에이전트
+- [ ] Consensus 계산 로직
+- [ ] 종합 평가 시스템
+- [ ] 목표가 산정 알고리즘
+
+---
+
+### 핵심 개선 사항
+
+**기존**: 재무/기술적 분석만 수행
+
+**개선**: Bull/Bear 분석 통합
+- ✅ 긍정적/부정적 시나리오 모두 고려
+- ✅ 확률 가중 목표가 산정
+- ✅ Portfolio Agent에 명확한 평가 제공
+- ✅ 서브에이전트 패턴 적용
+
+---
+
+## 5. 전략 에이전트 (Strategy Agent)
 
 ### 역할
 
-- 매수/매도 시그널 생성
-- Bull/Bear 분석
-- 종목 추천
+**투자 대전략(Grand Strategy) 수립**
 
-### Mock 구현
+- 시장 사이클 및 거시경제 환경 분석
+- 섹터 로테이션 전략 수립
+- 리스크 스탠스 결정 (공격적/중립/방어적)
+- 자산군 배분 방향성 제시
+- 투자 스타일 설정
+- 사용자 전략 요구사항 해석 및 구체화
+
+**출력물**: Strategic Blueprint (전략 청사진) → Portfolio Agent에 전달
+
+---
+
+### Phase 1: Mock 버전
 
 ```python
 class StrategyAgent(AgentInterface):
-    """전략 에이전트 - Mock"""
+    """전략 에이전트 - Mock 버전"""
 
     @property
     def agent_id(self) -> str:
         return "strategy_agent"
 
     async def process(self, input: AgentInput) -> AgentOutput:
-        ticker = input.data.get("ticker")
+        # 사용자 요구사항 파싱
+        user_request = input.data.get("query", "")
+        user_profile = input.data.get("user_profile", {})
 
-        # TODO: Bull/Bear 서브에이전트 구현
-        mock_signal = {
-            "ticker": ticker,
-            "action": "BUY",
-            "confidence": 0.75,
-            "price_target": 78000,
-            "bull_case": {
-                "confidence": 0.78,
-                "reasoning": "반도체 업황 개선 조짐, 실적 성장 예상"
+        # TODO: 실제 시장 분석으로 교체
+        mock_blueprint = {
+            "request_id": input.request_id,
+            "user_id": input.user_id,
+
+            # 시장 전망
+            "market_outlook": {
+                "cycle": "mid_bull_market",  # 중기 강세장
+                "confidence": 0.72,
+                "timeframe": "3-6개월",
+                "summary": "금리 인하 기대감으로 중기 강세 예상"
             },
-            "bear_case": {
-                "confidence": 0.22,
-                "reasoning": "글로벌 경기 둔화 우려"
+
+            # 리스크 스탠스
+            "risk_stance": "moderate_risk_on",  # 공격적, 중립, 방어적
+
+            # 섹터 전략
+            "sector_strategy": {
+                "overweight": ["IT", "반도체", "헬스케어"],
+                "neutral": ["금융", "소비재"],
+                "underweight": ["에너지"],
+                "avoid": []
             },
-            "consensus": "BUY",
-            "reasoning": "Bull 의견이 우세, 기술적으로 지지선 확인"
+
+            # 자산 배분 목표
+            "asset_allocation_target": {
+                "stocks": 0.75,
+                "cash": 0.25
+            },
+
+            # 투자 스타일
+            "investment_style": {
+                "growth_vs_value": "growth",  # 성장주 선호
+                "size": "large_mid",  # 대형주 + 중형주
+                "approach": "gradual_buy"  # 적립식 매수
+            },
+
+            # 리밸런싱 정책
+            "rebalancing_policy": {
+                "frequency": "monthly",
+                "trigger_threshold": 0.05  # 5% 이상 괴리 시
+            },
+
+            # 전략 근거
+            "rationale": [
+                "미국 금리 인하 사이클 진입 예상",
+                "AI 투자 확대로 반도체 업황 개선",
+                "사용자 위험성향: 중립적 → 중간 수준 공격성"
+            ]
         }
 
         return self._create_output(
             request_id=input.request_id,
             status="success",
-            data=mock_signal
+            data={"blueprint": mock_blueprint}
         )
 ```
 
-### 실제 구현
+---
+
+### Phase 2: 실제 구현
 
 ```python
+from dataclasses import dataclass
+from typing import Dict, List
+
+@dataclass
+class StrategicBlueprint:
+    """전략 청사진 데이터 클래스"""
+    market_outlook: Dict
+    risk_stance: str
+    sector_strategy: Dict
+    asset_allocation_target: Dict
+    investment_style: Dict
+    rebalancing_policy: Dict
+    rationale: List[str]
+
+
 class StrategyAgent(AgentInterface):
     """전략 에이전트 - 실제 구현"""
 
     def __init__(
         self,
-        research_agent: ResearchAgent,
-        bull_analyst,  # 서브에이전트
-        bear_analyst,  # 서브에이전트
-        llm_client
+        data_collector: DataCollectionAgent,
+        llm_client,
+        market_analyzer  # 시장 분석 서브모듈
     ):
-        self.research = research_agent
-        self.bull = bull_analyst
-        self.bear = bear_analyst
+        self.data_collector = data_collector
         self.llm = llm_client
+        self.market_analyzer = market_analyzer
 
     async def process(self, input: AgentInput) -> AgentOutput:
-        ticker = input.data.get("ticker")
+        """메인 전략 수립 프로세스"""
 
-        # 1. 리서치 분석 가져오기
-        research_result = await self.research.process(input)
+        user_request = input.data.get("query", "")
+        user_profile = input.data.get("user_profile", {})
 
-        # 2. Bull/Bear 병렬 분석
-        bull_result, bear_result = await asyncio.gather(
-            self.bull.analyze(ticker, research_result.data),
-            self.bear.analyze(ticker, research_result.data)
+        # 1. 거시경제 데이터 수집
+        macro_data = await self._collect_macro_data()
+
+        # 2. 시장 사이클 분석
+        market_cycle = await self._analyze_market_cycle(macro_data)
+
+        # 3. 리스크 스탠스 결정
+        risk_stance = self._determine_risk_stance(
+            market_cycle,
+            user_profile
         )
 
-        # 3. Consensus 계산
-        consensus = self._calculate_consensus(
-            bull_result, bear_result
+        # 4. 섹터 전략 수립
+        sector_strategy = await self._formulate_sector_strategy(
+            market_cycle,
+            risk_stance
         )
 
-        # 4. 최종 시그널
-        signal = {
-            "ticker": ticker,
-            "action": consensus['action'],
-            "confidence": consensus['confidence'],
-            "price_target": consensus['target_price'],
-            "bull_case": bull_result,
-            "bear_case": bear_result,
-            "consensus": consensus['action'],
-            "reasoning": consensus['reasoning']
-        }
+        # 5. 사용자 요구사항 해석
+        investment_style = await self._interpret_user_strategy(
+            user_request,
+            user_profile
+        )
 
-        # 5. HITL 체크 (의견 차이 작을 때)
-        hitl_trigger = None
-        if abs(bull_result['confidence'] - bear_result['confidence']) < 0.1:
-            hitl_trigger = {
-                "reason": "Bull/Bear 의견 차이가 작아 사용자 판단이 필요합니다",
-                "urgency": "medium"
-            }
+        # 6. 전략 청사진 생성
+        blueprint = StrategicBlueprint(
+            market_outlook=market_cycle,
+            risk_stance=risk_stance,
+            sector_strategy=sector_strategy,
+            asset_allocation_target=self._calculate_asset_allocation(
+                risk_stance,
+                user_profile
+            ),
+            investment_style=investment_style,
+            rebalancing_policy=self._define_rebalancing_policy(
+                investment_style
+            ),
+            rationale=self._generate_rationale(
+                market_cycle,
+                sector_strategy,
+                user_profile
+            )
+        )
 
         return self._create_output(
             request_id=input.request_id,
-            status="hitl_required" if hitl_trigger else "success",
-            data=signal,
-            hitl_trigger=hitl_trigger
+            status="success",
+            data={"blueprint": blueprint.__dict__}
         )
 
-    def _calculate_consensus(self, bull: Dict, bear: Dict) -> Dict:
-        """Consensus 계산"""
-        bull_confidence = bull['confidence']
-        bear_confidence = bear['confidence']
+    async def _analyze_market_cycle(self, macro_data: Dict) -> Dict:
+        """시장 사이클 분석 (LLM 활용)"""
 
-        if bull_confidence > bear_confidence + 0.2:
-            action = "BUY"
-        elif bear_confidence > bull_confidence + 0.2:
-            action = "SELL"
-        else:
-            action = "HOLD"
+        prompt = f"""
+        다음 거시경제 데이터를 바탕으로 현재 시장 사이클을 분석하세요.
 
-        avg_confidence = (bull_confidence + (1 - bear_confidence)) / 2
+        데이터:
+        - 금리: {macro_data['interest_rate']}% ({macro_data['interest_rate_trend']})
+        - CPI: {macro_data['cpi']}%
+        - GDP 성장률: {macro_data['gdp_growth']}%
 
-        return {
-            "action": action,
-            "confidence": avg_confidence,
-            "target_price": bull.get('target_price', 0),
-            "reasoning": f"Bull: {bull_confidence:.0%}, Bear: {bear_confidence:.0%}"
+        현재 시장 사이클 위치를 판단하고 JSON 형식으로 답변하세요.
+        """
+
+        response = await self.llm.complete(prompt)
+        return json.loads(response)
+
+    def _determine_risk_stance(
+        self,
+        market_cycle: Dict,
+        user_profile: Dict
+    ) -> str:
+        """리스크 스탠스 결정"""
+
+        # 시장 환경과 사용자 성향 결합
+        risk_map = {
+            ("aggressive", "bull"): "aggressive_risk_on",
+            ("moderate", "bull"): "moderate_risk_on",
+            ("conservative", "bull"): "neutral",
+            # ... 기타 조합
         }
+
+        return risk_map.get((user_profile['risk_tolerance'], "bull"), "neutral")
 ```
-
-### 체크리스트
-
-**Mock 구현** (2일):
-- [ ] 기본 시그널 구조
-- [ ] Mock Bull/Bear 분석
-
-**실제 구현** (3주):
-- [ ] Bull 서브에이전트
-- [ ] Bear 서브에이전트
-- [ ] Consensus 로직
-- [ ] LLM 기반 reasoning
 
 ---
 
-## 6. 포트폴리오 에이전트
+### 출력 예시: Strategic Blueprint
+
+```json
+{
+  "market_outlook": {
+    "cycle": "mid_bull_market",
+    "confidence": 0.72,
+    "timeframe": "3-6개월",
+    "summary": "금리 인하 기대감으로 중기 강세 예상"
+  },
+  "risk_stance": "moderate_risk_on",
+  "sector_strategy": {
+    "overweight": ["IT", "반도체", "헬스케어"],
+    "neutral": ["금융", "소비재"],
+    "underweight": ["에너지"],
+    "avoid": []
+  },
+  "asset_allocation_target": {
+    "stocks": 0.75,
+    "cash": 0.25
+  },
+  "investment_style": {
+    "growth_vs_value": "growth",
+    "size": "large_mid",
+    "approach": "gradual_buy"
+  },
+  "rebalancing_policy": {
+    "frequency": "monthly",
+    "trigger_threshold": 0.05
+  }
+}
+```
+
+---
+
+### 체크리스트
+
+**Mock 구현** (3일):
+- [ ] 기본 인터페이스
+- [ ] Mock 시장 사이클 데이터
+- [ ] Mock 섹터 전략
+- [ ] Strategic Blueprint 스키마
+
+**실제 구현** (3주):
+- [ ] 거시경제 데이터 수집
+- [ ] LLM 기반 시장 사이클 분석
+- [ ] 리스크 스탠스 로직
+- [ ] 섹터 로테이션 전략
+- [ ] 사용자 요구사항 해석
+- [ ] 전략 청사진 생성
+
+---
+
+### 핵심 개선 사항
+
+**기존 (개별 종목 시그널)**:
+- Bull/Bear 분석
+- 매수/매도 시그널
+- 목표가 제시
+
+**개선 (거시적 대전략)**:
+- 시장 사이클 분석
+- 섹터 로테이션
+- 자산 배분 방향성
+- 투자 스타일 설정
+
+**→ Portfolio Agent에게 명확한 가이드라인 제공**
+
+---
+
+## 6. 포트폴리오 에이전트 (Portfolio Agent)
 
 ### 역할
 
-- 자산 배분 최적화
-- 리밸런싱 제안
-- 성과 추적
+**전략 청사진을 구체적 포트폴리오로 구현**
 
-### Mock 구현
+- Strategic Blueprint 해석 및 제약조건 파악
+- 후보 종목 스크리닝 (섹터/스타일/시가총액 필터링)
+- Research Agent 결과 활용하여 최종 종목 선택
+- 자산 배분 최적화 (샤프 비율, 리스크 제약)
+- 리밸런싱 계획 수립 및 실행
+- 포트폴리오 성과 추적
+
+**입력**: Strategic Blueprint, 현재 포트폴리오
+**출력**: 구체적 종목 리스트 + 비중 + 매매 지시
+
+---
+
+### Phase 1: Mock 버전
 
 ```python
 class PortfolioAgent(AgentInterface):
-    """포트폴리오 에이전트 - Mock"""
+    """포트폴리오 에이전트 - Mock 버전"""
 
     @property
     def agent_id(self) -> str:
         return "portfolio_agent"
 
     async def process(self, input: AgentInput) -> AgentOutput:
-        action = input.data.get("action", "get_portfolio")
+        action = input.data.get("action", "construct")
 
-        if action == "optimize":
-            # TODO: 최적화 알고리즘
-            result = {
-                "portfolio": {
-                    "005930": 0.30,  # 삼성전자 30%
-                    "000660": 0.20,  # SK하이닉스 20%
-                    "035420": 0.15,  # NAVER 15%
-                    "cash": 0.35
-                },
-                "expected_return": 0.12,
-                "risk": 0.16,
-                "sharpe_ratio": 0.75
-            }
+        if action == "construct":
+            # 새 포트폴리오 구성
+            result = await self._mock_construct_portfolio(input)
         elif action == "rebalance":
-            # TODO: 리밸런싱 로직
-            result = {
-                "current": {"005930": 0.35, "000660": 0.15},
-                "target": {"005930": 0.30, "000660": 0.20},
-                "trades": [
-                    {"ticker": "005930", "action": "SELL", "amount": 2000000},
-                    {"ticker": "000660", "action": "BUY", "amount": 1500000}
-                ]
-            }
+            # 리밸런싱
+            result = await self._mock_rebalance(input)
         else:
-            result = {}
+            result = {"error": "Unknown action"}
 
         return self._create_output(
             request_id=input.request_id,
             status="success",
             data=result
         )
+
+    async def _mock_construct_portfolio(self, input: AgentInput) -> Dict:
+        """포트폴리오 구성 - Mock"""
+
+        blueprint = input.data.get("blueprint", {})
+        total_capital = input.data.get("total_capital", 10000000)
+
+        mock_portfolio = {
+            "portfolio_id": f"PF_{input.request_id[:8]}",
+            "total_capital": total_capital,
+
+            # 구성 종목
+            "holdings": {
+                "005930": {
+                    "name": "삼성전자",
+                    "sector": "IT",
+                    "weight": 0.25,
+                    "shares": 33,
+                    "research_score": 4.2,
+                    "reason": "IT 섹터 대표주, AI 수요 증가"
+                }
+            },
+
+            # 현금
+            "cash": {"weight": 0.25, "amount": 2500000},
+
+            # 포트폴리오 지표
+            "metrics": {
+                "expected_return": 0.128,
+                "sharpe_ratio": 0.776
+            },
+
+            # 섹터 배분
+            "sector_allocation": {
+                "IT": 0.40,
+                "반도체": 0.20,
+                "현금": 0.25
+            }
+        }
+
+        return mock_portfolio
 ```
 
-### 실제 구현 (샤프 비율 최적화)
+---
+
+### Phase 2: 실제 구현
 
 ```python
 import numpy as np
@@ -895,71 +1297,206 @@ from scipy.optimize import minimize
 class PortfolioAgent(AgentInterface):
     """포트폴리오 에이전트 - 실제 구현"""
 
-    async def optimize_allocation(
+    def __init__(
+        self,
+        strategy_agent: StrategyAgent,
+        research_agent: ResearchAgent,
+        risk_agent: RiskAgent
+    ):
+        self.strategy = strategy_agent
+        self.research = research_agent
+        self.risk = risk_agent
+
+    async def process(self, input: AgentInput) -> AgentOutput:
+        action = input.data.get("action", "construct")
+
+        if action == "construct":
+            result = await self._construct_portfolio(input)
+        elif action == "rebalance":
+            result = await self._rebalance_portfolio(input)
+        else:
+            result = {"error": "Unknown action"}
+
+        return self._create_output(
+            request_id=input.request_id,
+            status="success",
+            data=result
+        )
+
+    async def _construct_portfolio(self, input: AgentInput) -> Dict:
+        """포트폴리오 구성"""
+
+        blueprint = input.data.get("blueprint")
+        total_capital = input.data.get("total_capital", 10000000)
+
+        # 1. Strategic Blueprint 해석
+        constraints = self._parse_blueprint_constraints(blueprint)
+
+        # 2. 후보 종목 스크리닝
+        candidate_tickers = await self._screen_candidates(blueprint)
+
+        # 3. 후보 종목 분석 (Research Agent 활용)
+        analyses = await self._analyze_candidates(candidate_tickers, input)
+
+        # 4. 종목 선택
+        selected_tickers = self._select_stocks(analyses, constraints)
+
+        # 5. 자산 배분 최적화
+        optimal_weights = await self._optimize_allocation(
+            selected_tickers,
+            blueprint,
+            constraints
+        )
+
+        # 6. 포트폴리오 구성
+        portfolio = self._build_portfolio(
+            selected_tickers,
+            optimal_weights,
+            analyses,
+            total_capital
+        )
+
+        return portfolio
+
+    async def _screen_candidates(self, blueprint: Dict) -> List[str]:
+        """후보 종목 스크리닝"""
+
+        # 1. 선호 섹터 종목 리스트업
+        overweight_sectors = blueprint['sector_strategy']['overweight']
+        candidates = []
+
+        for sector in overweight_sectors:
+            sector_stocks = await self._get_sector_stocks(sector)
+            candidates.extend(sector_stocks)
+
+        # 2. 스타일 필터링
+        if blueprint['investment_style']['size'] == 'large':
+            candidates = self._filter_by_market_cap(candidates, 'large')
+
+        return candidates[:30]  # 최대 30개
+
+    async def _analyze_candidates(
         self,
         tickers: List[str],
-        total_capital: float,
-        user_profile: Dict
-    ) -> Dict:
-        """자산 배분 최적화"""
+        input: AgentInput
+    ) -> Dict[str, Dict]:
+        """후보 종목들 분석 (Research Agent 병렬 호출)"""
 
-        # 1. 과거 수익률 데이터 수집
-        returns = await self._get_historical_returns(tickers)
-
-        # 2. 공분산 행렬 계산
-        cov_matrix = returns.cov()
-
-        # 3. 샤프 비율 최대화
-        num_assets = len(tickers)
-        initial_weights = np.array([1/num_assets] * num_assets)
-
-        def negative_sharpe(weights):
-            portfolio_return = np.sum(returns.mean() * weights) * 252
-            portfolio_std = np.sqrt(
-                np.dot(weights.T, np.dot(cov_matrix * 252, weights))
+        tasks = [
+            self.research.process(
+                AgentInput(
+                    request_id=input.request_id,
+                    user_id=input.user_id,
+                    automation_level=input.automation_level,
+                    data={"ticker": ticker}
+                )
             )
-            sharpe = portfolio_return / portfolio_std
-            return -sharpe
+            for ticker in tickers
+        ]
 
-        # 제약 조건
-        constraints = (
-            {'type': 'eq', 'fun': lambda x: np.sum(x) - 1},  # 합 = 1
-        )
-
-        bounds = tuple((0, 0.3) for _ in range(num_assets))  # 최대 30%
-
-        # 최적화
-        result = minimize(
-            negative_sharpe,
-            initial_weights,
-            method='SLSQP',
-            bounds=bounds,
-            constraints=constraints
-        )
-
-        optimal_weights = result.x
+        results = await asyncio.gather(*tasks)
 
         return {
-            "portfolio": {
-                ticker: round(weight, 4)
-                for ticker, weight in zip(tickers, optimal_weights)
-            },
-            "expected_return": -result.fun,  # negative sharpe를 최소화했으므로
-            "risk": self._calculate_portfolio_risk(optimal_weights, cov_matrix)
+            ticker: result.data
+            for ticker, result in zip(tickers, results)
+        }
+
+    def _select_stocks(
+        self,
+        analyses: Dict[str, Dict],
+        constraints: Dict
+    ) -> List[str]:
+        """종목 선택 (분석 결과 기반)"""
+
+        # 평가 점수 기준 정렬
+        ranked = sorted(
+            analyses.items(),
+            key=lambda x: x[1]['overall_rating'],
+            reverse=True
+        )
+
+        # 최소 기준 충족 종목만
+        min_rating = 3.0
+        qualified = [
+            ticker for ticker, analysis in ranked
+            if analysis['overall_rating'] >= min_rating
+        ]
+
+        return qualified[:constraints.get('max_stocks', 10)]
+
+    async def _optimize_allocation(
+        self,
+        tickers: List[str],
+        blueprint: Dict,
+        constraints: Dict
+    ) -> Dict[str, float]:
+        """샤프 비율 최적화"""
+
+        # 과거 수익률 데이터
+        returns_data = await self._get_historical_returns(tickers)
+        expected_returns = returns_data.mean() * 252
+        cov_matrix = returns_data.cov() * 252
+
+        # 최적화
+        num_assets = len(tickers)
+
+        def negative_sharpe(weights):
+            portfolio_return = np.sum(expected_returns * weights)
+            portfolio_std = np.sqrt(
+                np.dot(weights.T, np.dot(cov_matrix, weights))
+            )
+            return -portfolio_return / portfolio_std if portfolio_std > 0 else 0
+
+        cons = [
+            {'type': 'eq', 'fun': lambda x: np.sum(x) - constraints['stock_ratio']}
+        ]
+
+        bounds = tuple((0.0, 0.30) for _ in range(num_assets))
+
+        result = minimize(
+            negative_sharpe,
+            [constraints['stock_ratio'] / num_assets] * num_assets,
+            method='SLSQP',
+            bounds=bounds,
+            constraints=cons
+        )
+
+        return {
+            ticker: round(weight, 4)
+            for ticker, weight in zip(tickers, result.x)
+            if weight > 0.01
         }
 ```
+
+---
 
 ### 체크리스트
 
 **Mock 구현** (2일):
 - [ ] 기본 포트폴리오 구조
-- [ ] Mock 최적화 결과
+- [ ] Mock 종목 선택
 
 **실제 구현** (3주):
+- [ ] Blueprint 해석 로직
+- [ ] 후보 종목 스크리닝
+- [ ] Research Agent 통합
 - [ ] 샤프 비율 최적화
 - [ ] 리밸런싱 알고리즘
-- [ ] 성과 추적
-- [ ] 제약 조건 처리
+- [ ] 전략 준수도 검증
+
+---
+
+### 핵심 개선 사항
+
+**기존**: 자산 배분 최적화만 담당
+
+**개선**: 전략 구현의 전 과정 책임
+- ✅ Strategic Blueprint 해석
+- ✅ 종목 스크리닝 → 분석 → 선택
+- ✅ Research Agent 결과 활용
+- ✅ 최적화 + 리밸런싱
+
+**→ Strategy Agent의 방향성을 구체적 포트폴리오로 구현**
 
 ---
 
