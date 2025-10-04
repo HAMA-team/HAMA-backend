@@ -1,5 +1,5 @@
-"""Research Agent Module - 종목 심층 분석"""
+"""Research Agent Module - 종목 심층 분석 (LangGraph 서브그래프)"""
 
-from src.agents.research.research_agent import ResearchAgent, research_agent
+from .graph import research_subgraph
 
-__all__ = ["ResearchAgent", "research_agent"]
+__all__ = ["research_subgraph"]

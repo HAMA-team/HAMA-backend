@@ -11,12 +11,12 @@ from langgraph.types import interrupt
 from langchain_core.messages import AIMessage, HumanMessage
 import logging
 
-from src.agents.research import research_agent
-from src.agents.strategy import strategy_agent
-from src.agents.risk import risk_agent
-from src.agents.portfolio import portfolio_agent
-from src.agents.monitoring import monitoring_agent
-from src.agents.education import education_agent
+from src.agents.research import research_subgraph  # LangGraph 서브그래프
+from src.agents.strategy import strategy_agent  # TODO: 서브그래프로 변환
+from src.agents.risk import risk_agent  # TODO: 서브그래프로 변환
+from src.agents.portfolio import portfolio_agent  # TODO: 서브그래프로 변환
+from src.agents.monitoring import monitoring_agent  # TODO: 서브그래프로 변환
+from src.agents.education import education_agent  # TODO: 서브그래프로 변환
 from src.schemas.agent import AgentInput, AgentOutput
 from src.schemas.graph_state import GraphState
 
@@ -107,15 +107,84 @@ def determine_agents_node(state: GraphState) -> GraphState:
     }
 
 
+async def research_call_node(state: GraphState) -> GraphState:
+    """
+    Research Agent 서브그래프 호출 노드
+
+    GraphState → ResearchState 변환 → 서브그래프 실행 → 결과 저장
+    """
+    # research_agent가 agents_to_call에 없으면 스킵
+    if "research_agent" not in state.get("agents_to_call", []):
+        logger.info("⏭️ [Research] agents_to_call에 없음, 스킵")
+        return state
+
+    # messages에서 query 추출
+    last_message = state["messages"][-1]
+    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
+
+    # stock_code 추출 (간단한 파싱)
+    # TODO: 더 정교한 NER 또는 LLM 기반 추출
+    stock_code = "005930"  # 임시: 삼성전자 하드코딩
+
+    # ResearchState 구성
+    research_input = {
+        "stock_code": stock_code,
+        "request_id": state["conversation_id"],
+        "price_data": None,
+        "financial_data": None,
+        "company_data": None,
+        "bull_analysis": None,
+        "bear_analysis": None,
+        "consensus": None,
+        "error": None,
+    }
+
+    logger.info(f"🔬 [Research] 서브그래프 호출: {stock_code}")
+
+    # 서브그래프 실행
+    result = await research_subgraph.ainvoke(research_input)
+
+    # 결과 저장
+    research_data = {
+        "stock_code": stock_code,
+        "stock_name": result.get("company_data", {}).get("corp_name", stock_code) if result.get("company_data") else stock_code,
+        "rating": result.get("consensus", {}).get("confidence", 3),
+        "recommendation": result.get("consensus", {}).get("recommendation", "HOLD"),
+        "analysis": result.get("consensus", {}),
+        "raw_data": {
+            "price": result.get("price_data"),
+            "financial": result.get("financial_data"),
+            "company": result.get("company_data"),
+        }
+    }
+
+    logger.info(f"✅ [Research] 서브그래프 완료: {research_data.get('recommendation')}")
+
+    return {
+        **state,
+        "agent_results": {
+            **state.get("agent_results", {}),
+            "research_agent": research_data
+        },
+        "agents_called": state.get("agents_called", []) + ["research_agent"],
+    }
+
+
 async def call_agents_node(state: GraphState) -> GraphState:
     """
-    에이전트 호출 노드
-    결정된 에이전트들을 병렬로 호출
+    Legacy 에이전트 호출 노드 (서브그래프 미전환 에이전트용)
+
+    TODO: 모든 에이전트 서브그래프 전환 후 제거
     """
     agents_to_call = state["agents_to_call"]
 
+    # research_agent는 이미 별도 노드로 처리됨
+    agents_to_call = [a for a in agents_to_call if a != "research_agent"]
+
+    if not agents_to_call:
+        return state
+
     agent_registry = {
-        "research_agent": research_agent,
         "strategy_agent": strategy_agent,
         "risk_agent": risk_agent,
         "portfolio_agent": portfolio_agent,
@@ -138,7 +207,7 @@ async def call_agents_node(state: GraphState) -> GraphState:
     )
 
     # 에이전트 호출
-    results = {}
+    results = state.get("agent_results", {})
     for agent_id in agents_to_call:
         agent = agent_registry.get(agent_id)
         if agent:
@@ -149,12 +218,12 @@ async def call_agents_node(state: GraphState) -> GraphState:
             except Exception as e:
                 logger.error(f"Agent {agent_id} failed: {str(e)}")
 
-    logger.info(f"✅ 호출 완료된 에이전트: {list(results.keys())}")
+    logger.info(f"✅ Legacy 에이전트 호출 완료: {list(results.keys())}")
 
     return {
         **state,
         "agent_results": results,
-        "agents_called": list(results.keys()),
+        "agents_called": state.get("agents_called", []) + list(results.keys()),
     }
 
 
@@ -408,7 +477,7 @@ def route_after_determine_agents(state: GraphState) -> str:
     의도에 따라 다음 노드 결정
 
     TRADE_EXECUTION → 매매 실행 플로우
-    기타 → 일반 에이전트 호출
+    기타 → Research 서브그래프 호출 (일반 플로우 시작)
     """
     intent = state.get("intent")
 
@@ -416,8 +485,8 @@ def route_after_determine_agents(state: GraphState) -> str:
         logger.info("🔀 [Router] 매매 실행 플로우로 분기")
         return "prepare_trade"
     else:
-        logger.info("🔀 [Router] 일반 에이전트 호출 플로우")
-        return "call_agents"
+        logger.info("🔀 [Router] 일반 에이전트 호출 플로우 (Research 서브그래프)")
+        return "research_call"
 
 
 def should_continue(state: GraphState) -> str:
@@ -446,7 +515,8 @@ def build_graph(automation_level: int = 2):
     # 기본 노드
     workflow.add_node("analyze_intent", analyze_intent_node)
     workflow.add_node("determine_agents", determine_agents_node)
-    workflow.add_node("call_agents", call_agents_node)
+    workflow.add_node("research_call", research_call_node)  # Research 서브그래프
+    workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
     workflow.add_node("check_risk", check_risk_node)
     workflow.add_node("check_hitl", check_hitl_node)
     workflow.add_node("aggregate_results", aggregate_results_node)
@@ -460,17 +530,18 @@ def build_graph(automation_level: int = 2):
     workflow.set_entry_point("analyze_intent")
     workflow.add_edge("analyze_intent", "determine_agents")
 
-    # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 일반 플로우
+    # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 Research 서브그래프
     workflow.add_conditional_edges(
         "determine_agents",
         route_after_determine_agents,
         {
             "prepare_trade": "prepare_trade",  # 매매 실행 플로우
-            "call_agents": "call_agents",      # 일반 플로우
+            "research_call": "research_call",  # 일반 플로우 (Research 서브그래프)
         }
     )
 
-    # 일반 플로우
+    # 일반 플로우: Research → Legacy 에이전트 → Risk → HITL → Aggregate
+    workflow.add_edge("research_call", "call_agents")
     workflow.add_edge("call_agents", "check_risk")
     workflow.add_edge("check_risk", "check_hitl")
     workflow.add_edge("check_hitl", "aggregate_results")
