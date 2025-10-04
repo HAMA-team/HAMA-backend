@@ -1,5 +1,5 @@
-"""Strategy Agent Module - 거시 대전략 수립"""
+"""Strategy Agent Module - 거시 대전략 수립 (LangGraph 서브그래프)"""
 
-from src.agents.strategy.strategy_agent import StrategyAgent, strategy_agent
+from .graph import strategy_subgraph
 
-__all__ = ["StrategyAgent", "strategy_agent"]
+__all__ = ["strategy_subgraph"]

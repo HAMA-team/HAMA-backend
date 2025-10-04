@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 import logging
 
 from src.agents.research import research_subgraph  # LangGraph 서브그래프
-from src.agents.strategy import strategy_agent  # TODO: 서브그래프로 변환
+from src.agents.strategy import strategy_subgraph  # LangGraph 서브그래프
 from src.agents.risk import risk_agent  # TODO: 서브그래프로 변환
 from src.agents.portfolio import portfolio_agent  # TODO: 서브그래프로 변환
 from src.agents.monitoring import monitoring_agent  # TODO: 서브그래프로 변환
@@ -170,6 +170,58 @@ async def research_call_node(state: GraphState) -> GraphState:
     }
 
 
+async def strategy_call_node(state: GraphState) -> GraphState:
+    """
+    Strategy Agent 서브그래프 호출 노드
+
+    GraphState → StrategyState 변환 → 서브그래프 실행 → 결과 저장
+    """
+    # strategy_agent가 agents_to_call에 없으면 스킵
+    if "strategy_agent" not in state.get("agents_to_call", []):
+        logger.info("⏭️ [Strategy] agents_to_call에 없음, 스킵")
+        return state
+
+    logger.info(f"🎯 [Strategy] 서브그래프 호출")
+
+    # StrategyState 구성
+    strategy_input = {
+        "request_id": state["conversation_id"],
+        "user_preferences": {},  # TODO: 사용자 프로필에서 가져오기
+        "risk_tolerance": "moderate",  # TODO: 사용자 설정에서 가져오기
+        "market_outlook": None,
+        "sector_strategy": None,
+        "asset_allocation": None,
+        "blueprint": None,
+        "error": None,
+    }
+
+    # 서브그래프 실행
+    result = await strategy_subgraph.ainvoke(strategy_input)
+
+    # 결과 저장
+    blueprint = result.get("blueprint", {})
+    strategy_data = {
+        "action": "HOLD",  # TODO: blueprint에서 추출
+        "confidence": blueprint.get("confidence_score", 0.75),
+        "blueprint": blueprint,
+        "summary": (
+            f"{blueprint.get('market_outlook', {}).get('cycle', '확장')} 국면, "
+            f"주식 {blueprint.get('asset_allocation', {}).get('stocks', 0.7):.0%}"
+        )
+    }
+
+    logger.info(f"✅ [Strategy] 서브그래프 완료")
+
+    return {
+        **state,
+        "agent_results": {
+            **state.get("agent_results", {}),
+            "strategy_agent": strategy_data
+        },
+        "agents_called": state.get("agents_called", []) + ["strategy_agent"],
+    }
+
+
 async def call_agents_node(state: GraphState) -> GraphState:
     """
     Legacy 에이전트 호출 노드 (서브그래프 미전환 에이전트용)
@@ -178,14 +230,13 @@ async def call_agents_node(state: GraphState) -> GraphState:
     """
     agents_to_call = state["agents_to_call"]
 
-    # research_agent는 이미 별도 노드로 처리됨
-    agents_to_call = [a for a in agents_to_call if a != "research_agent"]
+    # research_agent, strategy_agent는 이미 별도 노드로 처리됨
+    agents_to_call = [a for a in agents_to_call if a not in ["research_agent", "strategy_agent"]]
 
     if not agents_to_call:
         return state
 
     agent_registry = {
-        "strategy_agent": strategy_agent,
         "risk_agent": risk_agent,
         "portfolio_agent": portfolio_agent,
         "monitoring_agent": monitoring_agent,
@@ -516,6 +567,7 @@ def build_graph(automation_level: int = 2):
     workflow.add_node("analyze_intent", analyze_intent_node)
     workflow.add_node("determine_agents", determine_agents_node)
     workflow.add_node("research_call", research_call_node)  # Research 서브그래프
+    workflow.add_node("strategy_call", strategy_call_node)  # Strategy 서브그래프
     workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
     workflow.add_node("check_risk", check_risk_node)
     workflow.add_node("check_hitl", check_hitl_node)
@@ -540,8 +592,9 @@ def build_graph(automation_level: int = 2):
         }
     )
 
-    # 일반 플로우: Research → Legacy 에이전트 → Risk → HITL → Aggregate
-    workflow.add_edge("research_call", "call_agents")
+    # 일반 플로우: Research → Strategy → Legacy 에이전트 → Risk → HITL → Aggregate
+    workflow.add_edge("research_call", "strategy_call")
+    workflow.add_edge("strategy_call", "call_agents")
     workflow.add_edge("call_agents", "check_risk")
     workflow.add_edge("check_risk", "check_hitl")
     workflow.add_edge("check_hitl", "aggregate_results")
