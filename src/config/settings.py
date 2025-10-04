@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     MAX_TOKENS: int = 4000
     LLM_TEMPERATURE: float = 0.1
 
+    # GPT-5 nano Settings (Intent & Supervisor)
+    INTENT_MODEL: str = "gpt-5-nano"
+    SUPERVISOR_MODEL: str = "gpt-5-nano"
+    INTENT_REASONING_EFFORT: str = "minimal"
+    SUPERVISOR_REASONING_EFFORT: str = "low"
+
     # DART API
     DART_API_KEY: str
 

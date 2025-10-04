@@ -17,6 +17,7 @@ from src.agents.risk import risk_agent  # TODO: 서브그래프로 변환
 from src.agents.portfolio import portfolio_agent  # TODO: 서브그래프로 변환
 from src.agents.monitoring import monitoring_agent  # TODO: 서브그래프로 변환
 from src.agents.education import education_agent  # TODO: 서브그래프로 변환
+from src.agents.master_nodes import llm_intent_analysis_node, llm_supervisor_node  # LLM 기반 노드
 from src.schemas.agent import AgentInput, AgentOutput
 from src.schemas.graph_state import GraphState
 
@@ -76,7 +77,6 @@ def analyze_intent_node(state: GraphState) -> GraphState:
     logger.info(f"🔍 의도 감지: {intent} (쿼리: '{query}')")
 
     return {
-        **state,
         "intent": intent,
     }
 
@@ -102,7 +102,6 @@ def determine_agents_node(state: GraphState) -> GraphState:
     logger.info(f"🎯 호출할 에이전트: {agents}")
 
     return {
-        **state,
         "agents_to_call": agents,
     }
 
@@ -116,7 +115,7 @@ async def research_call_node(state: GraphState) -> GraphState:
     # research_agent가 agents_to_call에 없으면 스킵
     if "research_agent" not in state.get("agents_to_call", []):
         logger.info("⏭️ [Research] agents_to_call에 없음, 스킵")
-        return state
+        return {}  # 아무것도 변경하지 않음
 
     # messages에서 query 추출
     last_message = state["messages"][-1]
@@ -160,13 +159,10 @@ async def research_call_node(state: GraphState) -> GraphState:
 
     logger.info(f"✅ [Research] 서브그래프 완료: {research_data.get('recommendation')}")
 
+    # 변경된 필드만 반환 (operator.or_ reducer 사용)
     return {
-        **state,
-        "agent_results": {
-            **state.get("agent_results", {}),
-            "research_agent": research_data
-        },
-        "agents_called": state.get("agents_called", []) + ["research_agent"],
+        "agent_results": {"research_agent": research_data},
+        "agents_called": ["research_agent"],
     }
 
 
@@ -179,7 +175,7 @@ async def strategy_call_node(state: GraphState) -> GraphState:
     # strategy_agent가 agents_to_call에 없으면 스킵
     if "strategy_agent" not in state.get("agents_to_call", []):
         logger.info("⏭️ [Strategy] agents_to_call에 없음, 스킵")
-        return state
+        return {}  # 아무것도 변경하지 않음
 
     logger.info(f"🎯 [Strategy] 서브그래프 호출")
 
@@ -212,13 +208,10 @@ async def strategy_call_node(state: GraphState) -> GraphState:
 
     logger.info(f"✅ [Strategy] 서브그래프 완료")
 
+    # 변경된 필드만 반환 (operator.or_ reducer 사용)
     return {
-        **state,
-        "agent_results": {
-            **state.get("agent_results", {}),
-            "strategy_agent": strategy_data
-        },
-        "agents_called": state.get("agents_called", []) + ["strategy_agent"],
+        "agent_results": {"strategy_agent": strategy_data},
+        "agents_called": ["strategy_agent"],
     }
 
 
@@ -234,7 +227,7 @@ async def call_agents_node(state: GraphState) -> GraphState:
     agents_to_call = [a for a in agents_to_call if a not in ["research_agent", "strategy_agent"]]
 
     if not agents_to_call:
-        return state
+        return {}  # 아무것도 변경하지 않음
 
     agent_registry = {
         "risk_agent": risk_agent,
@@ -271,10 +264,10 @@ async def call_agents_node(state: GraphState) -> GraphState:
 
     logger.info(f"✅ Legacy 에이전트 호출 완료: {list(results.keys())}")
 
+    # 변경된 필드만 반환
     return {
-        **state,
         "agent_results": results,
-        "agents_called": state.get("agents_called", []) + list(results.keys()),
+        "agents_called": list(results.keys()),
     }
 
 
@@ -294,7 +287,6 @@ def check_risk_node(state: GraphState) -> GraphState:
     logger.info(f"⚠️ 리스크 레벨: {risk_level}")
 
     return {
-        **state,
         "risk_level": risk_level,
     }
 
@@ -332,7 +324,6 @@ def check_hitl_node(state: GraphState) -> GraphState:
     logger.info(f"🤝 HITL 필요: {hitl_required} (레벨={automation_level}, 의도={intent})")
 
     return {
-        **state,
         "hitl_required": hitl_required,
     }
 
@@ -366,7 +357,6 @@ def prepare_trade_node(state: GraphState) -> GraphState:
     logger.info(f"✅ [Trade] 주문 생성: {order_id}")
 
     return {
-        **state,
         "trade_prepared": True,
         "trade_order_id": order_id,
     }
@@ -407,7 +397,6 @@ def approval_trade_node(state: GraphState) -> GraphState:
     # db.update(order_id, {"approved": True, "approved_by": approval.get("user_id")})
 
     return {
-        **state,
         "trade_approved": True,
     }
 
@@ -455,7 +444,6 @@ def execute_trade_node(state: GraphState) -> GraphState:
     logger.info(f"✅ [Trade] 거래 실행 완료: {result}")
 
     return {
-        **state,
         "trade_executed": True,
         "trade_result": result,
     }
@@ -514,7 +502,6 @@ def aggregate_results_node(state: GraphState) -> GraphState:
     ai_message = AIMessage(content=summary)
 
     return {
-        **state,
         "messages": [ai_message],  # add_messages reducer가 자동 병합
         "summary": summary,
         "final_response": final_response,
@@ -563,9 +550,9 @@ def build_graph(automation_level: int = 2):
     # 그래프 생성 - LangGraph 표준 GraphState 사용
     workflow = StateGraph(GraphState)
 
-    # 기본 노드
-    workflow.add_node("analyze_intent", analyze_intent_node)
-    workflow.add_node("determine_agents", determine_agents_node)
+    # 기본 노드 (LLM 기반)
+    workflow.add_node("llm_intent_analysis", llm_intent_analysis_node)  # GPT-5 nano Intent 분석
+    workflow.add_node("llm_supervisor", llm_supervisor_node)  # GPT-5 nano Supervisor
     workflow.add_node("research_call", research_call_node)  # Research 서브그래프
     workflow.add_node("strategy_call", strategy_call_node)  # Strategy 서브그래프
     workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
@@ -578,13 +565,13 @@ def build_graph(automation_level: int = 2):
     workflow.add_node("approval_trade", approval_trade_node)
     workflow.add_node("execute_trade", execute_trade_node)
 
-    # 기본 플로우
-    workflow.set_entry_point("analyze_intent")
-    workflow.add_edge("analyze_intent", "determine_agents")
+    # 기본 플로우 (LLM 기반)
+    workflow.set_entry_point("llm_intent_analysis")  # GPT-5 nano Intent 분석부터 시작
+    workflow.add_edge("llm_intent_analysis", "llm_supervisor")  # Intent → Supervisor
 
     # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 Research 서브그래프
     workflow.add_conditional_edges(
-        "determine_agents",
+        "llm_supervisor",  # Supervisor 노드 이후 분기
         route_after_determine_agents,
         {
             "prepare_trade": "prepare_trade",  # 매매 실행 플로우

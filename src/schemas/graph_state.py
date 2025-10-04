@@ -43,11 +43,23 @@ class GraphState(TypedDict):
     intent: Optional[str]
     """사용자 의도 (stock_analysis, trade_execution 등)"""
 
+    stock_code: Optional[str]
+    """종목 코드 (LLM이 추출)"""
+
+    stock_name: Optional[str]
+    """종목 이름 (LLM이 추출)"""
+
+    intent_confidence: Optional[float]
+    """Intent 분석 신뢰도 (0.0-1.0)"""
+
     agents_to_call: List[str]
     """호출할 에이전트 목록"""
 
     agents_called: Annotated[List[str], operator.add]
     """호출 완료된 에이전트 목록 (누적)"""
+
+    supervisor_reasoning: Optional[str]
+    """Supervisor의 에이전트 선택 이유"""
 
     # ==================== 에이전트 결과 ====================
 
