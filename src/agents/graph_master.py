@@ -5,6 +5,9 @@ StateGraph를 사용한 에이전트 오케스트레이션
 """
 from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.types import interrupt
 import operator
 import logging
 
@@ -45,6 +48,13 @@ class AgentState(TypedDict):
     # 리스크 및 HITL
     risk_level: Optional[str]
     hitl_required: bool
+
+    # 매매 실행 상태 플래그 (패턴 1: 상태 플래그)
+    trade_prepared: bool
+    trade_approved: bool
+    trade_executed: bool
+    trade_order_id: Optional[str]
+    trade_result: Optional[Dict[str, Any]]
 
     # 최종 결과
     summary: Optional[str]
@@ -236,6 +246,128 @@ def check_hitl_node(state: AgentState) -> AgentState:
     }
 
 
+# ==================== Trade Execution Nodes (HITL 패턴) ====================
+
+def prepare_trade_node(state: AgentState) -> AgentState:
+    """
+    1단계: 거래 준비 (부작용)
+
+    패턴 2: 노드 분리 - interrupt 전 부작용 격리
+    """
+    # 재실행 방지 플래그 체크
+    if state.get("trade_prepared"):
+        logger.info("⏭️ [Trade] 이미 준비됨, 스킵")
+        return state
+
+    logger.info("📝 [Trade] 거래 준비 중...")
+
+    # TODO: 실제 DB에 주문 생성
+    # order_id = db.create_order({
+    #     "stock": state["query"],  # 실제로는 파싱 필요
+    #     "quantity": 10,
+    #     "status": "pending"
+    # })
+
+    # Mock 구현
+    import uuid
+    order_id = f"ORDER_{str(uuid.uuid4())[:8]}"
+
+    logger.info(f"✅ [Trade] 주문 생성: {order_id}")
+
+    return {
+        **state,
+        "trade_prepared": True,
+        "trade_order_id": order_id,
+    }
+
+
+def approval_trade_node(state: AgentState) -> AgentState:
+    """
+    2단계: HITL 승인 (interrupt 발생)
+
+    패턴 2: 노드 분리 - interrupt만 포함, 부작용 없음
+    이 노드는 재실행되어도 안전함
+    """
+    # 이미 승인되었으면 스킵
+    if state.get("trade_approved"):
+        logger.info("⏭️ [Trade] 이미 승인됨, 스킵")
+        return state
+
+    logger.info("🔔 [Trade] 사용자 승인 요청 중...")
+
+    order_id = state.get("trade_order_id", "UNKNOWN")
+
+    # 🔴 Interrupt 발생 - 사용자 승인 대기
+    approval = interrupt({
+        "type": "trade_approval",
+        "order_id": order_id,
+        "query": state["query"],
+        "automation_level": state["automation_level"],
+        "message": f"매매 주문 '{order_id}'을(를) 승인하시겠습니까?"
+    })
+
+    logger.info(f"✅ [Trade] 승인 완료: {approval}")
+
+    # TODO: DB 업데이트
+    # db.update(order_id, {"approved": True, "approved_by": approval.get("user_id")})
+
+    return {
+        **state,
+        "trade_approved": True,
+    }
+
+
+def execute_trade_node(state: AgentState) -> AgentState:
+    """
+    3단계: 거래 실행 (부작용)
+
+    패턴 3: 멱등성 보장 - 중복 실행 방지
+    """
+    # 이미 실행되었으면 스킵
+    if state.get("trade_executed"):
+        logger.info("⏭️ [Trade] 이미 실행됨, 스킵")
+        return state
+
+    order_id = state.get("trade_order_id")
+
+    # 승인 확인
+    if not state.get("trade_approved"):
+        logger.warning("⚠️ [Trade] 승인되지 않음, 실행 불가")
+        return state
+
+    logger.info(f"💰 [Trade] 거래 실행 중... (주문: {order_id})")
+
+    # TODO: 멱등성 체크
+    # existing = db.get_order(order_id)
+    # if existing and existing["status"] == "executed":
+    #     return {...state, "trade_result": existing["result"]}
+
+    # TODO: 실제 API 호출 (한국투자증권)
+    # with db.transaction():
+    #     result = kis_api.execute_trade(...)
+    #     db.update(order_id, {"status": "executed", "result": result})
+
+    # Mock 실행
+    result = {
+        "order_id": order_id,
+        "status": "executed",
+        "executed_at": "2025-10-04 10:30:00",
+        "price": 70000,
+        "quantity": 10,
+        "total": 700000
+    }
+
+    logger.info(f"✅ [Trade] 거래 실행 완료: {result}")
+
+    return {
+        **state,
+        "trade_executed": True,
+        "trade_result": result,
+    }
+
+
+# ==================== Aggregation ====================
+
 def aggregate_results_node(state: AgentState) -> AgentState:
     """
     결과 통합 노드
@@ -263,6 +395,11 @@ def aggregate_results_node(state: AgentState) -> AgentState:
         risk_level = risk.get("risk_level", "N/A")
         summary_parts.append(f"리스크 수준: {risk_level}")
 
+    # 매매 실행 결과 포함
+    if state.get("trade_executed") and state.get("trade_result"):
+        trade = state["trade_result"]
+        summary_parts.append(f"매매 실행 완료 (주문: {trade.get('order_id')})")
+
     summary = " | ".join(summary_parts) if summary_parts else "분석 완료"
 
     # 최종 응답 구성
@@ -273,6 +410,7 @@ def aggregate_results_node(state: AgentState) -> AgentState:
         "agents_called": state.get("agents_called", []),
         "hitl_required": state.get("hitl_required", False),
         "risk_level": state.get("risk_level"),
+        "trade_result": state.get("trade_result"),  # 매매 결과 추가
     }
 
     return {
@@ -284,6 +422,23 @@ def aggregate_results_node(state: AgentState) -> AgentState:
 
 # ==================== Router Functions ====================
 
+def route_after_determine_agents(state: AgentState) -> str:
+    """
+    의도에 따라 다음 노드 결정
+
+    TRADE_EXECUTION → 매매 실행 플로우
+    기타 → 일반 에이전트 호출
+    """
+    intent = state.get("intent")
+
+    if intent == IntentCategory.TRADE_EXECUTION:
+        logger.info("🔀 [Router] 매매 실행 플로우로 분기")
+        return "prepare_trade"
+    else:
+        logger.info("🔀 [Router] 일반 에이전트 호출 플로우")
+        return "call_agents"
+
+
 def should_continue(state: AgentState) -> str:
     """
     다음 노드 결정
@@ -294,14 +449,20 @@ def should_continue(state: AgentState) -> str:
 
 # ==================== Build Graph ====================
 
-def build_graph() -> StateGraph:
+def build_graph(automation_level: int = 2):
     """
     LangGraph StateGraph 구성
+
+    Args:
+        automation_level: 자동화 레벨 (1-3)
+            - Level 1 (Pilot): 거의 자동
+            - Level 2 (Copilot): 매매/리밸런싱 승인 필요 (기본값)
+            - Level 3 (Advisor): 모든 결정 승인 필요
     """
     # 그래프 생성
     workflow = StateGraph(AgentState)
 
-    # 노드 추가
+    # 기본 노드
     workflow.add_node("analyze_intent", analyze_intent_node)
     workflow.add_node("determine_agents", determine_agents_node)
     workflow.add_node("call_agents", call_agents_node)
@@ -309,28 +470,77 @@ def build_graph() -> StateGraph:
     workflow.add_node("check_hitl", check_hitl_node)
     workflow.add_node("aggregate_results", aggregate_results_node)
 
-    # 엣지 추가 (플로우 정의)
+    # 매매 실행 노드 (3단계 분리)
+    workflow.add_node("prepare_trade", prepare_trade_node)
+    workflow.add_node("approval_trade", approval_trade_node)
+    workflow.add_node("execute_trade", execute_trade_node)
+
+    # 기본 플로우
     workflow.set_entry_point("analyze_intent")
     workflow.add_edge("analyze_intent", "determine_agents")
-    workflow.add_edge("determine_agents", "call_agents")
+
+    # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 일반 플로우
+    workflow.add_conditional_edges(
+        "determine_agents",
+        route_after_determine_agents,
+        {
+            "prepare_trade": "prepare_trade",  # 매매 실행 플로우
+            "call_agents": "call_agents",      # 일반 플로우
+        }
+    )
+
+    # 일반 플로우
     workflow.add_edge("call_agents", "check_risk")
     workflow.add_edge("check_risk", "check_hitl")
     workflow.add_edge("check_hitl", "aggregate_results")
+
+    # 매매 실행 플로우
+    workflow.add_edge("prepare_trade", "approval_trade")
+    workflow.add_edge("approval_trade", "execute_trade")
+    workflow.add_edge("execute_trade", "aggregate_results")
+
+    # 종료
     workflow.add_edge("aggregate_results", END)
 
+    # Checkpointer 설정
+    # TODO: Production에서는 AsyncSqliteSaver 사용
+    # checkpointer = AsyncSqliteSaver.from_conn_string("data/checkpoints.db")
+    checkpointer = MemorySaver()  # 테스트용
+
+    # 자동화 레벨별 interrupt 설정
+    interrupt_nodes = []
+
+    if automation_level >= 2:  # Copilot (기본값)
+        interrupt_nodes.append("approval_trade")  # 매매 승인 필요
+
+    # TODO: Level 3 (Advisor)는 추가 interrupt 필요
+    # if automation_level == 3:
+    #     interrupt_nodes.extend(["create_strategy", "build_portfolio"])
+
+    logger.info(f"🔧 [Graph] Checkpointer 설정 완료")
+    logger.info(f"🔧 [Graph] Interrupt 노드: {interrupt_nodes}")
+
     # 그래프 컴파일
-    app = workflow.compile()
+    app = workflow.compile(
+        checkpointer=checkpointer,
+        interrupt_before=interrupt_nodes if interrupt_nodes else None
+    )
 
     return app
 
 
-# Global compiled graph
-graph_app = build_graph()
+# Global compiled graph (Level 2 기본값)
+graph_app = build_graph(automation_level=2)
 
 
 # ==================== Main Interface ====================
 
-async def run_graph(query: str, automation_level: int = 2, request_id: str = None) -> Dict[str, Any]:
+async def run_graph(
+    query: str,
+    automation_level: int = 2,
+    request_id: str = None,
+    thread_id: str = None
+) -> Dict[str, Any]:
     """
     그래프 실행 함수
 
@@ -338,6 +548,7 @@ async def run_graph(query: str, automation_level: int = 2, request_id: str = Non
         query: 사용자 질의
         automation_level: 자동화 레벨 (1-3)
         request_id: 요청 ID
+        thread_id: 대화 스레드 ID (HITL 재개 시 필요)
 
     Returns:
         최종 응답 딕셔너리
@@ -346,6 +557,19 @@ async def run_graph(query: str, automation_level: int = 2, request_id: str = Non
 
     if not request_id:
         request_id = str(uuid.uuid4())
+
+    if not thread_id:
+        thread_id = request_id  # 기본값: request_id를 thread_id로 사용
+
+    # 자동화 레벨에 맞는 그래프 빌드
+    app = build_graph(automation_level=automation_level)
+
+    # Checkpointer 설정
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+        }
+    }
 
     # 초기 상태
     initial_state = {
@@ -358,11 +582,18 @@ async def run_graph(query: str, automation_level: int = 2, request_id: str = Non
         "agents_called": [],
         "risk_level": None,
         "hitl_required": False,
+        # 매매 실행 플래그
+        "trade_prepared": False,
+        "trade_approved": False,
+        "trade_executed": False,
+        "trade_order_id": None,
+        "trade_result": None,
+        # 결과
         "summary": None,
         "final_response": None,
     }
 
     # 그래프 실행
-    result = await graph_app.ainvoke(initial_state)
+    result = await app.ainvoke(initial_state, config=config)
 
     return result.get("final_response", {})
