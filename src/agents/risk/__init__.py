@@ -5,4 +5,7 @@ Risk Agent - LangGraph 서브그래프
 """
 from src.agents.risk.graph import risk_subgraph
 
-__all__ = ["risk_subgraph"]
+# Supervisor 패턴용 export (이미 컴파일된 서브그래프)
+risk_agent = risk_subgraph
+
+__all__ = ["risk_agent"]

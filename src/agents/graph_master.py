@@ -1,604 +1,165 @@
 """
-LangGraph 기반 마스터 에이전트
+LangGraph Supervisor 패턴 기반 마스터 에이전트
 
-StateGraph를 사용한 에이전트 오케스트레이션
+Master Agent의 역할 (순수 조율자):
+1. 사용자 질의를 LLM으로 분석
+2. 적절한 에이전트들 선택 (LLM 기반 동적 라우팅)
+3. 에이전트 실행 (병렬 가능)
+4. 결과 통합
+
+중요: Master는 비즈니스 로직을 수행하지 않음!
+      모든 실제 작업은 서브그래프(에이전트)가 수행
+      HITL도 각 서브그래프 내부에서 처리
 """
-from typing import List, Dict, Any, Optional
-from langgraph.graph import StateGraph, END
+from typing import Dict, Any
+from langgraph_supervisor import create_supervisor
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.types import interrupt
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
 import logging
 
-from src.agents.research import research_subgraph  # LangGraph 서브그래프
-from src.agents.strategy import strategy_subgraph  # LangGraph 서브그래프
-from src.agents.risk import risk_subgraph  # LangGraph 서브그래프
-from src.agents.portfolio import portfolio_agent  # TODO: 서브그래프로 변환
-from src.agents.monitoring import monitoring_agent  # TODO: 서브그래프로 변환
-from src.agents.education import education_agent  # TODO: 서브그래프로 변환
-from src.agents.master_nodes import llm_intent_analysis_node, llm_supervisor_node  # LLM 기반 노드
-from src.schemas.agent import AgentInput, AgentOutput
-from src.schemas.graph_state import GraphState
+# Compiled Agents import
+from src.agents.research import research_agent
+from src.agents.strategy import strategy_agent
+from src.agents.risk import risk_agent
+from src.agents.trading import trading_agent
+
+# Legacy agents (TODO: 서브그래프로 전환)
+from src.agents.portfolio import portfolio_agent
+from src.agents.monitoring import monitoring_agent
+from src.agents.education import education_agent
 
 logger = logging.getLogger(__name__)
 
 
-# ==================== Node Functions ====================
+# ==================== Supervisor 구성 ====================
 
-async def research_call_node(state: GraphState) -> GraphState:
+def build_supervisor(automation_level: int = 2):
     """
-    Research Agent 서브그래프 호출 노드
+    LangGraph Supervisor 패턴 기반 Master Agent
 
-    GraphState → ResearchState 변환 → 서브그래프 실행 → 결과 저장
+    Args:
+        automation_level: 자동화 레벨
+            - 1 (Pilot): 거의 자동
+            - 2 (Copilot): 매매/리밸런싱 승인 필요 (기본값)
+            - 3 (Advisor): 모든 결정 승인 필요
+
+    Returns:
+        StateGraph: Supervisor 그래프
     """
-    # research_agent가 agents_to_call에 없으면 스킵
-    if "research_agent" not in state.get("agents_to_call", []):
-        logger.info("⏭️ [Research] agents_to_call에 없음, 스킵")
-        return {}  # 아무것도 변경하지 않음
+    # LLM 초기화
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-    # messages에서 query 추출
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
+    # Supervisor 프롬프트
+    supervisor_prompt = f"""당신은 투자 에이전트 팀을 관리하는 Supervisor입니다.
 
-    # stock_code 추출 (간단한 파싱)
-    # TODO: 더 정교한 NER 또는 LLM 기반 추출
-    stock_code = "005930"  # 임시: 삼성전자 하드코딩
+**사용 가능한 에이전트:**
 
-    # ResearchState 구성
-    research_input = {
-        "stock_code": stock_code,
-        "request_id": state["conversation_id"],
-        "price_data": None,
-        "financial_data": None,
-        "company_data": None,
-        "bull_analysis": None,
-        "bear_analysis": None,
-        "consensus": None,
-        "error": None,
-    }
+1. **research_agent** (종목 분석)
+   - 기업 재무 분석 (재무제표, 비율)
+   - 기술적 분석 (차트, 지표)
+   - 뉴스 감정 분석
+   - 종합 평가 및 등급 산출
 
-    logger.info(f"🔬 [Research] 서브그래프 호출: {stock_code}")
+2. **strategy_agent** (투자 전략)
+   - 시장 사이클 분석
+   - 섹터 로테이션 전략
+   - 자산 배분 결정
+   - Strategic Blueprint 생성
 
-    # 서브그래프 실행
-    result = await research_subgraph.ainvoke(research_input)
+3. **risk_agent** (리스크 평가)
+   - 포트폴리오 리스크 측정 (VaR, 변동성)
+   - 집중도 리스크 분석
+   - 리스크 경고 및 권고사항 생성
 
-    # 결과 저장
-    research_data = {
-        "stock_code": stock_code,
-        "stock_name": result.get("company_data", {}).get("corp_name", stock_code) if result.get("company_data") else stock_code,
-        "rating": result.get("consensus", {}).get("confidence", 3),
-        "recommendation": result.get("consensus", {}).get("recommendation", "HOLD"),
-        "analysis": result.get("consensus", {}),
-        "raw_data": {
-            "price": result.get("price_data"),
-            "financial": result.get("financial_data"),
-            "company": result.get("company_data"),
-        }
-    }
+4. **trading_agent** (매매 실행)
+   - 매매 주문 생성 및 실행
+   - ⚠️ automation_level {automation_level}에서는 승인 필요
 
-    logger.info(f"✅ [Research] 서브그래프 완료: {research_data.get('recommendation')}")
+5. **portfolio_agent** (포트폴리오 관리)
+   - 포트폴리오 구성 및 최적화
+   - 리밸런싱 제안
 
-    # 변경된 필드만 반환 (operator.or_ reducer 사용)
-    return {
-        "agent_results": {"research_agent": research_data},
-        "agents_called": ["research_agent"],
-    }
+6. **monitoring_agent** (시장 모니터링)
+   - 가격 변동 추적
+   - 이벤트 감지 (거래량 급증, VI 발동)
+   - 정기 리포트 생성
 
+7. **education_agent** (투자 교육)
+   - 투자 용어 설명
+   - 일반 시장 질문 응답
+   - 투자 전략 교육
 
-async def strategy_call_node(state: GraphState) -> GraphState:
-    """
-    Strategy Agent 서브그래프 호출 노드
+**중요 규칙:**
 
-    GraphState → StrategyState 변환 → 서브그래프 실행 → 결과 저장
-    """
-    # strategy_agent가 agents_to_call에 없으면 스킵
-    if "strategy_agent" not in state.get("agents_to_call", []):
-        logger.info("⏭️ [Strategy] agents_to_call에 없음, 스킵")
-        return {}  # 아무것도 변경하지 않음
+1. **병렬 실행 가능**: 여러 에이전트를 동시에 호출할 수 있습니다.
+   예: 종목 분석 시 research + strategy + risk 동시 호출
 
-    logger.info(f"🎯 [Strategy] 서브그래프 호출")
+2. **에이전트 조합 예시:**
+   - "삼성전자 분석해줘" → research_agent + strategy_agent + risk_agent
+   - "내 포트폴리오 리밸런싱" → portfolio_agent + risk_agent
+   - "PER이 뭐야?" → education_agent
+   - "삼성전자 10주 매수" → trading_agent
 
-    # StrategyState 구성
-    strategy_input = {
-        "request_id": state["conversation_id"],
-        "user_preferences": {},  # TODO: 사용자 프로필에서 가져오기
-        "risk_tolerance": "moderate",  # TODO: 사용자 설정에서 가져오기
-        "market_outlook": None,
-        "sector_strategy": None,
-        "asset_allocation": None,
-        "blueprint": None,
-        "error": None,
-    }
+3. **HITL (Human-in-the-Loop):**
+   - 각 에이전트가 내부적으로 HITL을 처리합니다.
+   - 현재 automation_level: {automation_level}
+   - trading_agent는 레벨 2+ 에서 자동 승인 요청
 
-    # 서브그래프 실행
-    result = await strategy_subgraph.ainvoke(strategy_input)
+4. **필요한 에이전트만 선택:**
+   - 불필요한 에이전트는 호출하지 마세요.
+   - 사용자 요청을 정확히 분석하세요.
 
-    # 결과 저장
-    blueprint = result.get("blueprint", {})
-    strategy_data = {
-        "action": "HOLD",  # TODO: blueprint에서 추출
-        "confidence": blueprint.get("confidence_score", 0.75),
-        "blueprint": blueprint,
-        "summary": (
-            f"{blueprint.get('market_outlook', {}).get('cycle', '확장')} 국면, "
-            f"주식 {blueprint.get('asset_allocation', {}).get('stocks', 0.7):.0%}"
-        )
-    }
+사용자 요청을 분석하고, 적절한 에이전트들을 선택하세요.
+"""
 
-    logger.info(f"✅ [Strategy] 서브그래프 완료")
-
-    # 변경된 필드만 반환 (operator.or_ reducer 사용)
-    return {
-        "agent_results": {"strategy_agent": strategy_data},
-        "agents_called": ["strategy_agent"],
-    }
-
-
-async def risk_call_node(state: GraphState) -> GraphState:
-    """
-    Risk Agent 서브그래프 호출 노드
-
-    GraphState → RiskState 변환 → 서브그래프 실행 → 결과 저장
-    """
-    # risk_agent가 agents_to_call에 없으면 스킵
-    if "risk_agent" not in state.get("agents_to_call", []):
-        logger.info("⏭️ [Risk] agents_to_call에 없음, 스킵")
-        return {}  # 아무것도 변경하지 않음
-
-    logger.info(f"⚠️ [Risk] 서브그래프 호출")
-
-    # RiskState 구성
-    risk_input = {
-        "request_id": state["conversation_id"],
-        "portfolio_data": None,  # 서브그래프에서 수집
-        "market_data": None,
-        "concentration_risk": None,
-        "market_risk": None,
-        "risk_assessment": None,
-        "error": None,
-    }
-
-    # 서브그래프 실행
-    result = await risk_subgraph.ainvoke(risk_input)
-
-    # 결과 저장
-    assessment = result.get("risk_assessment", {})
-    risk_data = {
-        "risk_level": assessment.get("risk_level", "medium"),
-        "risk_score": assessment.get("risk_score", 50),
-        "concentration_risk": assessment.get("concentration_risk"),
-        "volatility": assessment.get("volatility"),
-        "var_95": assessment.get("var_95"),
-        "max_drawdown_estimate": assessment.get("max_drawdown_estimate"),
-        "warnings": assessment.get("warnings", []),
-        "recommendations": assessment.get("recommendations", []),
-        "should_trigger_hitl": assessment.get("should_trigger_hitl", False),
-        "sector_breakdown": assessment.get("sector_breakdown", {}),
-    }
-
-    logger.info(f"✅ [Risk] 서브그래프 완료: {risk_data.get('risk_level')}")
-
-    # 변경된 필드만 반환
-    return {
-        "agent_results": {"risk_agent": risk_data},
-        "agents_called": ["risk_agent"],
-    }
-
-
-async def call_agents_node(state: GraphState) -> GraphState:
-    """
-    Legacy 에이전트 호출 노드 (서브그래프 미전환 에이전트용)
-
-    TODO: 모든 에이전트 서브그래프 전환 후 제거
-    """
-    agents_to_call = state["agents_to_call"]
-
-    # research_agent, strategy_agent, risk_agent는 이미 별도 노드로 처리됨
-    agents_to_call = [a for a in agents_to_call if a not in ["research_agent", "strategy_agent", "risk_agent"]]
-
-    if not agents_to_call:
-        return {}  # 아무것도 변경하지 않음
-
-    agent_registry = {
-        "portfolio_agent": portfolio_agent,
-        "monitoring_agent": monitoring_agent,
-        "education_agent": education_agent,
-    }
-
-    # messages에서 query 추출
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
-
-    # AgentInput 생성
-    agent_input = AgentInput(
-        request_id=state["conversation_id"],
-        automation_level=state["automation_level"],
-        context={
-            "query": query,
-            "intent": state["intent"],
-        }
+    # Supervisor 생성 (⭐ 핵심)
+    supervisor = create_supervisor(
+        agents=[
+            research_agent,
+            strategy_agent,
+            risk_agent,
+            trading_agent,
+            # portfolio_agent,  # TODO: 서브그래프로 전환
+            # monitoring_agent,
+            # education_agent,
+        ],
+        model=llm,
+        parallel_tool_calls=True,  # ⭐ 병렬 실행 활성화
+        prompt=supervisor_prompt,
     )
 
-    # 에이전트 호출
-    results = state.get("agent_results", {})
-    for agent_id in agents_to_call:
-        agent = agent_registry.get(agent_id)
-        if agent:
-            try:
-                output = await agent.execute(agent_input)
-                if output.status == "success":
-                    results[agent_id] = output.data
-            except Exception as e:
-                logger.error(f"Agent {agent_id} failed: {str(e)}")
+    logger.info(f"✅ [Supervisor] 생성 완료 (자동화 레벨: {automation_level})")
 
-    # 실제로 호출한 에이전트만 추출
-    called_agents = [agent_id for agent_id in agents_to_call if agent_id in results]
+    return supervisor
 
-    logger.info(f"✅ Legacy 에이전트 호출 완료: {called_agents}")
 
-    # 변경된 필드만 반환
-    return {
-        "agent_results": results,
-        "agents_called": called_agents,  # 새로 호출한 에이전트만
-    }
-
-
-def check_risk_node(state: GraphState) -> GraphState:
-    """
-    리스크 체크 노드
-    에이전트 결과에서 리스크 수준 추출
-    """
-    agent_results = state.get("agent_results", {})
-
-    # risk_agent 결과에서 리스크 레벨 추출
-    risk_level = None
-    if "risk_agent" in agent_results:
-        risk_data = agent_results["risk_agent"]
-        risk_level = risk_data.get("risk_level")
-
-    logger.info(f"⚠️ 리스크 레벨: {risk_level}")
-
-    return {
-        "risk_level": risk_level,
-    }
-
-
-def check_hitl_node(state: GraphState) -> GraphState:
-    """
-    HITL 트리거 체크 노드
-    자동화 레벨과 리스크를 고려하여 HITL 필요 여부 판단
-    """
-    intent = state["intent"]
-    automation_level = state["automation_level"]
-    risk_level = state.get("risk_level")
-
-    hitl_required = False
-
-    # Trade execution always requires approval in Level 2+
-    if intent == "trade_execution" and automation_level >= 2:
-        hitl_required = True
-
-    # Rebalancing requires approval in Level 2+
-    if intent == "rebalancing" and automation_level >= 2:
-        hitl_required = True
-
-    # High risk always triggers HITL
-    if risk_level in ["high", "critical"]:
-        hitl_required = True
-
-    # Level 3 (Advisor) requires approval for most actions
-    if automation_level == 3 and intent not in [
-        "general_question",
-        "performance_check"
-    ]:
-        hitl_required = True
-
-    logger.info(f"🤝 HITL 필요: {hitl_required} (레벨={automation_level}, 의도={intent})")
-
-    return {
-        "hitl_required": hitl_required,
-    }
-
-
-# ==================== Trade Execution Nodes (HITL 패턴) ====================
-
-def prepare_trade_node(state: GraphState) -> GraphState:
-    """
-    1단계: 거래 준비 (부작용)
-
-    패턴 2: 노드 분리 - interrupt 전 부작용 격리
-    """
-    # 재실행 방지 플래그 체크
-    if state.get("trade_prepared"):
-        logger.info("⏭️ [Trade] 이미 준비됨, 스킵")
-        return state
-
-    logger.info("📝 [Trade] 거래 준비 중...")
-
-    # TODO: 실제 DB에 주문 생성
-    # order_id = db.create_order({
-    #     "stock": state["query"],  # 실제로는 파싱 필요
-    #     "quantity": 10,
-    #     "status": "pending"
-    # })
-
-    # Mock 구현
-    import uuid
-    order_id = f"ORDER_{str(uuid.uuid4())[:8]}"
-
-    logger.info(f"✅ [Trade] 주문 생성: {order_id}")
-
-    return {
-        "trade_prepared": True,
-        "trade_order_id": order_id,
-    }
-
-
-def approval_trade_node(state: GraphState) -> GraphState:
-    """
-    2단계: HITL 승인 (interrupt 발생)
-
-    패턴 2: 노드 분리 - interrupt만 포함, 부작용 없음
-    이 노드는 재실행되어도 안전함
-    """
-    # 이미 승인되었으면 스킵
-    if state.get("trade_approved"):
-        logger.info("⏭️ [Trade] 이미 승인됨, 스킵")
-        return state
-
-    logger.info("🔔 [Trade] 사용자 승인 요청 중...")
-
-    order_id = state.get("trade_order_id", "UNKNOWN")
-
-    # messages에서 query 추출
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
-
-    # 🔴 Interrupt 발생 - 사용자 승인 대기
-    approval = interrupt({
-        "type": "trade_approval",
-        "order_id": order_id,
-        "query": query,
-        "automation_level": state["automation_level"],
-        "message": f"매매 주문 '{order_id}'을(를) 승인하시겠습니까?"
-    })
-
-    logger.info(f"✅ [Trade] 승인 완료: {approval}")
-
-    # TODO: DB 업데이트
-    # db.update(order_id, {"approved": True, "approved_by": approval.get("user_id")})
-
-    return {
-        "trade_approved": True,
-    }
-
-
-def execute_trade_node(state: GraphState) -> GraphState:
-    """
-    3단계: 거래 실행 (부작용)
-
-    패턴 3: 멱등성 보장 - 중복 실행 방지
-    """
-    # 이미 실행되었으면 스킵
-    if state.get("trade_executed"):
-        logger.info("⏭️ [Trade] 이미 실행됨, 스킵")
-        return state
-
-    order_id = state.get("trade_order_id")
-
-    # 승인 확인
-    if not state.get("trade_approved"):
-        logger.warning("⚠️ [Trade] 승인되지 않음, 실행 불가")
-        return state
-
-    logger.info(f"💰 [Trade] 거래 실행 중... (주문: {order_id})")
-
-    # TODO: 멱등성 체크
-    # existing = db.get_order(order_id)
-    # if existing and existing["status"] == "executed":
-    #     return {...state, "trade_result": existing["result"]}
-
-    # TODO: 실제 API 호출 (한국투자증권)
-    # with db.transaction():
-    #     result = kis_api.execute_trade(...)
-    #     db.update(order_id, {"status": "executed", "result": result})
-
-    # Mock 실행
-    result = {
-        "order_id": order_id,
-        "status": "executed",
-        "executed_at": "2025-10-04 10:30:00",
-        "price": 70000,
-        "quantity": 10,
-        "total": 700000
-    }
-
-    logger.info(f"✅ [Trade] 거래 실행 완료: {result}")
-
-    return {
-        "trade_executed": True,
-        "trade_result": result,
-    }
-
-
-# ==================== Aggregation ====================
-
-def aggregate_results_node(state: GraphState) -> GraphState:
-    """
-    결과 통합 노드
-    모든 에이전트 결과를 통합하여 최종 응답 생성
-
-    LangGraph 표준: AIMessage를 messages에 추가
-    """
-    agent_results = state.get("agent_results", {})
-
-    # 요약 생성
-    summary_parts = []
-
-    if "research_agent" in agent_results:
-        research = agent_results["research_agent"]
-        stock_name = research.get("stock_name", "종목")
-        rating = research.get("rating", "N/A")
-        summary_parts.append(f"{stock_name} 분석 완료 (평가: {rating}/5)")
-
-    if "strategy_agent" in agent_results:
-        strategy = agent_results["strategy_agent"]
-        action = strategy.get("action", "N/A")
-        confidence = strategy.get("confidence", 0)
-        summary_parts.append(f"매매 의견: {action} (신뢰도: {confidence})")
-
-    if "risk_agent" in agent_results:
-        risk = agent_results["risk_agent"]
-        risk_level = risk.get("risk_level", "N/A")
-        summary_parts.append(f"리스크 수준: {risk_level}")
-
-    # 매매 실행 결과 포함
-    if state.get("trade_executed") and state.get("trade_result"):
-        trade = state["trade_result"]
-        summary_parts.append(f"매매 실행 완료 (주문: {trade.get('order_id')})")
-
-    summary = " | ".join(summary_parts) if summary_parts else "분석 완료"
-
-    # 최종 응답 구성
-    final_response = {
-        "message": summary,  # 최종 메시지
-        "summary": summary,  # 하위 호환성
-        "data": agent_results,  # details → data로 변경 (더 직관적)
-        "intent": state["intent"],
-        "agents_called": state.get("agents_called", []),
-        "hitl_required": state.get("hitl_required", False),
-        "risk_level": state.get("risk_level"),
-        "trade_result": state.get("trade_result"),
-    }
-
-    # ⭐ LangGraph 표준: AIMessage 추가
-    ai_message = AIMessage(content=summary)
-
-    return {
-        "messages": [ai_message],  # add_messages reducer가 자동 병합
-        "summary": summary,
-        "final_response": final_response,
-    }
-
-
-# ==================== Router Functions ====================
-
-def route_after_determine_agents(state: GraphState) -> str:
-    """
-    의도에 따라 다음 노드 결정
-
-    TRADE_EXECUTION → 매매 실행 플로우
-    기타 → Research 서브그래프 호출 (일반 플로우 시작)
-    """
-    intent = state.get("intent")
-
-    if intent == "trade_execution":
-        logger.info("🔀 [Router] 매매 실행 플로우로 분기")
-        return "prepare_trade"
-    else:
-        logger.info("🔀 [Router] 일반 에이전트 호출 플로우 (Research 서브그래프)")
-        return "research_call"
-
-
-def should_continue(state: GraphState) -> str:
-    """
-    다음 노드 결정
-    """
-    # 모든 처리가 완료되면 END
-    return END
-
-
-# ==================== Build Graph ====================
+# ==================== 그래프 빌드 ====================
 
 def build_graph(automation_level: int = 2):
     """
-    LangGraph StateGraph 구성
+    최종 그래프 빌드
 
     Args:
-        automation_level: 자동화 레벨 (1-3)
-            - Level 1 (Pilot): 거의 자동
-            - Level 2 (Copilot): 매매/리밸런싱 승인 필요 (기본값)
-            - Level 3 (Advisor): 모든 결정 승인 필요
+        automation_level: 자동화 레벨
+
+    Returns:
+        Compiled graph
     """
-    # 그래프 생성 - LangGraph 표준 GraphState 사용
-    workflow = StateGraph(GraphState)
+    supervisor = build_supervisor(automation_level)
 
-    # 기본 노드 (LLM 기반)
-    workflow.add_node("llm_intent_analysis", llm_intent_analysis_node)  # Claude Intent 분석
-    workflow.add_node("llm_supervisor", llm_supervisor_node)  # Claude Supervisor
-    workflow.add_node("research_call", research_call_node)  # Research 서브그래프
-    workflow.add_node("strategy_call", strategy_call_node)  # Strategy 서브그래프
-    workflow.add_node("risk_call", risk_call_node)  # Risk 서브그래프
-    workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
-    workflow.add_node("check_risk", check_risk_node)
-    workflow.add_node("check_hitl", check_hitl_node)
-    workflow.add_node("aggregate_results", aggregate_results_node)
-
-    # 매매 실행 노드 (3단계 분리)
-    workflow.add_node("prepare_trade", prepare_trade_node)
-    workflow.add_node("approval_trade", approval_trade_node)
-    workflow.add_node("execute_trade", execute_trade_node)
-
-    # 기본 플로우 (LLM 기반)
-    workflow.set_entry_point("llm_intent_analysis")  # Claude Intent 분석부터 시작
-    workflow.add_edge("llm_intent_analysis", "llm_supervisor")  # Intent → Supervisor
-
-    # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 Research 서브그래프
-    workflow.add_conditional_edges(
-        "llm_supervisor",  # Supervisor 노드 이후 분기
-        route_after_determine_agents,
-        {
-            "prepare_trade": "prepare_trade",  # 매매 실행 플로우
-            "research_call": "research_call",  # 일반 플로우 (Research 서브그래프)
-        }
+    # 컴파일 (checkpointer 설정)
+    app = supervisor.compile(
+        checkpointer=MemorySaver(),  # TODO: AsyncSqliteSaver로 변경
     )
 
-    # 일반 플로우: Research → Strategy → Risk → Legacy 에이전트 → check_risk → HITL → Aggregate
-    workflow.add_edge("research_call", "strategy_call")
-    workflow.add_edge("strategy_call", "risk_call")
-    workflow.add_edge("risk_call", "call_agents")
-    workflow.add_edge("call_agents", "check_risk")
-    workflow.add_edge("check_risk", "check_hitl")
-    workflow.add_edge("check_hitl", "aggregate_results")
-
-    # 매매 실행 플로우
-    workflow.add_edge("prepare_trade", "approval_trade")
-    workflow.add_edge("approval_trade", "execute_trade")
-    workflow.add_edge("execute_trade", "aggregate_results")
-
-    # 종료
-    workflow.add_edge("aggregate_results", END)
-
-    # Checkpointer 설정
-    # TODO: Production에서는 AsyncSqliteSaver 사용
-    # checkpointer = AsyncSqliteSaver.from_conn_string("data/checkpoints.db")
-    checkpointer = MemorySaver()  # 테스트용
-
-    # 자동화 레벨별 interrupt 설정
-    interrupt_nodes = []
-
-    if automation_level >= 2:  # Copilot (기본값)
-        interrupt_nodes.append("approval_trade")  # 매매 승인 필요
-
-    # TODO: Level 3 (Advisor)는 추가 interrupt 필요
-    # if automation_level == 3:
-    #     interrupt_nodes.extend(["create_strategy", "build_portfolio"])
-
-    logger.info(f"🔧 [Graph] Checkpointer 설정 완료")
-    logger.info(f"🔧 [Graph] Interrupt 노드: {interrupt_nodes}")
-
-    # 그래프 컴파일
-    app = workflow.compile(
-        checkpointer=checkpointer,
-        interrupt_before=interrupt_nodes if interrupt_nodes else None
-    )
+    logger.info(f"🔧 [Graph] 컴파일 완료")
 
     return app
 
 
-# Global compiled graph (Level 2 기본값)
-graph_app = build_graph(automation_level=2)
+# Global compiled graph (필요 시 lazy 초기화)
+# graph_app = build_graph(automation_level=2)  # 주석 처리: lazy init
 
 
 # ==================== Main Interface ====================
@@ -627,49 +188,34 @@ async def run_graph(
         request_id = str(uuid.uuid4())
 
     if not thread_id:
-        thread_id = request_id  # 기본값: request_id를 thread_id로 사용
+        thread_id = request_id
 
-    # 자동화 레벨에 맞는 그래프 빌드
+    # Supervisor 그래프 빌드
     app = build_graph(automation_level=automation_level)
 
-    # Checkpointer 설정
+    # Config
     config = {
         "configurable": {
             "thread_id": thread_id,
         }
     }
 
-    # 초기 상태 - LangGraph 표준: messages 사용
+    # 초기 State
     initial_state = {
         "messages": [HumanMessage(content=query)],
-        "user_id": "user_001",  # TODO: 실제 인증 시스템 연동
-        "conversation_id": thread_id,
-        "automation_level": automation_level,
-        # 의도 및 라우팅
-        "intent": None,
-        "stock_code": None,
-        "stock_name": None,
-        "intent_confidence": None,
-        "agents_to_call": [],
-        "agents_called": [],
-        "supervisor_reasoning": None,
-        # 에이전트 결과
-        "agent_results": {},
-        # 리스크 및 HITL
-        "risk_level": None,
-        "hitl_required": False,
-        # 매매 실행 플래그
-        "trade_prepared": False,
-        "trade_approved": False,
-        "trade_executed": False,
-        "trade_order_id": None,
-        "trade_result": None,
-        # 결과
-        "summary": None,
-        "final_response": None,
     }
 
-    # 그래프 실행
+    logger.info(f"🚀 [Graph] 실행 시작: {query[:50]}...")
+
+    # 실행 (Supervisor가 모든 조율 수행)
     result = await app.ainvoke(initial_state, config=config)
 
-    return result.get("final_response", {})
+    logger.info(f"✅ [Graph] 실행 완료")
+
+    # 최종 응답 추출
+    final_message = result["messages"][-1]
+
+    return {
+        "message": final_message.content if hasattr(final_message, 'content') else str(final_message),
+        "messages": result.get("messages", []),
+    }
