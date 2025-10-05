@@ -551,8 +551,8 @@ def build_graph(automation_level: int = 2):
     workflow = StateGraph(GraphState)
 
     # 기본 노드 (LLM 기반)
-    workflow.add_node("llm_intent_analysis", llm_intent_analysis_node)  # GPT-5 nano Intent 분석
-    workflow.add_node("llm_supervisor", llm_supervisor_node)  # GPT-5 nano Supervisor
+    workflow.add_node("llm_intent_analysis", llm_intent_analysis_node)  # Claude Intent 분석
+    workflow.add_node("llm_supervisor", llm_supervisor_node)  # Claude Supervisor
     workflow.add_node("research_call", research_call_node)  # Research 서브그래프
     workflow.add_node("strategy_call", strategy_call_node)  # Strategy 서브그래프
     workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
@@ -566,7 +566,7 @@ def build_graph(automation_level: int = 2):
     workflow.add_node("execute_trade", execute_trade_node)
 
     # 기본 플로우 (LLM 기반)
-    workflow.set_entry_point("llm_intent_analysis")  # GPT-5 nano Intent 분석부터 시작
+    workflow.set_entry_point("llm_intent_analysis")  # Claude Intent 분석부터 시작
     workflow.add_edge("llm_intent_analysis", "llm_supervisor")  # Intent → Supervisor
 
     # 조건부 분기: TRADE_EXECUTION이면 매매 플로우, 아니면 Research 서브그래프

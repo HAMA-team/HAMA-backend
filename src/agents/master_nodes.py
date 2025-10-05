@@ -44,10 +44,39 @@ async def llm_intent_analysis_node(state: GraphState) -> GraphState:
     last_message = state["messages"][-1]
     query = last_message.content if hasattr(last_message, 'content') else str(last_message)
 
-    # GPT-5 nano LLM 초기화
-    llm = ChatOpenAI(
-        model=settings.INTENT_MODEL,  # gpt-5-nano
-        model_kwargs={"reasoning_effort": settings.INTENT_REASONING_EFFORT},  # minimal
+    # Claude LLM 초기화
+    from langchain_anthropic import ChatAnthropic
+    import os
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.error(f"❌ [LLM Intent] ANTHROPIC_API_KEY not found, fallback to keyword analysis")
+        # Fallback: 키워드 기반 의도 분석
+        query_lower = query.lower()
+        if any(word in query_lower for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
+            intent = "rebalancing"
+        elif any(word in query_lower for word in ["매수", "매도", "사", "팔"]):
+            intent = "trade_execution"
+        elif any(word in query_lower for word in ["수익률", "현황"]):
+            intent = "performance_check"
+        elif any(word in query_lower for word in ["포트폴리오", "자산배분"]):
+            intent = "portfolio_evaluation"
+        elif any(word in query_lower for word in ["분석", "어때", "평가", "투자", "전략"]):
+            intent = "stock_analysis"
+        elif "시장" in query_lower:
+            intent = "market_status"
+        else:
+            intent = "general_question"
+
+        logger.info(f"🔍 [Keyword Intent] 의도: {intent}")
+        return {
+            "intent": intent,
+            "intent_confidence": 0.6,  # 키워드 기반은 낮은 신뢰도
+        }
+
+    llm = ChatAnthropic(
+        model="claude-3-5-haiku-20241022",
+        api_key=api_key,
         temperature=0
     )
 
@@ -105,10 +134,32 @@ async def llm_supervisor_node(state: GraphState) -> GraphState:
     query = state["messages"][-1].content if hasattr(state["messages"][-1], 'content') else str(state["messages"][-1])
     stock_info = state.get("stock_name") or state.get("stock_code") or ""
 
-    # GPT-5 nano LLM 초기화
-    llm = ChatOpenAI(
-        model=settings.SUPERVISOR_MODEL,  # gpt-5-nano
-        model_kwargs={"reasoning_effort": settings.SUPERVISOR_REASONING_EFFORT},  # low
+    # Claude LLM 초기화
+    from langchain_anthropic import ChatAnthropic
+    import os
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.error(f"❌ [LLM Supervisor] ANTHROPIC_API_KEY not found")
+        # Fallback: 의도 기반 기본 라우팅
+        fallback_routing = {
+            "stock_analysis": ["research_agent", "strategy_agent", "risk_agent"],
+            "trade_execution": ["strategy_agent", "risk_agent"],
+            "portfolio_evaluation": ["portfolio_agent", "risk_agent"],
+            "rebalancing": ["portfolio_agent", "strategy_agent", "risk_agent"],
+            "performance_check": ["portfolio_agent"],
+            "market_status": ["research_agent", "monitoring_agent"],
+            "general_question": ["education_agent"],
+        }
+        agents = fallback_routing.get(intent, ["education_agent"])
+        return {
+            "agents_to_call": agents,
+            "supervisor_reasoning": "Fallback routing (no API key)",
+        }
+
+    llm = ChatAnthropic(
+        model="claude-3-5-haiku-20241022",
+        api_key=api_key,
         temperature=0
     )
 
