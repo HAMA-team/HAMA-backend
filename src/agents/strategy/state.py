@@ -3,7 +3,10 @@ Strategy Agent State 정의
 
 LangGraph 서브그래프를 위한 State
 """
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List, Annotated
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class StrategyState(TypedDict):
@@ -16,6 +19,10 @@ class StrategyState(TypedDict):
     3. asset_allocation: 자산 배분 결정
     4. blueprint_creation: Strategic Blueprint 생성
     """
+
+    # Supervisor 패턴 호환성
+    messages: Annotated[List[BaseMessage], add_messages]
+    """메시지 스택 (Supervisor 패턴 필수)"""
 
     # 입력
     request_id: str

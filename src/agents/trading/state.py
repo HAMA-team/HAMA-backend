@@ -3,7 +3,10 @@ Trading Agent State 정의
 
 매매 실행을 위한 State
 """
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, List, Annotated
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class TradingState(TypedDict):
@@ -15,6 +18,10 @@ class TradingState(TypedDict):
     2. approval_trade: HITL 승인 (interrupt)
     3. execute_trade: 거래 실행 (부작용)
     """
+
+    # Supervisor 패턴 호환성
+    messages: Annotated[List[BaseMessage], add_messages]
+    """메시지 스택 (Supervisor 패턴 필수)"""
 
     # 입력
     request_id: str

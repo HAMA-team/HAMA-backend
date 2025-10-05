@@ -3,7 +3,10 @@ General Agent State 정의
 
 일반 질의응답을 위한 State
 """
-from typing import TypedDict, Optional, List
+from typing import TypedDict, Optional, List, Annotated
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class GeneralState(TypedDict):
@@ -13,6 +16,10 @@ class GeneralState(TypedDict):
     Flow:
     1. answer_question: LLM 기반 질문 응답
     """
+
+    # Supervisor 패턴 호환성
+    messages: Annotated[List[BaseMessage], add_messages]
+    """메시지 스택 (Supervisor 패턴 필수)"""
 
     # 입력
     request_id: str
