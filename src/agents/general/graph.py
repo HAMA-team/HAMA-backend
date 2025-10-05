@@ -32,7 +32,7 @@ def build_general_subgraph():
     workflow.add_edge("answer_question", END)
 
     # 컴파일
-    app = workflow.compile()
+    app = workflow.compile(name="general_agent")
 
     logger.info("✅ [General] 서브그래프 빌드 완료")
 

@@ -12,7 +12,7 @@ Strategy Agent v2.0 - 거시 대전략 수립
 """
 
 from decimal import Decimal
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 from src.schemas.strategy import (
     StrategicBlueprint,
@@ -24,7 +24,7 @@ from src.schemas.strategy import (
 )
 
 
-class StrategyAgent(BaseAgent):
+class StrategyAgent(LegacyAgent):
     """
     Strategy Agent v2.0 - 거시 대전략 수립
 

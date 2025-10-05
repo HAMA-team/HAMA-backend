@@ -39,7 +39,7 @@ def build_strategy_subgraph():
     workflow.add_edge("blueprint_creation", END)
 
     # 컴파일
-    app = workflow.compile()
+    app = workflow.compile(name="strategy_agent")
 
     logger.info("✅ [Strategy] 서브그래프 빌드 완료")
 

@@ -8,11 +8,11 @@ Responsibilities:
 - Periodic reporting
 """
 from decimal import Decimal
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 
 
-class MonitoringAgent(BaseAgent):
+class MonitoringAgent(LegacyAgent):
     """
     Monitoring Agent - Monitors market and portfolio status
 

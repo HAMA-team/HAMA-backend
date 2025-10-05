@@ -1,0 +1,62 @@
+"""Portfolio Agent State 정의
+
+포트폴리오 분석 및 리밸런싱을 위한 LangGraph State
+"""
+from __future__ import annotations
+
+from typing import TypedDict, Optional, List, Literal
+
+
+class PortfolioHolding(TypedDict, total=False):
+    """포트폴리오 내 단일 자산 정보"""
+
+    stock_code: str
+    stock_name: str
+    weight: float
+    value: float
+
+
+class RebalanceInstruction(TypedDict, total=False):
+    """리밸런싱 실행 지시"""
+
+    action: Literal["BUY", "SELL"]
+    stock_code: str
+    stock_name: str
+    amount: float
+    weight_delta: float
+
+
+class PortfolioState(TypedDict, total=False):
+    """Portfolio Agent 서브그래프 State"""
+
+    # 입력
+    request_id: str
+    user_id: Optional[str]
+    automation_level: int
+    risk_profile: Optional[str]
+    horizon: Optional[str]
+    preferences: Optional[dict]
+
+    # 현재 포트폴리오 스냅샷
+    portfolio_id: Optional[str]
+    total_value: Optional[float]
+    current_holdings: Optional[List[PortfolioHolding]]
+
+    # 추천 산출값
+    proposed_allocation: Optional[List[PortfolioHolding]]
+    expected_return: Optional[float]
+    expected_volatility: Optional[float]
+    sharpe_ratio: Optional[float]
+    rationale: Optional[str]
+
+    # 리밸런싱 정보
+    rebalancing_needed: Optional[bool]
+    trades_required: Optional[List[RebalanceInstruction]]
+    hitl_required: bool
+
+    # 최종 리포트
+    summary: Optional[str]
+    portfolio_report: Optional[dict]
+
+    # 에러 처리
+    error: Optional[str]

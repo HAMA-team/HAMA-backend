@@ -8,11 +8,11 @@ Responsibilities:
 - Risk threshold monitoring
 """
 from decimal import Decimal
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 
 
-class RiskAgent(BaseAgent):
+class RiskAgent(LegacyAgent):
     """
     Risk Agent - Evaluates and warns about risks
 

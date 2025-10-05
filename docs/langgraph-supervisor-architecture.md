@@ -98,7 +98,7 @@ app = supervisor.compile(checkpointer=MemorySaver())
 | `research_agent` | 종목 심층 분석 | ✅ | - |
 | `strategy_agent` | 투자 전략 수립 | ✅ | - |
 | `risk_agent` | 리스크 평가 | ✅ | 조건부 |
-| `portfolio_agent` | 포트폴리오 관리 | 🚧 TODO | 조건부 |
+| `portfolio_agent` | 포트폴리오 관리 | ✅ | 조건부 |
 | `trading_agent` | 매매 실행 | ✅ | ✅ (L2+) |
 | `monitoring_agent` | 시장 모니터링 | 🚧 TODO | - |
 | `general_agent` | 일반 질의응답 | 🚧 TODO | - |
@@ -107,6 +107,7 @@ app = supervisor.compile(checkpointer=MemorySaver())
 - ❌ `education_agent` 삭제 → `general_agent`로 통합
 - ❌ `personalization_agent` 삭제 → 사용자 프로필은 DB로 관리
 - ❌ `data_collection_agent` 삭제 → Service Layer로 분리
+- ✅ `BaseAgent` → `LegacyAgent` (shim: `src/agents/legacy`) — 남은 레거시 에이전트 단계적 전환 예정
 
 ---
 
@@ -420,24 +421,43 @@ def execute_trade_node(state: TradingState) -> dict:
 
 ### 5. Portfolio Agent (포트폴리오 관리)
 
-**TODO: 서브그래프로 전환 필요**
+**서브그래프 플로우:**
+```
+collect_portfolio → optimize_allocation → rebalance_plan → summary
+```
 
 **함수 시그니처:**
 ```python
-async def optimize_portfolio_node(state: PortfolioState) -> dict:
+async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
     """
-    포트폴리오 최적화 (Mean-Variance)
+    현재 포트폴리오 스냅샷 수집 (보유 종목/비중)
 
     Returns:
-        dict: optimal_weights, expected_return
+        dict: current_holdings, total_value, risk_profile
     """
 
-async def calculate_rebalancing_node(state: PortfolioState) -> dict:
+async def optimize_allocation_node(state: PortfolioState) -> PortfolioState:
     """
-    리밸런싱 계산
+    위험 성향 기반 목표 비중 및 기대 수익/변동성 산출
 
     Returns:
-        dict: trades_required, estimated_cost
+        dict: proposed_allocation, expected_return, sharpe_ratio
+    """
+
+async def rebalance_plan_node(state: PortfolioState) -> PortfolioState:
+    """
+    현재/목표 비중 차이를 계산해 리밸런싱 지시 생성
+
+    Returns:
+        dict: trades_required, rebalancing_needed, hitl_required
+    """
+
+async def summary_node(state: PortfolioState) -> PortfolioState:
+    """
+    최종 요약 및 포트폴리오 리포트 구성
+
+    Returns:
+        dict: summary, portfolio_report
     """
 ```
 

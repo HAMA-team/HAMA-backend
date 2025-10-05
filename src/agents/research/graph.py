@@ -47,7 +47,7 @@ def build_research_subgraph():
     workflow.add_edge("consensus", END)
 
     # 컴파일
-    app = workflow.compile()
+    app = workflow.compile(name="research_agent")
 
     logger.info("✅ [Research] 서브그래프 빌드 완료")
 

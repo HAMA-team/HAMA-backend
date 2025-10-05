@@ -7,11 +7,11 @@ Responsibilities:
 - Learn from user decisions (Phase 2)
 - Customize recommendations
 """
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 
 
-class PersonalizationAgent(BaseAgent):
+class PersonalizationAgent(LegacyAgent):
     """
     Personalization Agent - Manages user profiles and preferences
 

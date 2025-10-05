@@ -14,9 +14,12 @@ Master Agent의 역할 (순수 조율자):
 from typing import Dict, Any
 from langgraph_supervisor import create_supervisor
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 import logging
+
+# Config
+from src.config.settings import settings
 
 # Compiled Agents import
 from src.agents.research import research_agent
@@ -48,7 +51,12 @@ def build_supervisor(automation_level: int = 2):
         StateGraph: Supervisor 그래프
     """
     # LLM 초기화
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = ChatAnthropic(
+        model="claude-3-5-sonnet-20241022",
+        temperature=0,
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_tokens=4000
+    )
 
     # Supervisor 프롬프트
     supervisor_prompt = f"""당신은 투자 에이전트 팀을 관리하는 Supervisor입니다.
@@ -121,7 +129,7 @@ def build_supervisor(automation_level: int = 2):
             risk_agent,
             trading_agent,
             general_agent,
-            # portfolio_agent,  # TODO: 서브그래프로 전환
+            portfolio_agent,
             # monitoring_agent,
         ],
         model=llm,

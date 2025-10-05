@@ -1,5 +1,7 @@
-"""Portfolio Agent Module - 포트폴리오 구축 및 최적화"""
+"""Portfolio Agent Module - 포트폴리오 구축 및 최적화 (LangGraph 서브그래프)"""
 
-from src.agents.portfolio.portfolio_agent import PortfolioAgent, portfolio_agent
+from .graph import portfolio_subgraph
 
-__all__ = ["PortfolioAgent", "portfolio_agent"]
+portfolio_agent = portfolio_subgraph
+
+__all__ = ["portfolio_agent"]

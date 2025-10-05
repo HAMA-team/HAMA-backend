@@ -7,14 +7,14 @@ Responsibilities:
 - Fetch news (web scraping) - Phase 2
 - Cache and store data
 """
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
 from datetime import datetime
 
 
-class DataCollectionAgent(BaseAgent):
+class DataCollectionAgent(LegacyAgent):
     """
     Data Collection Agent - Fetches raw data from external sources
 

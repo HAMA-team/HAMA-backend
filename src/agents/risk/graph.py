@@ -39,7 +39,7 @@ def build_risk_subgraph():
     workflow.add_edge("market_risk", "final_assessment")
     workflow.add_edge("final_assessment", END)
 
-    return workflow.compile()
+    return workflow.compile(name="risk_agent")
 
 
 # 서브그래프 인스턴스 export

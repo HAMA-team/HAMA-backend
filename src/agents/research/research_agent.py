@@ -8,7 +8,7 @@ Responsibilities:
 - Technical indicator calculation
 """
 from decimal import Decimal
-from src.agents.base import BaseAgent
+from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 from src.agents.data_collection import data_collection_agent
 from langchain_anthropic import ChatAnthropic
@@ -16,7 +16,7 @@ from src.config.settings import settings
 import json
 
 
-class ResearchAgent(BaseAgent):
+class ResearchAgent(LegacyAgent):
     """
     Research Agent - Analyzes companies using LLM
 
