@@ -25,8 +25,8 @@ class ResearchState(TypedDict):
     query: Optional[str]
     """사용자 질문(종목 코드 추출용)"""
 
-    request_id: str
-    """요청 ID"""
+    request_id: Optional[str]
+    """요청 ID (Supervisor 호출 시 없을 수 있음)"""
 
     # 데이터 수집 결과
     price_data: Optional[dict]

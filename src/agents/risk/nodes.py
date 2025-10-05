@@ -48,9 +48,13 @@ async def collect_portfolio_data_node(state: RiskState) -> dict:
 
     logger.info(f"✅ [Risk] 포트폴리오 데이터 수집 완료: {len(portfolio_data['holdings'])}개 종목")
 
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "portfolio_data": portfolio_data,
         "market_data": market_data,
+        "messages": messages,
     }
 
 
@@ -101,8 +105,12 @@ async def concentration_check_node(state: RiskState) -> dict:
 
     logger.info(f"✅ [Risk] 집중도 체크 완료: HHI={hhi:.3f}, 레벨={concentration_level}")
 
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "concentration_risk": concentration_risk,
+        "messages": messages,
     }
 
 
@@ -153,8 +161,12 @@ async def market_risk_node(state: RiskState) -> dict:
 
     logger.info(f"✅ [Risk] 시장 리스크 분석 완료: VaR={var_95:.2%}, 변동성={portfolio_volatility:.2%}")
 
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "market_risk": market_risk,
+        "messages": messages,
     }
 
 

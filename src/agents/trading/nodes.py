@@ -37,9 +37,13 @@ def prepare_trade_node(state: TradingState) -> dict:
 
     logger.info(f"✅ [Trade] 주문 생성: {order_id}")
 
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "trade_prepared": True,
         "trade_order_id": order_id,
+        "messages": messages,
     }
 
 
@@ -78,8 +82,12 @@ def approval_trade_node(state: TradingState) -> dict:
     # TODO Phase 2: DB 업데이트
     # db.update(order_id, {"approved": True, "approved_by": approval.get("user_id")})
 
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "trade_approved": True,
+        "messages": messages,
     }
 
 

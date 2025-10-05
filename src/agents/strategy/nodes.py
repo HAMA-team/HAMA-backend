@@ -29,18 +29,27 @@ async def market_analysis_node(state: StrategyState) -> StrategyState:
 
         logger.info(f"✅ [Strategy/Market] 시장 분석 완료: {market_outlook.cycle}")
 
+        # Supervisor 호환성: messages 전파
+        messages = list(state.get("messages", []))
+
         return {
             "market_outlook": {
                 "cycle": market_outlook.cycle,
                 "confidence": market_outlook.confidence,
                 "summary": market_outlook.summary,
-            }
+            },
+            "messages": messages,
         }
 
     except Exception as e:
         logger.error(f"❌ [Strategy/Market] 에러: {e}")
+
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+
         return {
-            "error": f"시장 분석 실패: {str(e)}"
+            "error": f"시장 분석 실패: {str(e)}",
+            "messages": messages,
         }
 
 
@@ -71,19 +80,28 @@ async def sector_rotation_node(state: StrategyState) -> StrategyState:
 
         logger.info(f"✅ [Strategy/Sector] 섹터 전략 완료: {', '.join(sector_strategy.overweight[:2])}")
 
+        # Supervisor 호환성: messages 전파
+        messages = list(state.get("messages", []))
+
         return {
             "sector_strategy": {
                 "overweight": sector_strategy.overweight,
                 "underweight": sector_strategy.underweight,
                 "rationale": sector_strategy.rationale,
                 "sectors": [w.model_dump() for w in sector_strategy.sectors],
-            }
+            },
+            "messages": messages,
         }
 
     except Exception as e:
         logger.error(f"❌ [Strategy/Sector] 에러: {e}")
+
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+
         return {
-            "error": f"섹터 전략 수립 실패: {str(e)}"
+            "error": f"섹터 전략 수립 실패: {str(e)}",
+            "messages": messages,
         }
 
 
@@ -114,18 +132,27 @@ async def asset_allocation_node(state: StrategyState) -> StrategyState:
 
         logger.info(f"✅ [Strategy/Asset] 자산 배분 완료: 주식 {asset_allocation.stocks:.0%}")
 
+        # Supervisor 호환성: messages 전파
+        messages = list(state.get("messages", []))
+
         return {
             "asset_allocation": {
                 "stocks": float(asset_allocation.stocks),
                 "cash": float(asset_allocation.cash),
                 "rationale": asset_allocation.rationale,
-            }
+            },
+            "messages": messages,
         }
 
     except Exception as e:
         logger.error(f"❌ [Strategy/Asset] 에러: {e}")
+
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+
         return {
-            "error": f"자산 배분 실패: {str(e)}"
+            "error": f"자산 배분 실패: {str(e)}",
+            "messages": messages,
         }
 
 

@@ -30,7 +30,7 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
     - 기업 정보 (DART)
     """
     stock_code = state.get("stock_code")
-    request_id = state["request_id"]
+    request_id = state.get("request_id", "supervisor-call")
 
     if not stock_code:
         query_candidates = []
@@ -162,19 +162,28 @@ JSON 형식으로:
             analysis = json.loads(json_str)
             logger.info(f"✅ [Research/Bull] 강세 분석 완료")
 
+            # Supervisor 호환성: messages 전파
+            messages = list(state.get("messages", []))
+
             return {
-                "bull_analysis": analysis
+                "bull_analysis": analysis,
+                "messages": messages,
             }
         except Exception as e:  # pragma: no cover - LLM runtime guard
             logger.error(f"❌ [Research/Bull] 에러: {e}")
 
     current_price = state.get('price_data', {}).get('latest_close', 0)
+
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "bull_analysis": {
             "positive_factors": ["주가 상승 가능성", "시장 모멘텀", "기술적 지지"],
             "target_price": int(current_price * 1.15) if current_price else 0,
             "confidence": 3
-        }
+        },
+        "messages": messages,
     }
 
 
@@ -239,19 +248,28 @@ JSON 형식으로:
             analysis = json.loads(json_str)
             logger.info(f"✅ [Research/Bear] 약세 분석 완료")
 
+            # Supervisor 호환성: messages 전파
+            messages = list(state.get("messages", []))
+
             return {
-                "bear_analysis": analysis
+                "bear_analysis": analysis,
+                "messages": messages,
             }
         except Exception as e:  # pragma: no cover - LLM runtime guard
             logger.error(f"❌ [Research/Bear] 에러: {e}")
 
     current_price = state.get('price_data', {}).get('latest_close', 0)
+
+    # Supervisor 호환성: messages 전파
+    messages = list(state.get("messages", []))
+
     return {
         "bear_analysis": {
             "risk_factors": ["시장 변동성", "외부 리스크", "기술적 저항"],
             "downside_target": int(current_price * 0.90) if current_price else 0,
             "confidence": 3
-        }
+        },
+        "messages": messages,
     }
 
 
