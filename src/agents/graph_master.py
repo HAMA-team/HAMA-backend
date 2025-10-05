@@ -113,7 +113,7 @@ def build_supervisor(automation_level: int = 2):
 사용자 요청을 분석하고, 적절한 에이전트들을 선택하세요.
 """
 
-    # Supervisor 생성 (⭐ 핵심)
+    # Supervisor 생성
     supervisor = create_supervisor(
         agents=[
             research_agent,
