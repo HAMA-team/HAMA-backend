@@ -18,10 +18,8 @@ from sqlalchemy.orm import sessionmaker
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# 테스트 환경 설정
+# 테스트 환경 설정 (실제 API 키는 .env 파일에서 로드)
 os.environ["ENV"] = "test"
-os.environ.setdefault("OPENAI_API_KEY", "test-key-not-used")
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-used")
 
 from src.main import app
 from src.models.database import Base, get_db

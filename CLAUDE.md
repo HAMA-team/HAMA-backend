@@ -724,6 +724,69 @@ async for event in app.astream_events(initial_state, config):
 - 작업이 시작되기 전, docs에서 plan 디렉터리를 참고해서 구현을 하고, 구현이 완료된 후에는 completed 디렉터리로 문서파일을 옮기도록 해야 합니다.
 - 각 작업을 시작할 때에는 알맞은 브랜치에서 작업중인지 확인하고, 만약 그렇지 않다면 기존 작업 상황을 커밋한 뒤에 알맞은 브랜치로 분기하여 작업을 진행해야 합니다
 
+## 테스트 및 API 키 사용 원칙
+
+### ❌ 절대 하지 말 것
+
+1. **테스트에서 API 키가 없다고 skip 처리하지 말 것**
+   - `@pytest.mark.skipif(no api key)` 같은 패턴 절대 금지
+   - API 키가 필요한 테스트는 실패하도록 두어야 함
+
+2. **LLM 호출 실패 시 mock 데이터로 대체하지 말 것**
+   - "API 키 없으면 mock 응답" 같은 fallback 로직 금지
+   - 실패는 실패로 명확히 드러나야 함
+
+3. **테스트 환경에서 가짜 API 키 사용 금지**
+   - `os.environ["OPENAI_API_KEY"] = "test-key-not-used"` 같은 코드 금지
+   - 실제 키가 없으면 테스트가 실패해야 정상
+
+### ✅ 올바른 방법
+
+1. **모든 환경에서 실제 API 키 사용**
+   - 테스트 환경에서도 `.env` 파일의 실제 키 사용
+   - `src.config.settings.settings.OPENAI_API_KEY` 사용
+
+2. **실패는 명확하게**
+   - API 키가 없으면 → 테스트 실패
+   - LLM 호출 실패하면 → 에러 발생
+   - 네트워크 문제 있으면 → 테스트 실패
+
+3. **환경 변수 의존성 명시**
+   - README나 문서에 필수 환경 변수 명시
+   - 개발자가 직접 `.env` 파일 설정하도록 안내
+
+### 예시
+
+**❌ 잘못된 예:**
+```python
+# 테스트 skip
+@pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="No API key")
+def test_llm():
+    ...
+
+# Mock fallback
+try:
+    response = llm.invoke(query)
+except:
+    return {"answer": "mock response"}  # ❌ 절대 안 됨
+```
+
+**✅ 올바른 예:**
+```python
+# API 키는 settings에서 가져오기
+from src.config.settings import settings
+
+def call_llm(query: str):
+    llm = ChatOpenAI(api_key=settings.OPENAI_API_KEY)  # 실제 키
+    response = llm.invoke(query)  # 실패하면 에러 발생
+    return response
+
+# 테스트도 실제 키 사용
+def test_llm():
+    result = call_llm("test")
+    assert result is not None  # 키 없으면 여기서 실패
+```
+
 Always use context7 when I need code generation, setup or configuration steps, or
 library/API documentation. This means you should automatically use the Context7 MCP
 tools to resolve library id and get library docs without me having to explicitly ask.

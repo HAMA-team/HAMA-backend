@@ -7,6 +7,7 @@ import logging
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.agents.general.state import GeneralState
+from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +26,15 @@ async def answer_question_node(state: GeneralState) -> dict:
 
     logger.info(f"💬 [General] 질문 응답 중: {query[:50]}...")
 
-    try:
-        # LLM 초기화 (API 키 확인)
-        from src.config.settings import settings
-        if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "test-key-not-used":
-            raise ValueError("OPENAI_API_KEY not configured")
+    # LLM 초기화 (settings에서 실제 API 키 사용, 없으면 에러 발생)
+    llm = ChatOpenAI(
+        model="gpt-4o-mini",
+        temperature=0.3,
+        api_key=settings.OPENAI_API_KEY
+    )
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
-
-        # 시스템 프롬프트
-        system_prompt = """당신은 투자 교육 전문가입니다.
+    # 시스템 프롬프트
+    system_prompt = """당신은 투자 교육 전문가입니다.
 
 역할:
 - 투자 용어를 쉽게 설명
@@ -55,51 +55,23 @@ A: PER(주가수익비율)은 주가를 주당순이익(EPS)으로 나눈 값입
    낮을수록 저평가, 높을수록 고평가로 볼 수 있지만, 업종마다 적정 수준이 다릅니다.
 """
 
-        # LLM 호출
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=query),
-        ]
+    # LLM 호출 (실패하면 에러 발생)
+    messages_for_llm = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=query),
+    ]
 
-        response = await llm.ainvoke(messages)
+    response = await llm.ainvoke(messages_for_llm)
+    answer = response.content
 
-        answer = response.content
+    logger.info(f"✅ [General] 응답 완료")
 
-        logger.info(f"✅ [General] 응답 완료")
+    # Supervisor 호환성을 위해 messages 포함
+    state_messages = list(state.get("messages", []))
+    state_messages.append(AIMessage(content=answer))
 
-        # Supervisor 호환성을 위해 messages 포함
-        messages = list(state.get("messages", []))
-        messages.append(AIMessage(content=answer))
-
-        return {
-            "answer": answer,
-            "sources": [],  # TODO: RAG 연동 시 추가
-            "messages": messages,
-        }
-
-    except Exception as e:
-        logger.warning(f"⚠️ [General] LLM 호출 실패 (mock 응답 사용): {e}")
-
-        # Mock 응답 생성
-        mock_answers = {
-            "per": "PER(주가수익비율)은 주가를 주당순이익(EPS)로 나눈 값입니다. 낮을수록 저평가된 것으로 볼 수 있습니다.",
-            "pbr": "PBR(주가순자산비율)은 주가를 주당순자산(BPS)로 나눈 값입니다. 1 미만이면 순자산 대비 저평가로 볼 수 있습니다.",
-            "default": f"'{query}' 관련 질문에 대한 답변입니다. (테스트 환경에서는 mock 응답이 제공됩니다)"
-        }
-
-        # 키워드 기반 mock 응답 선택
-        answer = mock_answers.get("default")
-        for keyword, response in mock_answers.items():
-            if keyword in query.lower():
-                answer = response
-                break
-
-        # Mock 응답을 messages에 포함
-        messages = list(state.get("messages", []))
-        messages.append(AIMessage(content=answer))
-
-        return {
-            "answer": answer,
-            "sources": [],
-            "messages": messages,
-        }
+    return {
+        "answer": answer,
+        "sources": [],  # TODO: RAG 연동 시 추가
+        "messages": state_messages,
+    }

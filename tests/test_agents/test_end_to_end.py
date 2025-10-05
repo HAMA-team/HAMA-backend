@@ -6,23 +6,15 @@
 - Master Supervisor 패턴
 - 전체 시스템 통합 플로우
 """
-import os
 import pytest
 from src.agents.graph_master import run_graph
 from src.agents.portfolio import portfolio_agent
-
-# Supervisor가 필요한 테스트는 유효한 API 키가 있을 때만 실행
-skip_if_no_api_key = pytest.mark.skipif(
-    not os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") == "test-key-not-used",
-    reason="Supervisor requires valid ANTHROPIC_API_KEY"
-)
 
 
 class TestEndToEndIntegration:
     """종단간 통합 테스트"""
 
     @pytest.mark.asyncio
-    @skip_if_no_api_key
     async def test_full_investment_workflow(self):
         """전체 투자 워크플로우 테스트: 분석 → 전략 → 포트폴리오"""
         # 1단계: 종목 분석 요청
@@ -89,7 +81,6 @@ class TestEndToEndIntegration:
         print(f"   예상 변동성: {report.get('expected_volatility', 0):.1%}")
 
     @pytest.mark.asyncio
-    @skip_if_no_api_key
     async def test_user_conversation_flow(self):
         """실제 사용자 대화 시나리오"""
         thread_id = "e2e_conversation"
@@ -130,7 +121,6 @@ class TestEndToEndIntegration:
         print(f"   총 {4}개 질의 처리 성공")
 
     @pytest.mark.asyncio
-    @skip_if_no_api_key
     async def test_risk_analysis_integration(self):
         """리스크 분석 통합 테스트"""
         # 고위험 포트폴리오로 리스크 체크 요청
@@ -144,7 +134,6 @@ class TestEndToEndIntegration:
         print("\n✅ 리스크 분석 통합 완료")
 
     @pytest.mark.asyncio
-    @skip_if_no_api_key
     async def test_multiple_agents_parallel(self):
         """여러 에이전트 병렬 실행 테스트"""
         # "삼성전자 분석하고 리스크도 체크해줘" → Research + Risk 병렬 호출
@@ -158,7 +147,6 @@ class TestEndToEndIntegration:
         print("\n✅ 병렬 에이전트 실행 완료")
 
     @pytest.mark.asyncio
-    @skip_if_no_api_key
     async def test_automation_level_differences(self):
         """자동화 레벨별 동작 차이 테스트"""
         query = "삼성전자 10주 매수해줘"
