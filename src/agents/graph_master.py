@@ -24,87 +24,7 @@ from src.schemas.graph_state import GraphState
 logger = logging.getLogger(__name__)
 
 
-# ==================== Intent Categories ====================
-
-class IntentCategory:
-    """Intent categories"""
-    STOCK_ANALYSIS = "stock_analysis"
-    TRADE_EXECUTION = "trade_execution"
-    PORTFOLIO_EVALUATION = "portfolio_evaluation"
-    REBALANCING = "rebalancing"
-    PERFORMANCE_CHECK = "performance_check"
-    MARKET_STATUS = "market_status"
-    GENERAL_QUESTION = "general_question"
-
-
 # ==================== Node Functions ====================
-
-def analyze_intent_node(state: GraphState) -> GraphState:
-    """
-    의도 분석 노드
-    사용자 쿼리를 분석하여 의도를 파악
-
-    LangGraph 표준: messages에서 마지막 사용자 메시지 추출
-    """
-    # messages에서 마지막 메시지 추출
-    last_message = state["messages"][-1]
-    query = last_message.content if hasattr(last_message, 'content') else str(last_message)
-    query_lower = query.lower()
-
-    # 키워드 기반 의도 분석 (우선순위 순서 중요!)
-    # 1. 리밸런싱 (가장 구체적)
-    if any(word in query_lower for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
-        intent = IntentCategory.REBALANCING
-    # 2. 매매 실행
-    elif any(word in query_lower for word in ["매수", "매도", "사", "팔"]):
-        intent = IntentCategory.TRADE_EXECUTION
-    # 3. 수익률/현황 조회
-    elif any(word in query_lower for word in ["수익률", "현황"]):
-        intent = IntentCategory.PERFORMANCE_CHECK
-    # 4. 포트폴리오 관련 (리밸런싱 제외)
-    elif any(word in query_lower for word in ["포트폴리오", "자산배분"]):
-        intent = IntentCategory.PORTFOLIO_EVALUATION
-    # 5. 종목 분석
-    elif any(word in query_lower for word in ["분석", "어때", "평가", "투자"]):
-        intent = IntentCategory.STOCK_ANALYSIS
-    # 6. 시장 상황
-    elif "시장" in query_lower:
-        intent = IntentCategory.MARKET_STATUS
-    # 7. 일반 질문
-    else:
-        intent = IntentCategory.GENERAL_QUESTION
-
-    logger.info(f"🔍 의도 감지: {intent} (쿼리: '{query}')")
-
-    return {
-        "intent": intent,
-    }
-
-
-def determine_agents_node(state: GraphState) -> GraphState:
-    """
-    에이전트 결정 노드
-    의도에 따라 호출할 에이전트 결정
-    """
-    intent = state["intent"]
-
-    routing_map = {
-        IntentCategory.STOCK_ANALYSIS: ["research_agent", "strategy_agent", "risk_agent"],
-        IntentCategory.TRADE_EXECUTION: ["strategy_agent", "risk_agent"],
-        IntentCategory.PORTFOLIO_EVALUATION: ["portfolio_agent", "risk_agent"],
-        IntentCategory.REBALANCING: ["portfolio_agent", "strategy_agent", "risk_agent"],
-        IntentCategory.PERFORMANCE_CHECK: ["portfolio_agent"],
-        IntentCategory.MARKET_STATUS: ["research_agent", "monitoring_agent"],
-        IntentCategory.GENERAL_QUESTION: ["education_agent"],
-    }
-
-    agents = routing_map.get(intent, ["education_agent"])
-    logger.info(f"🎯 호출할 에이전트: {agents}")
-
-    return {
-        "agents_to_call": agents,
-    }
-
 
 async def research_call_node(state: GraphState) -> GraphState:
     """
@@ -281,7 +201,6 @@ async def call_agents_node(state: GraphState) -> GraphState:
         return {}  # 아무것도 변경하지 않음
 
     agent_registry = {
-        "risk_agent": risk_agent,
         "portfolio_agent": portfolio_agent,
         "monitoring_agent": monitoring_agent,
         "education_agent": education_agent,
@@ -357,11 +276,11 @@ def check_hitl_node(state: GraphState) -> GraphState:
     hitl_required = False
 
     # Trade execution always requires approval in Level 2+
-    if intent == IntentCategory.TRADE_EXECUTION and automation_level >= 2:
+    if intent == "trade_execution" and automation_level >= 2:
         hitl_required = True
 
     # Rebalancing requires approval in Level 2+
-    if intent == IntentCategory.REBALANCING and automation_level >= 2:
+    if intent == "rebalancing" and automation_level >= 2:
         hitl_required = True
 
     # High risk always triggers HITL
@@ -370,8 +289,8 @@ def check_hitl_node(state: GraphState) -> GraphState:
 
     # Level 3 (Advisor) requires approval for most actions
     if automation_level == 3 and intent not in [
-        IntentCategory.GENERAL_QUESTION,
-        IntentCategory.PERFORMANCE_CHECK
+        "general_question",
+        "performance_check"
     ]:
         hitl_required = True
 
@@ -574,7 +493,7 @@ def route_after_determine_agents(state: GraphState) -> str:
     """
     intent = state.get("intent")
 
-    if intent == IntentCategory.TRADE_EXECUTION:
+    if intent == "trade_execution":
         logger.info("🔀 [Router] 매매 실행 플로우로 분기")
         return "prepare_trade"
     else:
@@ -726,10 +645,17 @@ async def run_graph(
         "user_id": "user_001",  # TODO: 실제 인증 시스템 연동
         "conversation_id": thread_id,
         "automation_level": automation_level,
+        # 의도 및 라우팅
         "intent": None,
-        "agent_results": {},
+        "stock_code": None,
+        "stock_name": None,
+        "intent_confidence": None,
         "agents_to_call": [],
         "agents_called": [],
+        "supervisor_reasoning": None,
+        # 에이전트 결과
+        "agent_results": {},
+        # 리스크 및 HITL
         "risk_level": None,
         "hitl_required": False,
         # 매매 실행 플래그

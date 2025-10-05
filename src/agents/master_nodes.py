@@ -50,29 +50,8 @@ async def llm_intent_analysis_node(state: GraphState) -> GraphState:
 
     api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
-        logger.error(f"❌ [LLM Intent] ANTHROPIC_API_KEY not found, fallback to keyword analysis")
-        # Fallback: 키워드 기반 의도 분석
-        query_lower = query.lower()
-        if any(word in query_lower for word in ["리밸런싱", "재구성", "재배분", "조정", "비중"]):
-            intent = "rebalancing"
-        elif any(word in query_lower for word in ["매수", "매도", "사", "팔"]):
-            intent = "trade_execution"
-        elif any(word in query_lower for word in ["수익률", "현황"]):
-            intent = "performance_check"
-        elif any(word in query_lower for word in ["포트폴리오", "자산배분"]):
-            intent = "portfolio_evaluation"
-        elif any(word in query_lower for word in ["분석", "어때", "평가", "투자", "전략"]):
-            intent = "stock_analysis"
-        elif "시장" in query_lower:
-            intent = "market_status"
-        else:
-            intent = "general_question"
-
-        logger.info(f"🔍 [Keyword Intent] 의도: {intent}")
-        return {
-            "intent": intent,
-            "intent_confidence": 0.6,  # 키워드 기반은 낮은 신뢰도
-        }
+        logger.error(f"❌ [LLM Intent] ANTHROPIC_API_KEY not found")
+        raise ValueError("ANTHROPIC_API_KEY is required for intent analysis")
 
     llm = ChatAnthropic(
         model="claude-3-5-haiku-20241022",
