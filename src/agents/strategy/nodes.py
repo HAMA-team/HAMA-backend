@@ -62,7 +62,9 @@ async def sector_rotation_node(state: StrategyState) -> StrategyState:
     시장 사이클에 따른 섹터 로테이션
     """
     if state.get("error"):
-        return {}
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+        return {**state, "messages": messages}
 
     logger.info(f"🔄 [Strategy/Sector] 섹터 전략 수립 시작")
 
@@ -114,7 +116,9 @@ async def asset_allocation_node(state: StrategyState) -> StrategyState:
     리스크 허용도에 따른 자산 배분
     """
     if state.get("error"):
-        return {}
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+        return {**state, "messages": messages}
 
     logger.info(f"💰 [Strategy/Asset] 자산 배분 결정 시작")
 
@@ -165,7 +169,9 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
     모든 분석을 통합하여 최종 Blueprint 생성
     """
     if state.get("error"):
-        return {}
+        # 에러 시에도 messages 전파
+        messages = list(state.get("messages", []))
+        return {**state, "messages": messages}
 
     logger.info(f"📋 [Strategy/Blueprint] Blueprint 생성 시작")
 
