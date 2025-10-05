@@ -262,12 +262,15 @@ async def call_agents_node(state: GraphState) -> GraphState:
             except Exception as e:
                 logger.error(f"Agent {agent_id} failed: {str(e)}")
 
-    logger.info(f"✅ Legacy 에이전트 호출 완료: {list(results.keys())}")
+    # 실제로 호출한 에이전트만 추출
+    called_agents = [agent_id for agent_id in agents_to_call if agent_id in results]
+
+    logger.info(f"✅ Legacy 에이전트 호출 완료: {called_agents}")
 
     # 변경된 필드만 반환
     return {
         "agent_results": results,
-        "agents_called": list(results.keys()),
+        "agents_called": called_agents,  # 새로 호출한 에이전트만
     }
 
 
@@ -489,13 +492,14 @@ def aggregate_results_node(state: GraphState) -> GraphState:
 
     # 최종 응답 구성
     final_response = {
-        "summary": summary,
-        "details": agent_results,
+        "message": summary,  # 최종 메시지
+        "summary": summary,  # 하위 호환성
+        "data": agent_results,  # details → data로 변경 (더 직관적)
         "intent": state["intent"],
         "agents_called": state.get("agents_called", []),
         "hitl_required": state.get("hitl_required", False),
         "risk_level": state.get("risk_level"),
-        "trade_result": state.get("trade_result"),  # 매매 결과 추가
+        "trade_result": state.get("trade_result"),
     }
 
     # ⭐ LangGraph 표준: AIMessage 추가
