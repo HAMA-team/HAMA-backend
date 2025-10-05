@@ -23,11 +23,11 @@ from src.agents.research import research_agent
 from src.agents.strategy import strategy_agent
 from src.agents.risk import risk_agent
 from src.agents.trading import trading_agent
+from src.agents.general import general_agent
 
 # Legacy agents (TODO: 서브그래프로 전환)
 from src.agents.portfolio import portfolio_agent
 from src.agents.monitoring import monitoring_agent
-from src.agents.education import education_agent
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +85,8 @@ def build_supervisor(automation_level: int = 2):
    - 이벤트 감지 (거래량 급증, VI 발동)
    - 정기 리포트 생성
 
-7. **education_agent** (투자 교육)
-   - 투자 용어 설명
+7. **general_agent** (일반 질의응답)
+   - 투자 용어 설명 (PER, PBR 등)
    - 일반 시장 질문 응답
    - 투자 전략 교육
 
@@ -98,7 +98,7 @@ def build_supervisor(automation_level: int = 2):
 2. **에이전트 조합 예시:**
    - "삼성전자 분석해줘" → research_agent + strategy_agent + risk_agent
    - "내 포트폴리오 리밸런싱" → portfolio_agent + risk_agent
-   - "PER이 뭐야?" → education_agent
+   - "PER이 뭐야?" → general_agent
    - "삼성전자 10주 매수" → trading_agent
 
 3. **HITL (Human-in-the-Loop):**
@@ -120,9 +120,9 @@ def build_supervisor(automation_level: int = 2):
             strategy_agent,
             risk_agent,
             trading_agent,
+            general_agent,
             # portfolio_agent,  # TODO: 서브그래프로 전환
             # monitoring_agent,
-            # education_agent,
         ],
         model=llm,
         parallel_tool_calls=True,  # ⭐ 병렬 실행 활성화
