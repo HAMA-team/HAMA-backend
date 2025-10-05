@@ -13,7 +13,7 @@ import logging
 
 from src.agents.research import research_subgraph  # LangGraph 서브그래프
 from src.agents.strategy import strategy_subgraph  # LangGraph 서브그래프
-from src.agents.risk import risk_agent  # TODO: 서브그래프로 변환
+from src.agents.risk import risk_subgraph  # LangGraph 서브그래프
 from src.agents.portfolio import portfolio_agent  # TODO: 서브그래프로 변환
 from src.agents.monitoring import monitoring_agent  # TODO: 서브그래프로 변환
 from src.agents.education import education_agent  # TODO: 서브그래프로 변환
@@ -215,6 +215,57 @@ async def strategy_call_node(state: GraphState) -> GraphState:
     }
 
 
+async def risk_call_node(state: GraphState) -> GraphState:
+    """
+    Risk Agent 서브그래프 호출 노드
+
+    GraphState → RiskState 변환 → 서브그래프 실행 → 결과 저장
+    """
+    # risk_agent가 agents_to_call에 없으면 스킵
+    if "risk_agent" not in state.get("agents_to_call", []):
+        logger.info("⏭️ [Risk] agents_to_call에 없음, 스킵")
+        return {}  # 아무것도 변경하지 않음
+
+    logger.info(f"⚠️ [Risk] 서브그래프 호출")
+
+    # RiskState 구성
+    risk_input = {
+        "request_id": state["conversation_id"],
+        "portfolio_data": None,  # 서브그래프에서 수집
+        "market_data": None,
+        "concentration_risk": None,
+        "market_risk": None,
+        "risk_assessment": None,
+        "error": None,
+    }
+
+    # 서브그래프 실행
+    result = await risk_subgraph.ainvoke(risk_input)
+
+    # 결과 저장
+    assessment = result.get("risk_assessment", {})
+    risk_data = {
+        "risk_level": assessment.get("risk_level", "medium"),
+        "risk_score": assessment.get("risk_score", 50),
+        "concentration_risk": assessment.get("concentration_risk"),
+        "volatility": assessment.get("volatility"),
+        "var_95": assessment.get("var_95"),
+        "max_drawdown_estimate": assessment.get("max_drawdown_estimate"),
+        "warnings": assessment.get("warnings", []),
+        "recommendations": assessment.get("recommendations", []),
+        "should_trigger_hitl": assessment.get("should_trigger_hitl", False),
+        "sector_breakdown": assessment.get("sector_breakdown", {}),
+    }
+
+    logger.info(f"✅ [Risk] 서브그래프 완료: {risk_data.get('risk_level')}")
+
+    # 변경된 필드만 반환
+    return {
+        "agent_results": {"risk_agent": risk_data},
+        "agents_called": ["risk_agent"],
+    }
+
+
 async def call_agents_node(state: GraphState) -> GraphState:
     """
     Legacy 에이전트 호출 노드 (서브그래프 미전환 에이전트용)
@@ -223,8 +274,8 @@ async def call_agents_node(state: GraphState) -> GraphState:
     """
     agents_to_call = state["agents_to_call"]
 
-    # research_agent, strategy_agent는 이미 별도 노드로 처리됨
-    agents_to_call = [a for a in agents_to_call if a not in ["research_agent", "strategy_agent"]]
+    # research_agent, strategy_agent, risk_agent는 이미 별도 노드로 처리됨
+    agents_to_call = [a for a in agents_to_call if a not in ["research_agent", "strategy_agent", "risk_agent"]]
 
     if not agents_to_call:
         return {}  # 아무것도 변경하지 않음
@@ -559,6 +610,7 @@ def build_graph(automation_level: int = 2):
     workflow.add_node("llm_supervisor", llm_supervisor_node)  # Claude Supervisor
     workflow.add_node("research_call", research_call_node)  # Research 서브그래프
     workflow.add_node("strategy_call", strategy_call_node)  # Strategy 서브그래프
+    workflow.add_node("risk_call", risk_call_node)  # Risk 서브그래프
     workflow.add_node("call_agents", call_agents_node)  # Legacy 에이전트
     workflow.add_node("check_risk", check_risk_node)
     workflow.add_node("check_hitl", check_hitl_node)
@@ -583,9 +635,10 @@ def build_graph(automation_level: int = 2):
         }
     )
 
-    # 일반 플로우: Research → Strategy → Legacy 에이전트 → Risk → HITL → Aggregate
+    # 일반 플로우: Research → Strategy → Risk → Legacy 에이전트 → check_risk → HITL → Aggregate
     workflow.add_edge("research_call", "strategy_call")
-    workflow.add_edge("strategy_call", "call_agents")
+    workflow.add_edge("strategy_call", "risk_call")
+    workflow.add_edge("risk_call", "call_agents")
     workflow.add_edge("call_agents", "check_risk")
     workflow.add_edge("check_risk", "check_hitl")
     workflow.add_edge("check_hitl", "aggregate_results")

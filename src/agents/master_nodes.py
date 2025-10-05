@@ -46,9 +46,9 @@ async def llm_intent_analysis_node(state: GraphState) -> GraphState:
 
     # Claude LLM 초기화
     from langchain_anthropic import ChatAnthropic
-    import os
+    from src.config.settings import settings
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
         logger.error(f"❌ [LLM Intent] ANTHROPIC_API_KEY not found, fallback to keyword analysis")
         # Fallback: 키워드 기반 의도 분석
@@ -136,9 +136,9 @@ async def llm_supervisor_node(state: GraphState) -> GraphState:
 
     # Claude LLM 초기화
     from langchain_anthropic import ChatAnthropic
-    import os
+    from src.config.settings import settings
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = settings.ANTHROPIC_API_KEY
     if not api_key:
         logger.error(f"❌ [LLM Supervisor] ANTHROPIC_API_KEY not found")
         # Fallback: 의도 기반 기본 라우팅
