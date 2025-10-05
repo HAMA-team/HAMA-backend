@@ -7,8 +7,6 @@
 - 전체 시스템 통합 플로우
 """
 import pytest
-from unittest.mock import patch
-
 from src.agents.graph_master import run_graph
 from src.agents.portfolio import portfolio_agent
 

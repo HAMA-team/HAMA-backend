@@ -21,8 +21,15 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
+    @property
+    def database_url(self) -> str:
+        """ENV에 따라 DATABASE_URL 동적 변경"""
+        if self.ENV == "test":
+            return "sqlite:///./test_hama.db"
+        return self.DATABASE_URL
+
     # LLM APIs
-    OPENAI_API_KEY: str
+    OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     ANTHROPIC_API_KEY: str | None = None
     DEFAULT_LLM_MODEL: str = "claude-sonnet-4-5-20250929"
@@ -40,7 +47,7 @@ class Settings(BaseSettings):
     SUPERVISOR_REASONING_EFFORT: str = "low"
 
     # DART API
-    DART_API_KEY: str
+    DART_API_KEY: str = ""
 
     # KIS API (Phase 2)
     KIS_APP_KEY: str | None = None

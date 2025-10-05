@@ -1,12 +1,9 @@
-"""
-Risk Agent 노드 함수들
-
-각 노드는 순수 함수로 작성:
-- 입력: RiskState
-- 출력: 변경된 필드만 포함한 dict
-"""
+"""Risk Agent 노드 함수들."""
 import logging
 from decimal import Decimal
+
+from langchain_core.messages import AIMessage
+
 from src.agents.risk.state import RiskState
 
 logger = logging.getLogger(__name__)
@@ -225,6 +222,15 @@ async def final_assessment_node(state: RiskState) -> dict:
 
     logger.info(f"✅ [Risk] 최종 평가 완료: {risk_level} (점수: {risk_score:.0f})")
 
+    summary = (
+        f"리스크 수준: {risk_level.upper()} / 점수 {risk_score:.0f}. "
+        f"예상 변동성 {market.get('portfolio_volatility', 0):.1%}, VaR95 {market.get('var_95', 0):.1%}."
+    )
+
+    messages = list(state.get("messages", []))
+    messages.append(AIMessage(content=summary))
+
     return {
         "risk_assessment": risk_assessment,
+        "messages": messages,
     }

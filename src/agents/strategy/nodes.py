@@ -5,6 +5,7 @@ LangGraph 서브그래프 노드 구현
 """
 from .state import StrategyState
 from src.schemas.strategy import InvestmentStyle
+from langchain_core.messages import AIMessage
 import logging
 
 logger = logging.getLogger(__name__)
@@ -186,12 +187,24 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
         logger.info(f"✅ [Strategy/Blueprint] Blueprint 생성 완료")
         logger.info(f"   {summary}")
 
+        # Supervisor 호환성을 위해 messages 포함
+        messages = list(state.get("messages", []))
+        messages.append(AIMessage(content=summary))
+
         return {
-            "blueprint": blueprint
+            "blueprint": blueprint,
+            "messages": messages,
         }
 
     except Exception as e:
         logger.error(f"❌ [Strategy/Blueprint] 에러: {e}")
+
+        # 에러 시에도 messages 포함
+        messages = list(state.get("messages", []))
+        error_msg = f"Blueprint 생성 실패: {str(e)}"
+        messages.append(AIMessage(content=error_msg))
+
         return {
-            "error": f"Blueprint 생성 실패: {str(e)}"
+            "error": error_msg,
+            "messages": messages,
         }

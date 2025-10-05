@@ -18,13 +18,18 @@ from sqlalchemy.orm import sessionmaker
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+# 테스트 환경 설정
+os.environ["ENV"] = "test"
+os.environ.setdefault("OPENAI_API_KEY", "test-key-not-used")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key-not-used")
+
 from src.main import app
 from src.models.database import Base, get_db
 from src.config.settings import Settings
 
 
 # Test database URL
-TEST_DATABASE_URL = "postgresql://hama:hama123@localhost:5432/hama_test_db"
+TEST_DATABASE_URL = "sqlite:///./hama_test.db"
 
 
 @pytest.fixture(scope="session")
@@ -39,7 +44,11 @@ def settings():
 @pytest.fixture(scope="session")
 def test_engine():
     """테스트 DB 엔진 생성"""
-    engine = create_engine(TEST_DATABASE_URL)
+    connect_args = {}
+    if TEST_DATABASE_URL.startswith("sqlite"):
+        connect_args = {"check_same_thread": False}
+
+    engine = create_engine(TEST_DATABASE_URL, connect_args=connect_args, future=True)
 
     # 테스트 DB 초기화
     Base.metadata.drop_all(bind=engine)

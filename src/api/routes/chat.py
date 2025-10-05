@@ -69,6 +69,7 @@ async def chat(request: ChatRequest):
             "conversation_id": conversation_id,
             "automation_level": request.automation_level,
             "intent": None,
+            "query": request.message,
             "agent_results": {},
             "agents_to_call": [],
             "agents_called": [],

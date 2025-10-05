@@ -1,13 +1,14 @@
-"""
-Risk Agent State 정의
+"""Risk Agent State 정의."""
+from typing import TypedDict, Optional, List, Annotated
 
-리스크 평가 서브그래프의 상태 관리
-"""
-from typing import TypedDict, Optional
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class RiskState(TypedDict):
     """Risk Agent 서브그래프 상태"""
+
+    messages: Annotated[List[BaseMessage], add_messages]
 
     request_id: str
     """요청 ID"""

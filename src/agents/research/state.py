@@ -1,9 +1,8 @@
-"""
-Research Agent State 정의
+"""Research Agent State 정의."""
+from typing import TypedDict, Optional, List, Annotated
 
-LangGraph 서브그래프를 위한 State
-"""
-from typing import TypedDict, Optional
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class ResearchState(TypedDict):
@@ -16,9 +15,15 @@ class ResearchState(TypedDict):
     3. consensus: 최종 의견 통합
     """
 
+    # LangGraph 메시지 스택
+    messages: Annotated[List[BaseMessage], add_messages]
+
     # 입력
-    stock_code: str
+    stock_code: Optional[str]
     """종목 코드"""
+
+    query: Optional[str]
+    """사용자 질문(종목 코드 추출용)"""
 
     request_id: str
     """요청 ID"""

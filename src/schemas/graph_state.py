@@ -52,6 +52,9 @@ class GraphState(TypedDict):
     intent_confidence: Optional[float]
     """Intent 분석 신뢰도 (0.0-1.0)"""
 
+    query: Optional[str]
+    """원본 사용자 질문 (서브그래프 fallback용)"""
+
     agents_to_call: List[str]
     """호출할 에이전트 목록"""
 

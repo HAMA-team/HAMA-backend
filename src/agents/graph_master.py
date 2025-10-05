@@ -211,6 +211,8 @@ async def run_graph(
     # 초기 State
     initial_state = {
         "messages": [HumanMessage(content=query)],
+        "query": query,
+        "request_id": request_id,  # 서브그래프에서 필요
     }
 
     logger.info(f"🚀 [Graph] 실행 시작: {query[:50]}...")

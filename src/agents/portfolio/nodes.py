@@ -7,6 +7,8 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from langchain_core.messages import AIMessage
+
 from src.agents.portfolio.state import (
     PortfolioState,
     PortfolioHolding,
@@ -261,8 +263,12 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
 
     logger.info("📝 [Portfolio] 리포트 생성 완료")
 
+    messages = list(state.get("messages", []))
+    messages.append(AIMessage(content=summary))
+
     return {
         **state,
         "summary": summary,
         "portfolio_report": portfolio_report,
+        "messages": messages,
     }

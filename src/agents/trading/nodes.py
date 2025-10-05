@@ -5,6 +5,7 @@ Trading Agent 노드 함수들
 """
 import logging
 from langgraph.types import interrupt
+from langchain_core.messages import AIMessage
 from src.agents.trading.state import TradingState
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,13 @@ def execute_trade_node(state: TradingState) -> dict:
 
     logger.info(f"✅ [Trade] 거래 실행 완료: {result}")
 
+    # Supervisor 호환성을 위해 messages 포함
+    messages = list(state.get("messages", []))
+    summary = f"{result['order_type'].upper()} {result['quantity']}주 @ {result['price']:,}원 (총 {result['total']:,}원)"
+    messages.append(AIMessage(content=summary))
+
     return {
         "trade_executed": True,
         "trade_result": result,
+        "messages": messages,
     }

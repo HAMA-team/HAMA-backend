@@ -1,10 +1,10 @@
-"""Portfolio Agent State 정의
-
-포트폴리오 분석 및 리밸런싱을 위한 LangGraph State
-"""
+"""Portfolio Agent State 정의."""
 from __future__ import annotations
 
-from typing import TypedDict, Optional, List, Literal
+from typing import TypedDict, Optional, List, Literal, Annotated
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class PortfolioHolding(TypedDict, total=False):
@@ -28,6 +28,8 @@ class RebalanceInstruction(TypedDict, total=False):
 
 class PortfolioState(TypedDict, total=False):
     """Portfolio Agent 서브그래프 State"""
+
+    messages: Annotated[List[BaseMessage], add_messages]
 
     # 입력
     request_id: str
