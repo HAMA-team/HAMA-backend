@@ -4,7 +4,7 @@ General Agent 노드 함수들
 일반 질의응답을 위한 노드
 """
 import logging
-from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.agents.general.state import GeneralState
 from src.config.settings import settings
@@ -26,11 +26,12 @@ async def answer_question_node(state: GeneralState) -> dict:
 
     logger.info(f"💬 [General] 질문 응답 중: {query[:50]}...")
 
-    # LLM 초기화 (settings에서 실제 API 키 사용, 없으면 에러 발생)
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
+    # LLM 초기화 (Anthropic Claude 사용)
+    llm = ChatAnthropic(
+        model="claude-3-5-sonnet-20241022",
         temperature=0.3,
-        api_key=settings.OPENAI_API_KEY
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_tokens=1024
     )
 
     # 시스템 프롬프트
