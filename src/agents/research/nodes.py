@@ -10,7 +10,7 @@ import re
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.data_collection import data_collection_agent
+from src.agents.legacy.data_collection import data_collection_agent
 from src.config.settings import settings
 from src.schemas.agent import AgentInput
 
@@ -61,7 +61,7 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
         )
         price_result = await data_collection_agent.process(price_input)
         if price_result.status != "success":
-            price_result = data_collection_agent._get_mock_response(price_input)
+            raise RuntimeError(f"주가 데이터 수집 실패: {price_result.message}")
 
         # 재무제표 데이터
         financial_input = AgentInput(
@@ -70,7 +70,7 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
         )
         financial_result = await data_collection_agent.process(financial_input)
         if financial_result.status != "success":
-            financial_result = data_collection_agent._get_mock_response(financial_input)
+            raise RuntimeError(f"재무제표 데이터 수집 실패: {financial_result.message}")
 
         # 기업 정보
         company_input = AgentInput(
@@ -79,7 +79,7 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
         )
         company_result = await data_collection_agent.process(company_input)
         if company_result.status != "success":
-            company_result = data_collection_agent._get_mock_response(company_input)
+            raise RuntimeError(f"기업 정보 수집 실패: {company_result.message}")
 
         logger.info(f"✅ [Research/Collect] 데이터 수집 완료")
 
@@ -87,8 +87,8 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
             **state,
             "stock_code": stock_code,
             "price_data": price_result.data,
-            "financial_data": financial_result.data if financial_result.status == "success" else None,
-            "company_data": company_result.data if company_result.status == "success" else None,
+            "financial_data": financial_result.data,
+            "company_data": company_result.data,
         }
 
     except Exception as e:
@@ -112,14 +112,15 @@ async def bull_analyst_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"🐂 [Research/Bull] 강세 분석 시작")
 
-    llm = None
-    if settings.ANTHROPIC_API_KEY:
-        llm = ChatAnthropic(
-            model=settings.CLAUDE_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=2000,
-            temperature=0.3
-        )
+    if not settings.ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다")
+
+    llm = ChatAnthropic(
+        model=settings.CLAUDE_MODEL,
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_tokens=2000,
+        temperature=0.3
+    )
 
     prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 **긍정적 시나리오**를 제시하세요.
 
@@ -147,44 +148,30 @@ JSON 형식으로:
 }}
 """
 
-    if llm:
-        try:
-            response = await llm.ainvoke(prompt)
-            content = response.content
+    try:
+        response = await llm.ainvoke(prompt)
+        content = response.content
 
-            if "```json" in content:
-                json_start = content.find("```json") + 7
-                json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
-            else:
-                json_str = content.strip()
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        else:
+            json_str = content.strip()
 
-            analysis = json.loads(json_str)
-            logger.info(f"✅ [Research/Bull] 강세 분석 완료")
+        analysis = json.loads(json_str)
+        logger.info(f"✅ [Research/Bull] 강세 분석 완료")
 
-            # Supervisor 호환성: messages 전파
-            messages = list(state.get("messages", []))
+        # Supervisor 호환성: messages 전파
+        messages = list(state.get("messages", []))
 
-            return {
-                "bull_analysis": analysis,
-                "messages": messages,
-            }
-        except Exception as e:  # pragma: no cover - LLM runtime guard
-            logger.error(f"❌ [Research/Bull] 에러: {e}")
-
-    current_price = state.get('price_data', {}).get('latest_close', 0)
-
-    # Supervisor 호환성: messages 전파
-    messages = list(state.get("messages", []))
-
-    return {
-        "bull_analysis": {
-            "positive_factors": ["주가 상승 가능성", "시장 모멘텀", "기술적 지지"],
-            "target_price": int(current_price * 1.15) if current_price else 0,
-            "confidence": 3
-        },
-        "messages": messages,
-    }
+        return {
+            "bull_analysis": analysis,
+            "messages": messages,
+        }
+    except Exception as e:
+        logger.error(f"❌ [Research/Bull] LLM 호출 실패: {e}")
+        raise RuntimeError(f"강세 분석 실패: {e}") from e
 
 
 async def bear_analyst_node(state: ResearchState) -> ResearchState:
@@ -198,14 +185,15 @@ async def bear_analyst_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"🐻 [Research/Bear] 약세 분석 시작")
 
-    llm = None
-    if settings.ANTHROPIC_API_KEY:
-        llm = ChatAnthropic(
-            model=settings.CLAUDE_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
-            max_tokens=2000,
-            temperature=0.3
-        )
+    if not settings.ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다")
+
+    llm = ChatAnthropic(
+        model=settings.CLAUDE_MODEL,
+        api_key=settings.ANTHROPIC_API_KEY,
+        max_tokens=2000,
+        temperature=0.3
+    )
 
     prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 **부정적 시나리오**를 제시하세요.
 
@@ -233,44 +221,30 @@ JSON 형식으로:
 }}
 """
 
-    if llm:
-        try:
-            response = await llm.ainvoke(prompt)
-            content = response.content
+    try:
+        response = await llm.ainvoke(prompt)
+        content = response.content
 
-            if "```json" in content:
-                json_start = content.find("```json") + 7
-                json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
-            else:
-                json_str = content.strip()
+        if "```json" in content:
+            json_start = content.find("```json") + 7
+            json_end = content.find("```", json_start)
+            json_str = content[json_start:json_end].strip()
+        else:
+            json_str = content.strip()
 
-            analysis = json.loads(json_str)
-            logger.info(f"✅ [Research/Bear] 약세 분석 완료")
+        analysis = json.loads(json_str)
+        logger.info(f"✅ [Research/Bear] 약세 분석 완료")
 
-            # Supervisor 호환성: messages 전파
-            messages = list(state.get("messages", []))
+        # Supervisor 호환성: messages 전파
+        messages = list(state.get("messages", []))
 
-            return {
-                "bear_analysis": analysis,
-                "messages": messages,
-            }
-        except Exception as e:  # pragma: no cover - LLM runtime guard
-            logger.error(f"❌ [Research/Bear] 에러: {e}")
-
-    current_price = state.get('price_data', {}).get('latest_close', 0)
-
-    # Supervisor 호환성: messages 전파
-    messages = list(state.get("messages", []))
-
-    return {
-        "bear_analysis": {
-            "risk_factors": ["시장 변동성", "외부 리스크", "기술적 저항"],
-            "downside_target": int(current_price * 0.90) if current_price else 0,
-            "confidence": 3
-        },
-        "messages": messages,
-    }
+        return {
+            "bear_analysis": analysis,
+            "messages": messages,
+        }
+    except Exception as e:
+        logger.error(f"❌ [Research/Bear] LLM 호출 실패: {e}")
+        raise RuntimeError(f"약세 분석 실패: {e}") from e
 
 
 # ==================== Consensus Node ====================

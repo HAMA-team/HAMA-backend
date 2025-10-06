@@ -5,7 +5,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
-class ResearchState(TypedDict):
+class ResearchState(TypedDict, total=False):
     """
     Research Agent 서브그래프 State
 
@@ -13,6 +13,8 @@ class ResearchState(TypedDict):
     1. collect_data: 데이터 수집 (주가, 재무, 기업정보)
     2. bull_analysis + bear_analysis: 병렬 분석
     3. consensus: 최종 의견 통합
+
+    Note: total=False로 설정하여 partial update 지원 (LangGraph 패턴)
     """
 
     # LangGraph 메시지 스택
