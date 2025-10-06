@@ -173,8 +173,9 @@ from src.agents.strategy import strategy_agent
 from src.agents.risk import risk_agent
 from src.agents.trading import trading_agent
 from src.agents.portfolio import portfolio_agent
-from src.agents.monitoring import monitoring_agent
+from src.agents.legacy.monitoring import monitoring_agent
 from src.agents.general import general_agent
+
 
 # 2. Supervisor 생성
 def build_supervisor(automation_level: int = 2):
@@ -219,6 +220,7 @@ def build_supervisor(automation_level: int = 2):
 
     return supervisor
 
+
 # 3. 그래프 컴파일
 def build_graph(automation_level: int = 2):
     """최종 그래프 빌드"""
@@ -227,6 +229,7 @@ def build_graph(automation_level: int = 2):
     return supervisor.compile(
         checkpointer=MemorySaver()
     )
+
 
 # 4. 실행
 async def run_graph(query: str, automation_level: int = 2):

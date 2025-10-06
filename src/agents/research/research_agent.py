@@ -7,10 +7,9 @@ Responsibilities:
 - LLM-based comprehensive analysis
 - Technical indicator calculation
 """
-from decimal import Decimal
 from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
-from src.agents.data_collection import data_collection_agent
+from src.agents.legacy.data_collection import data_collection_agent
 from langchain_anthropic import ChatAnthropic
 from src.config.settings import settings
 import json

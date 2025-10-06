@@ -30,7 +30,6 @@ from src.agents.general import general_agent
 
 # Legacy agents (TODO: 서브그래프로 전환)
 from src.agents.portfolio import portfolio_agent
-from src.agents.monitoring import monitoring_agent
 
 logger = logging.getLogger(__name__)
 
