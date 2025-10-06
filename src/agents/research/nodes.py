@@ -10,9 +10,9 @@ import re
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.legacy.data_collection import data_collection_agent
 from src.config.settings import settings
-from src.schemas.agent import AgentInput
+from src.services.stock_data_service import stock_data_service
+from src.services.dart_service import dart_service
 
 from .state import ResearchState
 
@@ -25,13 +25,17 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
     """
     1단계: 데이터 수집 노드
 
+    실제 데이터 서비스 직접 호출:
     - 주가 데이터 (FinanceDataReader)
     - 재무제표 (DART)
     - 기업 정보 (DART)
+
+    Legacy data_collection_agent 제거됨
     """
     stock_code = state.get("stock_code")
     request_id = state.get("request_id", "supervisor-call")
 
+    # 종목 코드 추출 (query 또는 messages에서)
     if not stock_code:
         query_candidates = []
         if state.get("query"):
@@ -54,41 +58,58 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
     logger.info(f"📊 [Research/Collect] 데이터 수집 시작: {stock_code}")
 
     try:
-        # 주가 데이터
-        price_input = AgentInput(
-            request_id=request_id,
-            context={"data_type": "stock_price", "stock_code": stock_code, "days": 30}
-        )
-        price_result = await data_collection_agent.process(price_input)
-        if price_result.status != "success":
-            raise RuntimeError(f"주가 데이터 수집 실패: {price_result.message}")
+        # 1. 주가 데이터 (FinanceDataReader)
+        price_df = await stock_data_service.get_stock_price(stock_code, days=30)
+        if price_df is None or len(price_df) == 0:
+            raise RuntimeError(f"주가 데이터 조회 실패: {stock_code}")
 
-        # 재무제표 데이터
-        financial_input = AgentInput(
-            request_id=request_id,
-            context={"data_type": "financial_statement", "stock_code": stock_code, "year": "2023"}
-        )
-        financial_result = await data_collection_agent.process(financial_input)
-        if financial_result.status != "success":
-            raise RuntimeError(f"재무제표 데이터 수집 실패: {financial_result.message}")
+        price_data = {
+            "stock_code": stock_code,
+            "days": len(price_df),
+            "prices": price_df.reset_index().to_dict("records"),
+            "latest_close": float(price_df.iloc[-1]["Close"]),
+            "latest_volume": int(price_df.iloc[-1]["Volume"]),
+            "source": "FinanceDataReader"
+        }
 
-        # 기업 정보
-        company_input = AgentInput(
-            request_id=request_id,
-            context={"data_type": "company_info", "stock_code": stock_code}
-        )
-        company_result = await data_collection_agent.process(company_input)
-        if company_result.status != "success":
-            raise RuntimeError(f"기업 정보 수집 실패: {company_result.message}")
+        # 2. 종목코드 → 고유번호 변환
+        corp_code = dart_service.search_corp_code_by_stock_code(stock_code)
+        if not corp_code:
+            logger.warning(f"⚠️ 고유번호 찾기 실패: {stock_code}, DART 데이터 스킵")
+            financial_data = None
+            company_data = None
+        else:
+            logger.info(f"✅ 고유번호 찾기 성공: {stock_code} -> {corp_code}")
+
+            # 3. 재무제표 데이터 (DART)
+            financial_statements = await dart_service.get_financial_statement(
+                corp_code, bsns_year="2023"
+            )
+            financial_data = {
+                "stock_code": stock_code,
+                "corp_code": corp_code,
+                "year": "2023",
+                "statements": financial_statements or {},
+                "source": "DART"
+            }
+
+            # 4. 기업 정보 (DART)
+            company_info = await dart_service.get_company_info(corp_code)
+            company_data = {
+                "stock_code": stock_code,
+                "corp_code": corp_code,
+                "info": company_info or {},
+                "source": "DART"
+            }
 
         logger.info(f"✅ [Research/Collect] 데이터 수집 완료")
 
         return {
             **state,
             "stock_code": stock_code,
-            "price_data": price_result.data,
-            "financial_data": financial_result.data,
-            "company_data": company_result.data,
+            "price_data": price_data,
+            "financial_data": financial_data,
+            "company_data": company_data,
         }
 
     except Exception as e:
