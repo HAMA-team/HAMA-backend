@@ -73,7 +73,7 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
         }
 
         # 2. 종목코드 → 고유번호 변환
-        corp_code = dart_service.search_corp_code_by_stock_code(stock_code)
+        corp_code = await dart_service.search_corp_code_by_stock_code(stock_code)
         if not corp_code:
             logger.warning(f"⚠️ 고유번호 찾기 실패: {stock_code}, DART 데이터 스킵")
             financial_data = None

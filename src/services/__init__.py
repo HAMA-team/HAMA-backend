@@ -13,12 +13,16 @@ from .kis_service import (
     kis_service,
     init_kis_service,
 )
+from .dart_service import dart_service
+from .stock_data_service import stock_data_service
 
 __all__ = [
     "portfolio_service",
     "trading_service",
     "kis_service",
     "init_kis_service",
+    "dart_service",
+    "stock_data_service",
     "PortfolioNotFoundError",
     "InsufficientHoldingsError",
     "OrderNotFoundError",

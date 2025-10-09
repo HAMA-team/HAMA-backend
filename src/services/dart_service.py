@@ -1,10 +1,18 @@
 """DART 공시 서비스"""
 
+import asyncio
+import logging
+import xml.etree.ElementTree as ET
+import zipfile
+from io import BytesIO
 from typing import Optional, List, Dict, Any
+
 import requests
 
 from src.services.cache_manager import cache_manager
 from src.config.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 class DARTService:
@@ -227,12 +235,65 @@ class DARTService:
             print(f"❌ 주요주주 조회 에러: {corp_code}, {e}")
             return []
 
-    def search_corp_code_by_stock_code(self, stock_code: str) -> Optional[str]:
+    async def _download_and_parse_corp_code_mapping(self) -> Dict[str, str]:
         """
-        종목 코드로 고유번호 찾기 (하드코딩 매핑)
+        DART corp_code.zip 다운로드 및 파싱
 
-        Note: 실제로는 DART corp_code.zip을 다운로드하여 매핑 테이블을 만들어야 하지만,
-        Phase 2에서는 주요 종목만 하드코딩
+        Returns:
+            dict: {stock_code: corp_code} 매핑 딕셔너리
+        """
+        logger.info("📥 DART corp_code.zip 다운로드 시작...")
+
+        if not self.api_key:
+            logger.warning("⚠️ DART_API_KEY가 설정되지 않았습니다. 빈 매핑을 반환합니다.")
+            return {}
+
+        url = f"{self.base_url}/corpCode.xml"
+        params = {"crtfc_key": self.api_key}
+
+        try:
+            # ZIP 파일 다운로드 (동기 → 비동기 변환)
+            response = await asyncio.to_thread(
+                requests.get, url, params=params, timeout=30
+            )
+            response.raise_for_status()
+
+            # ZIP 파일 압축 해제
+            zip_data = BytesIO(response.content)
+
+            with zipfile.ZipFile(zip_data) as zip_file:
+                # CORPCODE.xml 파일 읽기
+                xml_data = zip_file.read("CORPCODE.xml")
+
+            # XML 파싱
+            root = ET.fromstring(xml_data)
+            mapping = {}
+
+            for company in root.findall("list"):
+                corp_code_elem = company.find("corp_code")
+                stock_code_elem = company.find("stock_code")
+
+                if corp_code_elem is not None and stock_code_elem is not None:
+                    corp_code = corp_code_elem.text
+                    stock_code = stock_code_elem.text
+
+                    # stock_code가 유효한 경우에만 매핑 추가
+                    if stock_code and stock_code.strip() and len(stock_code.strip()) == 6:
+                        mapping[stock_code.strip()] = corp_code.strip()
+
+            logger.info(f"✅ DART 종목 매핑 완료: {len(mapping)}개 종목")
+            return mapping
+
+        except Exception as e:
+            logger.error(f"❌ DART corp_code 다운로드 실패: {e}")
+            return {}
+
+    async def search_corp_code_by_stock_code(self, stock_code: str) -> Optional[str]:
+        """
+        종목 코드로 고유번호 찾기
+
+        DART corp_code.zip을 다운로드하여 전체 종목 매핑 테이블 사용
+        Redis 캐싱 (1일 TTL)
 
         Args:
             stock_code: 종목 코드 (6자리, 예: "005930")
@@ -240,21 +301,37 @@ class DARTService:
         Returns:
             str: 고유번호 (8자리, 예: "00126380")
         """
-        # 주요 종목 매핑 (Phase 2에서는 일부만 지원)
-        mapping = {
-            "005930": "00126380",  # 삼성전자
-            "000660": "00126380",  # SK하이닉스 (임시: DART corp_code 확인 필요)
-            "035420": "00140536",  # NAVER
-            "005380": "00164779",  # 현대자동차
-            "051910": "00164529",  # LG화학
-        }
+        # 캐시 키
+        cache_key = "dart_corp_code_mapping"
 
+        # 캐시에서 매핑 테이블 확인
+        cached_mapping = await self.cache.get(cache_key)
+
+        if cached_mapping is None:
+            # 캐시 미스: 새로 다운로드
+            logger.info("🔄 DART 매핑 테이블 캐시 미스, 새로 다운로드...")
+            mapping = await self._download_and_parse_corp_code_mapping()
+
+            if mapping:
+                # Redis 캐싱 (1일 TTL)
+                await self.cache.set(cache_key, mapping, ttl=86400)
+                logger.info(f"✅ DART 매핑 테이블 캐싱 완료: {len(mapping)}개 종목")
+            else:
+                logger.warning("⚠️ DART 매핑 테이블이 비어있습니다.")
+                # 빈 딕셔너리도 캐싱 (1시간 TTL)
+                await self.cache.set(cache_key, {}, ttl=3600)
+                return None
+        else:
+            mapping = cached_mapping
+            logger.debug(f"✅ DART 매핑 테이블 캐시 히트: {len(mapping)}개 종목")
+
+        # 종목 코드로 고유번호 찾기
         corp_code = mapping.get(stock_code)
 
         if corp_code:
-            print(f"✅ 고유번호 찾기 성공: {stock_code} -> {corp_code}")
+            logger.info(f"✅ 고유번호 찾기 성공: {stock_code} -> {corp_code}")
         else:
-            print(f"⚠️ 고유번호를 찾을 수 없음: {stock_code}")
+            logger.warning(f"⚠️ 고유번호를 찾을 수 없음: {stock_code}")
 
         return corp_code
 

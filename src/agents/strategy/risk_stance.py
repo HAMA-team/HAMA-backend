@@ -7,8 +7,12 @@ Risk Stance - 리스크 스탠스 결정 서브모듈
 - 방어 수위 조정
 """
 
+import logging
 from decimal import Decimal
 from src.schemas.strategy import AssetAllocation
+from src.services.stock_data_service import stock_data_service
+
+logger = logging.getLogger(__name__)
 
 
 class RiskStanceAnalyzer:
@@ -55,7 +59,7 @@ class RiskStanceAnalyzer:
         Args:
             market_cycle: 시장 사이클
             risk_tolerance: 리스크 허용도 (conservative/moderate/aggressive)
-            volatility_index: 변동성 지수 (VIX 등)
+            volatility_index: 변동성 지수 (제공되지 않으면 자동 계산)
 
         Returns:
             AssetAllocation: 자산 배분 전략
@@ -73,9 +77,14 @@ class RiskStanceAnalyzer:
         )
         equity_weight = base_equity * multiplier
 
-        # 3. 변동성 조정 (Week 14 구현)
-        if volatility_index:
+        # 3. 변동성 조정 (실제 데이터)
+        if volatility_index is None:
+            # 변동성 지수 자동 계산
+            volatility_index = await self._calculate_market_volatility()
+
+        if volatility_index is not None:
             equity_weight = self._adjust_for_volatility(equity_weight, volatility_index)
+            logger.info(f"📊 [Risk Stance] 변동성 {volatility_index:.2f}% 반영 완료")
 
         # 4. 범위 제한 (20% ~ 95%)
         equity_weight = max(Decimal("0.20"), min(Decimal("0.95"), equity_weight))
@@ -85,7 +94,8 @@ class RiskStanceAnalyzer:
         rationale = self._generate_rationale(
             market_cycle,
             risk_tolerance,
-            equity_weight
+            equity_weight,
+            volatility_index
         )
 
         return AssetAllocation(
@@ -94,27 +104,70 @@ class RiskStanceAnalyzer:
             rationale=rationale
         )
 
+    async def _calculate_market_volatility(self) -> float | None:
+        """
+        시장 변동성 계산 (KOSPI 지수 기준)
+
+        Returns:
+            변동성 지수 (%) 또는 None
+        """
+        try:
+            # KOSPI 지수 최근 60일 데이터 조회
+            df = await stock_data_service.get_stock_price("KS11", days=60)
+
+            if df is None or len(df) < 20:
+                logger.warning("⚠️ [Risk Stance] KOSPI 데이터 부족, 변동성 계산 불가")
+                return None
+
+            # 일일 수익률 계산
+            returns = df["Close"].pct_change().dropna()
+
+            # 변동성 = 일일 수익률 표준편차 * √252 (연환산)
+            daily_volatility = returns.std()
+            annual_volatility = daily_volatility * (252 ** 0.5)
+
+            # 백분율로 변환
+            volatility_pct = annual_volatility * 100
+
+            logger.info(f"📊 [Risk Stance] KOSPI 변동성: {volatility_pct:.2f}%")
+            return float(volatility_pct)
+
+        except Exception as e:
+            logger.error(f"❌ [Risk Stance] 변동성 계산 실패: {e}")
+            return None
+
     def _adjust_for_volatility(
         self,
         equity_weight: Decimal,
         volatility_index: float
     ) -> Decimal:
         """
-        변동성 지표에 따른 조정
+        변동성 지표에 따른 자산 배분 조정
 
-        Week 14 구현:
-        - VIX > 30: 주식 비중 -10%p
-        - VIX 20-30: 주식 비중 -5%p
-        - VIX < 20: 조정 없음
+        조정 규칙:
+        - 변동성 > 30%: 주식 비중 -10%p
+        - 변동성 20-30%: 주식 비중 -5%p
+        - 변동성 < 20%: 조정 없음
         """
-        # Mock: 그대로 반환
-        return equity_weight
+        adjustment = Decimal("0.00")
+
+        if volatility_index > 30:
+            adjustment = Decimal("-0.10")
+            logger.info(f"⚠️ [Risk Stance] 고변동성 감지 ({volatility_index:.1f}%), 주식 비중 -10%p")
+        elif volatility_index > 20:
+            adjustment = Decimal("-0.05")
+            logger.info(f"⚠️ [Risk Stance] 중변동성 ({volatility_index:.1f}%), 주식 비중 -5%p")
+        else:
+            logger.info(f"✅ [Risk Stance] 저변동성 ({volatility_index:.1f}%), 조정 없음")
+
+        return equity_weight + adjustment
 
     def _generate_rationale(
         self,
         market_cycle: str,
         risk_tolerance: str,
-        equity_weight: Decimal
+        equity_weight: Decimal,
+        volatility_index: float = None
     ) -> str:
         """자산 배분 근거 생성"""
         cycle_desc = {
@@ -134,10 +187,19 @@ class RiskStanceAnalyzer:
         cycle_name = cycle_desc.get(market_cycle, market_cycle)
         tolerance_name = tolerance_desc.get(risk_tolerance, risk_tolerance)
 
-        return (
+        base_rationale = (
             f"{cycle_name} 기조에서 {tolerance_name} 리스크 허용도에 맞춘 자산 배분. "
             f"주식 {equity_weight:.0%} 비중 권장"
         )
+
+        # 변동성 정보 추가
+        if volatility_index is not None:
+            if volatility_index > 30:
+                base_rationale += f". 고변동성({volatility_index:.1f}%)으로 방어적 조정"
+            elif volatility_index > 20:
+                base_rationale += f". 중간 변동성({volatility_index:.1f}%)으로 일부 조정"
+
+        return base_rationale
 
 
 # Global instance
