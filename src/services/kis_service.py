@@ -293,8 +293,14 @@ class KISService:
 
         # output1: 보유 종목 리스트
         stocks_data = result.get("output1", [])
-        # output2: 계좌 요약 정보
-        summary_data = result.get("output2", {})
+
+        # output2: 계좌 요약 정보 (리스트로 올 수도 있음)
+        output2 = result.get("output2", {})
+        if isinstance(output2, list):
+            # 리스트인 경우 첫 번째 항목 사용
+            summary_data = output2[0] if len(output2) > 0 else {}
+        else:
+            summary_data = output2
 
         stocks = []
         for item in stocks_data:
