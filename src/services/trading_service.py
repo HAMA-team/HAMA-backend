@@ -145,7 +145,39 @@ class TradingService:
         order_summary: Dict[str, Any],
         execution_price: float,
     ) -> Dict[str, Any]:
+        """주문 실행 (KIS API 연동)"""
         order_id = order_summary["order_id"]
+        stock_code = order_summary["stock_code"]
+        order_type = order_summary["order_type"]
+        quantity = order_summary["order_quantity"]
+
+        # 1. KIS API로 실제 주문 실행 시도
+        kis_order_no = None
+        kis_executed = False
+
+        try:
+            from src.services import kis_service
+
+            logger.info(f"💰 [Trading] KIS API 주문 실행: {order_type} {stock_code} {quantity}주")
+
+            kis_result = await kis_service.place_order(
+                stock_code=stock_code,
+                order_type=order_type,
+                quantity=quantity,
+                price=execution_price,  # None이면 시장가
+            )
+
+            kis_order_no = kis_result.get("order_no")
+            kis_executed = True
+
+            logger.info(f"✅ [Trading] KIS 주문 성공: {kis_order_no}")
+
+        except Exception as exc:
+            # KIS API 실패 시 경고 로그만 남기고 DB 시뮬레이션 진행
+            logger.warning(f"⚠️ [Trading] KIS API 실패, DB 시뮬레이션으로 진행: {exc}")
+            kis_executed = False
+
+        # 2. DB 업데이트 (KIS 성공 여부 무관하게 진행)
         execution_price_dec = self._decimal(execution_price, default=Decimal("0"))
         executed_at = datetime.now(timezone.utc)
 
@@ -160,12 +192,22 @@ class TradingService:
                 order.filled_avg_price = execution_price_dec
                 order.total_filled_amount = execution_price_dec * order.order_quantity
                 order.filled_at = executed_at
+
+                # KIS 주문번호 기록
+                if kis_order_no:
+                    notes = f"KIS 주문번호: {kis_order_no}"
+                    if order.notes:
+                        order.notes = f"{order.notes}\n{notes}"
+                    else:
+                        order.notes = notes
+
                 session.commit()
                 session.refresh(order)
                 return order
 
         order = await asyncio.to_thread(_update)
 
+        # 3. 포트폴리오 반영
         await portfolio_service.apply_trade(
             portfolio_id=order_summary["portfolio_id"],
             stock_code=order_summary["stock_code"],
@@ -175,6 +217,7 @@ class TradingService:
             executed_at=executed_at.replace(tzinfo=None),
         )
 
+        # 4. 트랜잭션 기록
         await asyncio.to_thread(
             self._record_transaction_sync,
             order,
@@ -182,6 +225,7 @@ class TradingService:
             executed_at,
         )
 
+        # 5. 결과 반환
         result = self._serialize_order(order)
         result.update(
             {
@@ -190,6 +234,8 @@ class TradingService:
                 "quantity": order.order_quantity,
                 "total": float(execution_price_dec * order.order_quantity),
                 "executed_at": executed_at.isoformat(),
+                "kis_executed": kis_executed,
+                "kis_order_no": kis_order_no,
             }
         )
         return result

@@ -82,7 +82,7 @@ RATIONALE_TEXT = {
 
 
 async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
-    """포트폴리오 스냅샷 수집 노드 (DB 기반)."""
+    """포트폴리오 스냅샷 수집 노드 (KIS API 연동)."""
     if state.get("error"):
         return state
 
@@ -109,10 +109,57 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
     profile = snapshot.profile or {}
 
     holdings = portfolio_data.get("holdings") or []
+
+    # KIS API로 실제 계좌 잔고 조회 시도
     if not holdings:
-        logger.warning("⚠️ [Portfolio] 보유 종목이 없어 기본 포트폴리오를 사용합니다")
-        holdings = DEFAULT_PORTFOLIO
-        portfolio_data["holdings"] = holdings
+        logger.info("🔗 [Portfolio] KIS API에서 실제 계좌 잔고 조회 시도")
+        try:
+            from src.services import kis_service
+
+            # KIS API 호출
+            balance = await kis_service.get_account_balance()
+
+            # KIS 응답 → PortfolioHolding 변환
+            holdings = []
+            total_assets = balance.get("total_assets", 0)
+
+            for stock in balance.get("stocks", []):
+                stock_value = stock.get("eval_amount", 0)
+                holdings.append({
+                    "stock_code": stock["stock_code"],
+                    "stock_name": stock["stock_name"],
+                    "weight": round(stock_value / total_assets, 4) if total_assets > 0 else 0.0,
+                    "value": float(stock_value),
+                    "quantity": stock.get("quantity", 0),
+                    "avg_price": stock.get("avg_price", 0),
+                    "profit_loss": stock.get("profit_loss", 0),
+                    "profit_rate": stock.get("profit_rate", 0),
+                })
+
+            # 현금 추가
+            cash_balance = balance.get("cash_balance", 0)
+            if cash_balance > 0:
+                holdings.append({
+                    "stock_code": "CASH",
+                    "stock_name": "예수금",
+                    "weight": round(cash_balance / total_assets, 4) if total_assets > 0 else 0.0,
+                    "value": float(cash_balance),
+                })
+
+            # portfolio_data 업데이트
+            portfolio_data["holdings"] = holdings
+            portfolio_data["total_value"] = total_assets
+            portfolio_data["cash_balance"] = cash_balance
+            portfolio_data["data_source"] = "kis_api"
+
+            logger.info(f"✅ [Portfolio] KIS 계좌 조회 성공: {len(holdings)}개 보유, 총자산 {total_assets:,.0f}원")
+
+        except Exception as exc:
+            # KIS API 실패 시 Mock 데이터 사용
+            logger.warning(f"⚠️ [Portfolio] KIS API 실패, Mock 데이터 사용: {exc}")
+            holdings = DEFAULT_PORTFOLIO
+            portfolio_data["holdings"] = holdings
+            portfolio_data["data_source"] = "mock"
 
     risk_profile = (
         state.get("risk_profile")

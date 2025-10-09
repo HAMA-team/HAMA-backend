@@ -393,6 +393,103 @@ class KISService:
         logger.info(f"✅ Stock price fetched: {stock_code} = {response['current_price']:,}원")
         return response
 
+    # ==================== 주문 실행 ====================
+
+    async def place_order(
+        self,
+        stock_code: str,
+        order_type: str,  # "BUY" or "SELL"
+        quantity: int,
+        price: Optional[float] = None,  # None이면 시장가
+        order_dvsn: str = "01",  # 01: 시장가, 00: 지정가
+    ) -> Dict[str, Any]:
+        """
+        주식 현금 주문 실행
+
+        Args:
+            stock_code: 종목코드 (ex. "005930")
+            order_type: 주문 구분 ("BUY": 매수, "SELL": 매도)
+            quantity: 주문 수량
+            price: 주문 단가 (None이면 시장가, 지정가면 가격 필수)
+            order_dvsn: 주문구분 (01: 시장가, 00: 지정가)
+
+        Returns:
+            {
+                "order_no": "주문번호",
+                "order_time": "주문시간",
+                "status": "접수",
+                "stock_code": stock_code,
+                "order_type": order_type,
+                "quantity": quantity,
+                "price": price or 0,
+            }
+
+        Raises:
+            KISAPIError: 주문 실패 시
+        """
+        if not self.cano or not self.acnt_prdt_cd:
+            raise KISAPIError("Account number not configured")
+
+        order_type = order_type.upper()
+        if order_type not in ("BUY", "SELL"):
+            raise ValueError("order_type must be 'BUY' or 'SELL'")
+
+        logger.info(f"💰 [KIS] 주문 실행: {order_type} {stock_code} {quantity}주 @ {price or '시장가'}")
+
+        # TR ID 설정 (실전/모의, 매수/매도)
+        if self.env == "real":
+            tr_id = "TTTC0012U" if order_type == "BUY" else "TTTC0011U"
+        else:  # demo
+            tr_id = "VTTC0012U" if order_type == "BUY" else "VTTC0011U"
+
+        # 주문구분 설정
+        if price is None:
+            # 시장가
+            order_dvsn = "01"
+            order_price = "0"
+        else:
+            # 지정가
+            order_dvsn = "00"
+            order_price = str(int(price))
+
+        params = {
+            "CANO": self.cano,  # 종합계좌번호
+            "ACNT_PRDT_CD": self.acnt_prdt_cd,  # 계좌상품코드
+            "PDNO": stock_code,  # 종목코드
+            "ORD_DVSN": order_dvsn,  # 주문구분
+            "ORD_QTY": str(quantity),  # 주문수량
+            "ORD_UNPR": order_price,  # 주문단가
+            "EXCG_ID_DVSN_CD": "KRX",  # 거래소ID구분코드
+            "SLL_TYPE": "",  # 매도유형 (일반 매도는 빈 문자열)
+            "CNDT_PRIC": "",  # 조건가격
+        }
+
+        result = await self._api_call(
+            "/uapi/domestic-stock/v1/trading/order-cash",
+            tr_id,
+            params,
+            method="POST"
+        )
+
+        # output 파싱
+        output = result.get("output", {})
+        order_no = output.get("ORD_NO") or output.get("ODNO")  # 주문번호
+        order_time = output.get("ORD_TMD") or output.get("ORD_TIME")  # 주문시간
+
+        response = {
+            "order_no": order_no,
+            "order_time": order_time,
+            "status": "접수",  # 실제로는 체결 확인 필요
+            "stock_code": stock_code,
+            "order_type": order_type,
+            "quantity": quantity,
+            "price": price or 0,
+            "order_dvsn": order_dvsn,
+        }
+
+        logger.info(f"✅ [KIS] 주문 접수 완료: {order_no} ({order_type} {quantity}주)")
+        return response
+
 
 # 전역 인스턴스
 kis_service = KISService(env="demo")  # 기본은 모의투자
