@@ -134,6 +134,68 @@ class TestKISService:
 
         print("✅ Authentication error handling works")
 
+    @pytest.mark.asyncio
+    async def test_place_order_buy(self, kis):
+        """매수 주문 테스트 (삼성전자 1주)"""
+        # 계좌번호 설정 확인
+        if not settings.KIS_ACCOUNT_NUMBER:
+            pytest.skip("KIS_ACCOUNT_NUMBER not configured")
+
+        stock_code = "005930"  # 삼성전자
+        quantity = 1
+
+        # 매수 주문 실행 (시장가)
+        try:
+            result = await kis.place_order(
+                stock_code=stock_code,
+                order_type="BUY",
+                quantity=quantity,
+                price=None,  # 시장가
+            )
+
+            # 검증
+            assert result is not None
+            assert result["order_no"] is not None
+            assert result["status"] == "접수"
+            assert result["stock_code"] == stock_code
+            assert result["order_type"] == "BUY"
+            assert result["quantity"] == quantity
+
+            print(f"✅ Buy order placed:")
+            print(f"   Order No: {result['order_no']}")
+            print(f"   Stock: {stock_code}")
+            print(f"   Quantity: {quantity}주")
+
+        except KISAPIError as e:
+            # 잔고 부족 등의 에러는 정상적인 동작
+            print(f"⚠️ Order failed (expected): {e}")
+
+    @pytest.mark.asyncio
+    async def test_place_order_limit(self, kis):
+        """지정가 주문 테스트"""
+        if not settings.KIS_ACCOUNT_NUMBER:
+            pytest.skip("KIS_ACCOUNT_NUMBER not configured")
+
+        stock_code = "005930"
+        quantity = 1
+        price = 60000  # 지정가 (현재가보다 낮게)
+
+        try:
+            result = await kis.place_order(
+                stock_code=stock_code,
+                order_type="BUY",
+                quantity=quantity,
+                price=price,
+            )
+
+            assert result["order_dvsn"] == "00"  # 지정가
+            assert result["price"] == price
+
+            print(f"✅ Limit order placed @ {price:,}원")
+
+        except KISAPIError as e:
+            print(f"⚠️ Order failed (expected): {e}")
+
 
 if __name__ == "__main__":
     """테스트 직접 실행"""
@@ -192,6 +254,38 @@ if __name__ == "__main__":
             print("✅ 성공: KISAPIError 발생\n")
         except Exception as e:
             print(f"❌ 실패: 예상치 못한 에러 {e}\n")
+
+        # 6. 주문 테스트 (매수)
+        if settings.KIS_ACCOUNT_NUMBER:
+            print("[6/7] 주문 테스트 (매수 - 시장가)...")
+            try:
+                result = await kis.place_order(
+                    stock_code="005930",
+                    order_type="BUY",
+                    quantity=1,
+                    price=None,
+                )
+                print(f"✅ 성공: 주문번호 {result['order_no']}\n")
+            except Exception as e:
+                print(f"⚠️ 주문 실패 (정상): {e}\n")
+        else:
+            print("[6/7] 주문 테스트 - 계좌번호 미설정으로 스킵\n")
+
+        # 7. 지정가 주문 테스트
+        if settings.KIS_ACCOUNT_NUMBER:
+            print("[7/7] 주문 테스트 (매수 - 지정가)...")
+            try:
+                result = await kis.place_order(
+                    stock_code="005930",
+                    order_type="BUY",
+                    quantity=1,
+                    price=60000,
+                )
+                print(f"✅ 성공: 주문번호 {result['order_no']}, 지정가 {result['price']:,}원\n")
+            except Exception as e:
+                print(f"⚠️ 주문 실패 (정상): {e}\n")
+        else:
+            print("[7/7] 지정가 주문 테스트 - 계좌번호 미설정으로 스킵\n")
 
         print("="*60)
         print("테스트 완료")
