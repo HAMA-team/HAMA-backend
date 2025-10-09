@@ -18,18 +18,32 @@
 
 ## 핵심 아키텍처
 
-### 9개 에이전트 구조
+### LangGraph Supervisor 패턴 기반 멀티 에이전트 시스템
+
+**현재 구현 상태 (2025-10-06):**
 
 ```
 사용자 (Chat Interface)
         ↕
-마스터 에이전트 (Router + Orchestrator)
+Master Agent (LangGraph Supervisor)
+  - LLM 기반 동적 라우팅
+  - 의존성 기반 순차/병렬 조율
         ↓
-┌───────┼───────┬───────┬───────┐
-↓       ↓       ↓       ↓       ↓
-Research Strategy Risk Portfolio Monitoring
-Education Personalization DataCollection
+┌───────┼───────┬───────┬───────┬───────┐
+↓       ↓       ↓       ↓       ↓       ↓
+Research Strategy Risk Trading Portfolio General
+(✅)     (✅)    (✅)    (✅)     (✅)     (✅)
+
+[Legacy - 마이그레이션 중]
+Monitoring (⏸️ Phase 2)
+Personalization (🔍 검토 중)
+DataCollection (❌ 제거 완료 - Research로 통합)
 ```
+
+**에이전트 실행 방식:**
+- **에이전트 간**: 의존성에 따라 **순차 실행** (Research → Strategy → Risk)
+- **에이전트 내부 노드**: LangGraph로 **병렬 실행 가능** (예: Bull/Bear 분석)
+- **Supervisor**: LLM이 의도를 분석하여 필요한 에이전트만 선택
 
 ### 자동화 레벨 시스템
 
@@ -41,26 +55,47 @@ Education Personalization DataCollection
 
 ### 1. Phase별 구현 전략
 
-**Phase 1 (MVP)**: Mock-First 접근
-- 모든 에이전트는 Mock 데이터로 시작
-- API 구조와 플로우 먼저 검증
-- 실제 데이터 연동은 단계적으로
+**Phase 1 (MVP)**: 실제 데이터 연동 완료 ✅ (80% 완성)
+- ✅ LangGraph Supervisor 패턴 아키텍처
+- ✅ 6개 서브그래프 에이전트 구현
+- ✅ 실제 데이터 연동 (FinanceDataReader, DART API)
+- ✅ Redis 캐싱 시스템
+- ✅ HITL API (`/chat`, `/approve`)
+- ✅ E2E 테스트 (6개 통과)
+- 🔄 Legacy Agent 마이그레이션 (1/3 완료)
 
-**Phase 2**: 실제 구현 전환
-- 우선순위: Data Collection → Research → Strategy → Portfolio → Risk
+**Phase 2**: 실제 매매 연동 (예정)
+- 한국투자증권 API (실시간 시세)
+- 실제 매매 주문 실행
+- WebSocket 실시간 알림
+- 뉴스 크롤링
 
 **Phase 3**: 확장 기능
-- 실제 매매 실행
 - 해외 주식 지원
 - 모바일 앱
+- 자동 리밸런싱 스케줄러
 
 ### 2. HITL 구현 필수
 
-모든 중요한 결정에는 사용자 승인이 필요:
+**구현 완료 (2025-10-06):**
+- ✅ Trading Agent: `interrupt()` 기반 HITL
+- ✅ API 엔드포인트: `POST /chat/approve`
+- ✅ 자동화 레벨별 Interrupt 조건
+
+**승인이 필요한 작업:**
 - 매매 실행
 - 포트폴리오 구성/변경
 - 리밸런싱
 - 고위험 거래
+
+**플로우:**
+```
+1. 사용자 매매 요청 → Trading Agent
+2. approval_trade 노드에서 interrupt() 호출
+3. API가 requires_approval: true 반환
+4. 사용자 승인 → Command(resume) 전달
+5. 거래 실행
+```
 
 ### 3. 코드 작성 가이드
 
@@ -679,10 +714,30 @@ async for event in app.astream_events(initial_state, config):
 
 ## 데이터 소스
 
-- **한국투자증권 API**: 실시간 시세, 차트, 호가
-- **DART API**: 공시 문서, 재무제표
-- **FinanceDataReader**: 과거 주가 데이터
-- **네이버 금융**: 뉴스 크롤링
+**현재 연동 완료 (2025-10-06):**
+- ✅ **FinanceDataReader**: 주가, 거래량, 종목 리스트
+- ✅ **DART API**: 재무제표, 공시, 기업 정보
+- ✅ **Redis**: 캐싱 (TTL 60초)
+
+**Phase 2 예정:**
+- ⏸️ **한국투자증권 API**: 실시간 시세, 차트, 호가
+- ⏸️ **네이버 금융**: 뉴스 크롤링
+- ⏸️ **BOK API**: 금리, 거시경제 지표
+
+**데이터 플로우:**
+```
+사용자 요청 → Research Agent
+              ↓
+    stock_data_service.get_stock_price()  (FinanceDataReader)
+              ↓
+    dart_service.search_corp_code()  (종목코드 → 고유번호)
+              ↓
+    dart_service.get_financial_statement()  (재무제표)
+              ↓
+    dart_service.get_company_info()  (기업 정보)
+              ↓
+    Redis 캐싱 (중복 요청 방지)
+```
 
 ## 개발 시 주의사항
 

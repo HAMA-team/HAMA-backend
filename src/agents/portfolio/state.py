@@ -39,6 +39,9 @@ class PortfolioState(TypedDict, total=False):
     horizon: Optional[str]
     preferences: Optional[dict]
 
+    portfolio_profile: Optional[dict]
+    """사용자 프로필 / 투자 성향 캡처"""
+
     # 현재 포트폴리오 스냅샷
     portfolio_id: Optional[str]
     total_value: Optional[float]
@@ -59,6 +62,9 @@ class PortfolioState(TypedDict, total=False):
     # 최종 리포트
     summary: Optional[str]
     portfolio_report: Optional[dict]
+
+    portfolio_snapshot: Optional[dict]
+    """서비스에서 내려온 전체 스냅샷 (시장/프로필 포함)"""
 
     # 에러 처리
     error: Optional[str]

@@ -13,12 +13,21 @@ class RiskState(TypedDict):
     request_id: str
     """요청 ID"""
 
+    user_id: Optional[str]
+    """사용자 ID (포트폴리오 조회용)"""
+
+    portfolio_id: Optional[str]
+    """포트폴리오 ID (직접 지정 시 사용)"""
+
     # 입력 데이터
     portfolio_data: Optional[dict]
     """포트폴리오 데이터 (종목, 비중 등)"""
 
     market_data: Optional[dict]
     """시장 데이터 (변동성, 베타 등)"""
+
+    portfolio_profile: Optional[dict]
+    """사용자 프로필/투자 성향 정보"""
 
     # 분석 결과
     concentration_risk: Optional[dict]

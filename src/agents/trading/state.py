@@ -27,6 +27,12 @@ class TradingState(TypedDict):
     request_id: str
     """요청 ID"""
 
+    user_id: Optional[str]
+    """사용자 ID"""
+
+    portfolio_id: Optional[str]
+    """포트폴리오 ID"""
+
     query: str
     """사용자 질의 (매매 요청)"""
 
@@ -42,6 +48,12 @@ class TradingState(TypedDict):
 
     order_type: Optional[str]
     """주문 유형 (buy, sell)"""
+
+    order_price: Optional[float]
+    """주문 가격 (지정가)"""
+
+    trade_summary: Optional[dict]
+    """주문 생성 요약 데이터"""
 
     # 실행 플래그
     trade_prepared: bool
@@ -59,6 +71,9 @@ class TradingState(TypedDict):
 
     trade_result: Optional[dict]
     """거래 실행 결과"""
+
+    portfolio_snapshot: Optional[dict]
+    """거래 이후 최신 포트폴리오 스냅샷"""
 
     # 메타데이터
     error: Optional[str]

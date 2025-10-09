@@ -1,147 +1,144 @@
-"""
-Trading Agent 노드 함수들
+"""Trading Agent 노드 함수들 (실제 서비스 연동 버전)."""
+from __future__ import annotations
 
-매매 실행 워크플로우를 위한 노드들
-"""
 import logging
-from langgraph.types import interrupt
+from typing import Any, Dict
+
 from langchain_core.messages import AIMessage
+from langgraph.types import interrupt
+
 from src.agents.trading.state import TradingState
+from src.services import OrderNotFoundError, PortfolioNotFoundError, trading_service
 
 logger = logging.getLogger(__name__)
 
 
-def prepare_trade_node(state: TradingState) -> dict:
-    """
-    1단계: 거래 준비 (부작용)
-
-    패턴: 노드 분리 - interrupt 전 부작용 격리
-    """
-    # 재실행 방지 플래그 체크
+async def prepare_trade_node(state: TradingState) -> dict:
+    """1단계: 주문 생성 및 기본 정보 정리."""
     if state.get("trade_prepared"):
-        logger.info("⏭️ [Trade] 이미 준비됨, 스킵")
+        logger.info("⏭️ [Trade] 이미 준비된 주문이 있어 재사용합니다")
         return {}
 
-    logger.info("📝 [Trade] 거래 준비 중...")
-
-    # TODO Phase 2: 실제 DB에 주문 생성
-    # order_id = db.create_order({
-    #     "stock": state["stock_code"],
-    #     "quantity": state["quantity"],
-    #     "status": "pending"
-    # })
-
-    # Mock 구현
-    import uuid
-    order_id = f"ORDER_{str(uuid.uuid4())[:8]}"
-
-    logger.info(f"✅ [Trade] 주문 생성: {order_id}")
-
-    # Supervisor 호환성: messages 전파
+    stock_code = state.get("stock_code")
+    quantity = state.get("quantity")
     messages = list(state.get("messages", []))
+
+    if not stock_code or not quantity:
+        error = "stock_code와 quantity가 필요합니다."
+        logger.warning("⚠️ [Trade] %s", error)
+        return {**state, "error": error, "messages": messages}
+
+    order_type = (state.get("order_type") or "BUY").upper()
+    try:
+        order = await trading_service.create_pending_order(
+            user_id=state.get("user_id"),
+            portfolio_id=state.get("portfolio_id"),
+            stock_code=stock_code,
+            order_type=order_type,
+            quantity=int(quantity),
+            order_price=state.get("order_price"),
+            order_price_type=state.get("order_price_type"),
+            notes=state.get("order_note"),
+        )
+    except PortfolioNotFoundError as exc:
+        logger.error("❌ [Trade] 포트폴리오가 존재하지 않습니다: %s", exc)
+        return {**state, "error": str(exc), "messages": messages}
+    except Exception as exc:  # pragma: no cover - 방어 로깅
+        logger.exception("❌ [Trade] 주문 생성 실패: %s", exc)
+        return {**state, "error": str(exc), "messages": messages}
+
+    logger.info("✅ [Trade] 주문 생성 완료: %s", order["order_id"])
 
     return {
         "trade_prepared": True,
-        "trade_order_id": order_id,
+        "trade_order_id": order["order_id"],
+        "trade_summary": order,
+        "portfolio_id": order.get("portfolio_id") or state.get("portfolio_id"),
         "messages": messages,
     }
 
 
 def approval_trade_node(state: TradingState) -> dict:
-    """
-    2단계: HITL 승인 (interrupt)
-
-    패턴: 노드 분리 - interrupt만 포함, 부작용 없음
-    이 노드는 재실행되어도 안전함
-    """
-    # 이미 승인되었으면 스킵
+    """2단계: 사용자 승인 (interrupt)."""
     if state.get("trade_approved"):
-        logger.info("⏭️ [Trade] 이미 승인됨, 스킵")
+        logger.info("⏭️ [Trade] 이미 승인된 주문입니다")
         return {}
 
-    logger.info("🔔 [Trade] 사용자 승인 요청 중...")
+    logger.info("🔔 [Trade] 사용자 승인을 요청합니다")
 
-    order_id = state.get("trade_order_id", "UNKNOWN")
-    query = state.get("query", "")
-    automation_level = state.get("automation_level", 2)
+    summary = state.get("trade_summary") or {}
+    approval = interrupt(
+        {
+            "type": "trade_approval",
+            "order_id": state.get("trade_order_id", "UNKNOWN"),
+            "query": state.get("query", ""),
+            "stock_code": summary.get("stock_code") or state.get("stock_code"),
+            "quantity": summary.get("order_quantity") or state.get("quantity"),
+            "order_type": summary.get("order_type") or state.get("order_type"),
+            "order_price": summary.get("order_price") or state.get("order_price"),
+            "automation_level": state.get("automation_level", 2),
+            "message": "매매 주문을 승인하시겠습니까?",
+        }
+    )
 
-    # 🔴 Interrupt 발생 - 사용자 승인 대기
-    approval = interrupt({
-        "type": "trade_approval",
-        "order_id": order_id,
-        "query": query,
-        "stock_code": state.get("stock_code"),
-        "quantity": state.get("quantity"),
-        "order_type": state.get("order_type"),
-        "automation_level": automation_level,
-        "message": f"매매 주문 '{order_id}'을(를) 승인하시겠습니까?"
-    })
+    logger.info("✅ [Trade] 승인 수락: %s", approval)
 
-    logger.info(f"✅ [Trade] 승인 완료: {approval}")
-
-    # TODO Phase 2: DB 업데이트
-    # db.update(order_id, {"approved": True, "approved_by": approval.get("user_id")})
-
-    # Supervisor 호환성: messages 전파
     messages = list(state.get("messages", []))
-
-    return {
-        "trade_approved": True,
-        "messages": messages,
-    }
+    return {"trade_approved": True, "messages": messages}
 
 
-def execute_trade_node(state: TradingState) -> dict:
-    """
-    3단계: 거래 실행 (부작용)
-
-    패턴: 멱등성 보장 - 중복 실행 방지
-    """
-    # 이미 실행되었으면 스킵
+async def execute_trade_node(state: TradingState) -> dict:
+    """3단계: 승인된 주문을 실제로 실행하고 결과를 반환."""
     if state.get("trade_executed"):
-        logger.info("⏭️ [Trade] 이미 실행됨, 스킵")
+        logger.info("⏭️ [Trade] 이미 실행된 주문입니다")
         return {}
+
+    if not state.get("trade_approved"):
+        warning = "거래가 승인되지 않았습니다."
+        logger.warning("⚠️ [Trade] %s", warning)
+        return {"error": warning}
 
     order_id = state.get("trade_order_id")
+    if not order_id:
+        error = "주문 ID가 존재하지 않아 실행할 수 없습니다."
+        logger.error("❌ [Trade] %s", error)
+        return {"error": error}
 
-    # 승인 확인
-    if not state.get("trade_approved"):
-        logger.warning("⚠️ [Trade] 승인되지 않음, 실행 불가")
-        return {"error": "거래가 승인되지 않았습니다."}
+    logger.info("💰 [Trade] 주문 실행 시작: %s", order_id)
 
-    logger.info(f"💰 [Trade] 거래 실행 중... (주문: {order_id})")
+    try:
+        result = await trading_service.execute_order(
+            order_id,
+            execution_price=state.get("execution_price") or state.get("order_price"),
+            automation_level=state.get("automation_level", 2),
+        )
+    except OrderNotFoundError as exc:
+        logger.error("❌ [Trade] 주문을 찾을 수 없습니다: %s", exc)
+        return {"error": str(exc)}
+    except Exception as exc:  # pragma: no cover - 방어
+        logger.exception("❌ [Trade] 주문 실행 실패: %s", exc)
+        return {"error": str(exc)}
 
-    # TODO Phase 2: 멱등성 체크
-    # existing = db.get_order(order_id)
-    # if existing and existing["status"] == "executed":
-    #     return {"trade_executed": True, "trade_result": existing["result"]}
+    if result.get("status") == "rejected":
+        logger.warning("⚠️ [Trade] 주문이 거부되었습니다: %s", result.get("error"))
+        return {"trade_result": result, "error": result.get("error")}
 
-    # TODO Phase 2: 실제 API 호출 (한국투자증권)
-    # with db.transaction():
-    #     result = kis_api.execute_trade(...)
-    #     db.update(order_id, {"status": "executed", "result": result})
-
-    # Mock 실행
-    result = {
-        "order_id": order_id,
-        "status": "executed",
-        "executed_at": "2025-10-05 10:30:00",
-        "stock_code": state.get("stock_code", "005930"),
-        "price": 70000,
-        "quantity": state.get("quantity", 10),
-        "total": 70000 * state.get("quantity", 10),
-        "order_type": state.get("order_type", "buy"),
-    }
-
-    logger.info(f"✅ [Trade] 거래 실행 완료: {result}")
-
-    # Supervisor 호환성을 위해 messages 포함
     messages = list(state.get("messages", []))
-    summary = f"{result['order_type'].upper()} {result['quantity']}주 @ {result['price']:,}원 (총 {result['total']:,}원)"
+    summary = _format_trade_summary(result)
     messages.append(AIMessage(content=summary))
 
     return {
         "trade_executed": True,
         "trade_result": result,
+        "portfolio_snapshot": result.get("portfolio_snapshot"),
         "messages": messages,
     }
+
+
+def _format_trade_summary(result: Dict[str, Any]) -> str:
+    order_type = str(result.get("order_type", "BUY")).upper()
+    quantity = int(result.get("quantity") or 0)
+    price = float(result.get("price") or 0)
+    total = float(result.get("total") or price * quantity)
+    return f"{order_type} {quantity}주 @ {price:,.0f}원 (총 {total:,.0f}원)"
+

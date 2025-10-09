@@ -103,7 +103,8 @@ Level 3 (Advisor) → 모든 결정 승인 필요
 supervisor = create_supervisor(
     agents=[research_agent, strategy_agent, risk_agent, ...],
     model=ChatAnthropic(model="claude-3-5-sonnet"),
-    parallel_tool_calls=True  # 병렬 실행
+    parallel_tool_calls=True  # 에이전트 선택 시 병렬 가능
+    # 실제 실행은 의존성에 따라 순차적으로 조율
 )
 
 # HITL Interrupt 메커니즘
@@ -124,13 +125,23 @@ if state.next:  # Interrupt 발생
                     ↓
         적절한 에이전트 선택 (동적 라우팅)
                     ↓
-    [Research] [Strategy] [Risk] (병렬 실행)
+              Research Agent
+        (내부 노드: Bull/Bear 병렬 분석)
+                    ↓
+             Strategy Agent
+      (내부 노드: 시장/섹터/자산배분 순차)
+                    ↓
+               Risk Agent
+       (내부 노드: 집중도/시장리스크 순차)
                     ↓
             결과 통합 → HITL 체크
                     ↓
         승인 필요? → Interrupt 발생
                     ↓
         사용자 승인 → 거래 실행
+
+⚠️ 에이전트 간: 순차 실행 (의존성)
+✅ 에이전트 내부 노드: 병렬 실행 가능
 ```
 
 ---

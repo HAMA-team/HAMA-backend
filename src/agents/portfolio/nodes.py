@@ -14,6 +14,7 @@ from src.agents.portfolio.state import (
     PortfolioHolding,
     RebalanceInstruction,
 )
+from src.services import PortfolioNotFoundError, portfolio_service
 
 logger = logging.getLogger(__name__)
 
@@ -81,41 +82,59 @@ RATIONALE_TEXT = {
 
 
 async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
-    """포트폴리오 스냅샷 수집 노드"""
+    """포트폴리오 스냅샷 수집 노드 (DB 기반)."""
     if state.get("error"):
         return state
 
-    logger.info("📊 [Portfolio] 현재 포트폴리오 수집")
+    logger.info("📊 [Portfolio] 현재 포트폴리오 스냅샷 조회")
 
-    holdings = state.get("current_holdings") or DEFAULT_PORTFOLIO
-    total_value = state.get("total_value") or sum(h.get("value", 0) for h in holdings) or 10_000_000
-
-    # value가 지정되지 않았으면 weight 기반으로 계산
-    resolved_holdings: List[PortfolioHolding] = []
-    for holding in holdings:
-        weight = holding.get("weight", 0)
-        value = holding.get("value")
-        if value is None:
-            value = round(total_value * weight, -3)
-        resolved_holdings.append(
-            {
-                "stock_code": holding["stock_code"],
-                "stock_name": holding.get("stock_name", holding["stock_code"]),
-                "weight": round(weight, 4),
-                "value": float(value),
-            }
+    try:
+        snapshot = await portfolio_service.get_portfolio_snapshot(
+            user_id=state.get("user_id"),
+            portfolio_id=state.get("portfolio_id"),
         )
+    except PortfolioNotFoundError as exc:
+        logger.error("❌ [Portfolio] 포트폴리오 없음: %s", exc)
+        return {**state, "error": str(exc)}
+    except Exception as exc:  # pragma: no cover - 방어 로깅
+        logger.exception("❌ [Portfolio] 포트폴리오 조회 실패: %s", exc)
+        return {**state, "error": str(exc)}
 
-    risk_profile = (state.get("risk_profile") or state.get("preferences", {}).get("risk_profile") or "moderate").lower()
+    if snapshot is None:
+        error = "포트폴리오 정보를 찾을 수 없습니다."
+        logger.warning("⚠️ [Portfolio] %s", error)
+        return {**state, "error": error}
+
+    portfolio_data = snapshot.portfolio_data
+    profile = snapshot.profile or {}
+
+    holdings = portfolio_data.get("holdings") or []
+    if not holdings:
+        logger.warning("⚠️ [Portfolio] 보유 종목이 없어 기본 포트폴리오를 사용합니다")
+        holdings = DEFAULT_PORTFOLIO
+        portfolio_data["holdings"] = holdings
+
+    risk_profile = (
+        state.get("risk_profile")
+        or profile.get("risk_tolerance")
+        or state.get("preferences", {}).get("risk_profile")
+        or "moderate"
+    ).lower()
     if risk_profile not in RISK_TARGETS:
         risk_profile = "moderate"
 
     return {
         **state,
-        "portfolio_id": state.get("portfolio_id") or "portfolio_mock_001",
-        "total_value": float(total_value),
-        "current_holdings": resolved_holdings,
+        "portfolio_id": portfolio_data.get("portfolio_id") or state.get("portfolio_id"),
+        "total_value": float(portfolio_data.get("total_value", 0.0)),
+        "current_holdings": holdings,
         "risk_profile": risk_profile,
+        "portfolio_profile": profile,
+        "portfolio_snapshot": {
+            "portfolio_data": portfolio_data,
+            "market_data": snapshot.market_data,
+            "profile": profile,
+        },
     }
 
 
