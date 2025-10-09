@@ -68,7 +68,8 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Caching (TTL in seconds)
-    CACHE_TTL_MARKET_DATA: int = 60
+    CACHE_TTL_MARKET_DATA: int = 60  # 개별 종목 주가 데이터
+    CACHE_TTL_MARKET_INDEX: int = 3600  # 시장 지수 (KOSPI, KOSDAQ 등) - Rate Limit 방지
     CACHE_TTL_NEWS: int = 300
     CACHE_TTL_FINANCIAL_STATEMENTS: int = 86400
     CACHE_TTL_ANALYSIS_RESULTS: int = 3600

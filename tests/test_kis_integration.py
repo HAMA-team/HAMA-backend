@@ -4,6 +4,7 @@ KIS API 통합 테스트
 Portfolio Agent와 Trading Agent의 KIS API 연동을 검증합니다.
 KIS API 키가 .env에 설정되어 있어야 테스트가 통과합니다.
 """
+import asyncio
 import pytest
 
 from src.services import kis_service, portfolio_service, trading_service

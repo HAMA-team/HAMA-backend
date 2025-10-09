@@ -14,71 +14,9 @@ from src.agents.portfolio.state import (
     PortfolioHolding,
     RebalanceInstruction,
 )
-from src.services import PortfolioNotFoundError, portfolio_service
+from src.services import PortfolioNotFoundError, portfolio_service, portfolio_optimizer
 
 logger = logging.getLogger(__name__)
-
-# 기본 포트폴리오 (Mock)
-DEFAULT_PORTFOLIO: List[PortfolioHolding] = [
-    {"stock_code": "005930", "stock_name": "삼성전자", "weight": 0.35, "value": 3_500_000},
-    {"stock_code": "000660", "stock_name": "SK하이닉스", "weight": 0.20, "value": 2_000_000},
-    {"stock_code": "035420", "stock_name": "NAVER", "weight": 0.15, "value": 1_500_000},
-    {"stock_code": "005380", "stock_name": "현대차", "weight": 0.15, "value": 1_500_000},
-    {"stock_code": "000270", "stock_name": "기아", "weight": 0.10, "value": 1_000_000},
-    {"stock_code": "CASH", "stock_name": "현금", "weight": 0.05, "value": 500_000},
-]
-
-# 위험 성향별 추천 비중
-RISK_TARGETS: Dict[str, List[PortfolioHolding]] = {
-    "conservative": [
-        {"stock_code": "005930", "stock_name": "삼성전자", "weight": 0.20},
-        {"stock_code": "000660", "stock_name": "SK하이닉스", "weight": 0.12},
-        {"stock_code": "035420", "stock_name": "NAVER", "weight": 0.08},
-        {"stock_code": "005380", "stock_name": "현대차", "weight": 0.12},
-        {"stock_code": "000270", "stock_name": "기아", "weight": 0.08},
-        {"stock_code": "CASH", "stock_name": "현금", "weight": 0.40},
-    ],
-    "moderate": [
-        {"stock_code": "005930", "stock_name": "삼성전자", "weight": 0.25},
-        {"stock_code": "000660", "stock_name": "SK하이닉스", "weight": 0.20},
-        {"stock_code": "035420", "stock_name": "NAVER", "weight": 0.15},
-        {"stock_code": "005380", "stock_name": "현대차", "weight": 0.15},
-        {"stock_code": "000270", "stock_name": "기아", "weight": 0.10},
-        {"stock_code": "CASH", "stock_name": "현금", "weight": 0.15},
-    ],
-    "aggressive": [
-        {"stock_code": "005930", "stock_name": "삼성전자", "weight": 0.28},
-        {"stock_code": "000660", "stock_name": "SK하이닉스", "weight": 0.24},
-        {"stock_code": "035420", "stock_name": "NAVER", "weight": 0.18},
-        {"stock_code": "005380", "stock_name": "현대차", "weight": 0.14},
-        {"stock_code": "000270", "stock_name": "기아", "weight": 0.11},
-        {"stock_code": "CASH", "stock_name": "현금", "weight": 0.05},
-    ],
-}
-
-EXPECTED_RETURN = {
-    "conservative": 0.08,
-    "moderate": 0.12,
-    "aggressive": 0.16,
-}
-
-EXPECTED_VOLATILITY = {
-    "conservative": 0.11,
-    "moderate": 0.17,
-    "aggressive": 0.24,
-}
-
-SHARPE_RATIO = {
-    "conservative": 0.78,
-    "moderate": 0.82,
-    "aggressive": 0.74,
-}
-
-RATIONALE_TEXT = {
-    "conservative": "현금·방어주 비중 확대, 시장 변동성 대비 안전자산 확보",
-    "moderate": "IT 코어 비중 유지하면서 현금 완충 확대",
-    "aggressive": "성장주와 IT 비중 확대, 공격적 수익 추구",
-}
 
 
 async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
@@ -155,11 +93,16 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
             logger.info(f"✅ [Portfolio] KIS 계좌 조회 성공: {len(holdings)}개 보유, 총자산 {total_assets:,.0f}원")
 
         except Exception as exc:
-            # KIS API 실패 시 Mock 데이터 사용
-            logger.warning(f"⚠️ [Portfolio] KIS API 실패, Mock 데이터 사용: {exc}")
-            holdings = DEFAULT_PORTFOLIO
-            portfolio_data["holdings"] = holdings
-            portfolio_data["data_source"] = "mock"
+            # KIS API 실패 시 에러 반환 (Fallback 제거)
+            error_msg = f"KIS API 계좌 조회 실패: {exc}"
+            logger.error(f"❌ [Portfolio] {error_msg}")
+            return {**state, "error": error_msg}
+
+    # 보유 종목이 없으면 에러
+    if not holdings:
+        error_msg = "포트폴리오에 보유 종목이 없습니다."
+        logger.error(f"❌ [Portfolio] {error_msg}")
+        return {**state, "error": error_msg}
 
     risk_profile = (
         state.get("risk_profile")
@@ -167,8 +110,6 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
         or state.get("preferences", {}).get("risk_profile")
         or "moderate"
     ).lower()
-    if risk_profile not in RISK_TARGETS:
-        risk_profile = "moderate"
 
     return {
         **state,
@@ -186,36 +127,47 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
 
 
 async def optimize_allocation_node(state: PortfolioState) -> PortfolioState:
-    """위험 성향에 맞는 목표 비중 산출"""
+    """
+    목표 비중 최적화 (동적 계산)
+
+    Strategy Agent 결과를 우선 반영하여 실제 데이터 기반 목표 비중을 계산합니다.
+    """
     if state.get("error"):
         return state
 
     risk_profile = state.get("risk_profile", "moderate")
-    targets = RISK_TARGETS.get(risk_profile, RISK_TARGETS["moderate"])
+    current_holdings = state.get("current_holdings", [])
+    total_value = state.get("total_value", 0.0)
 
-    logger.info(f"🧮 [Portfolio] 목표 비중 산출 (risk={risk_profile})")
+    # Strategy Agent 결과 추출
+    strategy_result = state.get("strategy_result")
 
-    proposed: List[PortfolioHolding] = []
-    total_value = state.get("total_value", 0)
-    for target in targets:
-        weight = round(target["weight"], 4)
-        proposed.append(
-            {
-                "stock_code": target["stock_code"],
-                "stock_name": target["stock_name"],
-                "weight": weight,
-                "value": round(total_value * weight, -3) if total_value else 0.0,
-            }
+    logger.info(f"🧮 [Portfolio] 동적 목표 비중 계산 시작 (risk={risk_profile})")
+
+    try:
+        # Portfolio Optimizer로 목표 비중 계산
+        proposed, metrics = await portfolio_optimizer.calculate_target_allocation(
+            current_holdings=current_holdings,
+            strategy_result=strategy_result,
+            risk_profile=risk_profile,
+            total_value=total_value
         )
 
-    return {
-        **state,
-        "proposed_allocation": proposed,
-        "expected_return": EXPECTED_RETURN[risk_profile],
-        "expected_volatility": EXPECTED_VOLATILITY[risk_profile],
-        "sharpe_ratio": SHARPE_RATIO[risk_profile],
-        "rationale": RATIONALE_TEXT[risk_profile],
-    }
+        logger.info(f"✅ [Portfolio] 목표 비중 계산 완료: {len(proposed)}개 자산")
+
+        return {
+            **state,
+            "proposed_allocation": proposed,
+            "expected_return": metrics.get("expected_return", 0.12),
+            "expected_volatility": metrics.get("expected_volatility", 0.17),
+            "sharpe_ratio": metrics.get("sharpe_ratio", 0.80),
+            "rationale": metrics.get("rationale", "균형 포트폴리오 구성"),
+        }
+
+    except Exception as exc:
+        error_msg = f"목표 비중 계산 실패: {exc}"
+        logger.error(f"❌ [Portfolio] {error_msg}")
+        return {**state, "error": error_msg}
 
 
 async def rebalance_plan_node(state: PortfolioState) -> PortfolioState:

@@ -1,5 +1,6 @@
 """주가 데이터 서비스 (FinanceDataReader)"""
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Optional, List
 import FinanceDataReader as fdr
@@ -175,6 +176,80 @@ class StockDataService:
                 results[stock_code] = df
 
         return results
+
+    async def get_market_index(
+        self, index_code: str, days: int = 60, max_retries: int = 3
+    ) -> Optional[pd.DataFrame]:
+        """
+        시장 지수 데이터 조회 (Rate Limit 방지 최적화)
+
+        Args:
+            index_code: 지수 코드 (예: "KS11" - KOSPI, "KQ11" - KOSDAQ)
+            days: 조회 기간 (일)
+            max_retries: 최대 재시도 횟수
+
+        Returns:
+            DataFrame: 지수 데이터 (Open, High, Low, Close, Volume)
+
+        Raises:
+            Exception: 모든 재시도 실패 시
+        """
+        # 캐시 키
+        cache_key = f"market_index:{index_code}:{days}"
+
+        # 캐시 확인 (1시간 TTL - Rate Limit 방지)
+        cached = await self.cache.get(cache_key)
+        if cached is not None:
+            print(f"✅ [Index] 캐시 히트: {cache_key}")
+            return pd.DataFrame(cached)
+
+        # Retry 로직 with exponential backoff
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days)
+
+        for attempt in range(max_retries):
+            try:
+                # FinanceDataReader 호출
+                df = await asyncio.to_thread(
+                    fdr.DataReader, index_code, start=start_date, end=end_date
+                )
+
+                if df is not None and len(df) > 0:
+                    # 캐싱 (1시간 TTL - 지수는 실시간성 덜 중요)
+                    await self.cache.set(
+                        cache_key,
+                        df.to_dict("records"),
+                        ttl=settings.CACHE_TTL_MARKET_INDEX
+                    )
+                    print(f"✅ [Index] 지수 데이터 조회 성공: {index_code} ({len(df)}일)")
+                    return df
+                else:
+                    print(f"⚠️ [Index] 지수 데이터 없음: {index_code}")
+                    return None
+
+            except Exception as e:
+                error_msg = str(e)
+                is_rate_limit = "429" in error_msg or "Too Many Requests" in error_msg
+
+                if is_rate_limit and attempt < max_retries - 1:
+                    # Exponential backoff: 1초 → 2초 → 4초
+                    wait_time = 2 ** attempt
+                    print(f"⚠️ [Index] Rate Limit 감지 ({attempt + 1}/{max_retries}), {wait_time}초 대기...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    # 최종 실패 또는 Rate Limit 아닌 에러
+                    error_detail = f"{index_code}, attempt {attempt + 1}/{max_retries}, {error_msg}"
+                    print(f"❌ [Index] 지수 데이터 조회 실패: {error_detail}")
+
+                    if attempt == max_retries - 1:
+                        # 모든 재시도 실패 - 에러 발생
+                        raise Exception(
+                            f"시장 지수 데이터 조회 실패 (Rate Limit): {index_code}. "
+                            f"잠시 후 다시 시도해주세요."
+                        )
+
+        return None
 
 
 # 싱글톤 인스턴스

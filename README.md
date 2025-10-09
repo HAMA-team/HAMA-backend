@@ -161,9 +161,8 @@ if state.next:  # Interrupt 발생
 - **Supervisor 패턴** - 멀티 에이전트 조율
 
 ### **Data Sources**
-- **FinanceDataReader** - 주가 데이터
+- **FinanceDataReader** - KRX 시장 데이터
 - **DART Open API** - 금융감독원 공시 시스템
-- **pykrx** (예정) - KRX 시장 데이터
 
 ### **DevOps**
 - **Docker** (예정) - 컨테이너화

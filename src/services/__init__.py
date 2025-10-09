@@ -15,6 +15,7 @@ from .kis_service import (
 )
 from .dart_service import dart_service
 from .stock_data_service import stock_data_service
+from .portfolio_optimizer import portfolio_optimizer
 
 __all__ = [
     "portfolio_service",
@@ -23,6 +24,7 @@ __all__ = [
     "init_kis_service",
     "dart_service",
     "stock_data_service",
+    "portfolio_optimizer",
     "PortfolioNotFoundError",
     "InsufficientHoldingsError",
     "OrderNotFoundError",

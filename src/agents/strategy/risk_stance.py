@@ -110,31 +110,29 @@ class RiskStanceAnalyzer:
 
         Returns:
             변동성 지수 (%) 또는 None
+
+        Raises:
+            Exception: Rate Limit 등으로 데이터 조회 실패 시
         """
-        try:
-            # KOSPI 지수 최근 60일 데이터 조회
-            df = await stock_data_service.get_stock_price("KS11", days=60)
+        # KOSPI 지수 최근 60일 데이터 조회 (Rate Limit 방지 최적화)
+        df = await stock_data_service.get_market_index("KS11", days=60)
 
-            if df is None or len(df) < 20:
-                logger.warning("⚠️ [Risk Stance] KOSPI 데이터 부족, 변동성 계산 불가")
-                return None
-
-            # 일일 수익률 계산
-            returns = df["Close"].pct_change().dropna()
-
-            # 변동성 = 일일 수익률 표준편차 * √252 (연환산)
-            daily_volatility = returns.std()
-            annual_volatility = daily_volatility * (252 ** 0.5)
-
-            # 백분율로 변환
-            volatility_pct = annual_volatility * 100
-
-            logger.info(f"📊 [Risk Stance] KOSPI 변동성: {volatility_pct:.2f}%")
-            return float(volatility_pct)
-
-        except Exception as e:
-            logger.error(f"❌ [Risk Stance] 변동성 계산 실패: {e}")
+        if df is None or len(df) < 20:
+            logger.warning("⚠️ [Risk Stance] KOSPI 데이터 부족, 변동성 계산 불가")
             return None
+
+        # 일일 수익률 계산
+        returns = df["Close"].pct_change().dropna()
+
+        # 변동성 = 일일 수익률 표준편차 * √252 (연환산)
+        daily_volatility = returns.std()
+        annual_volatility = daily_volatility * (252 ** 0.5)
+
+        # 백분율로 변환
+        volatility_pct = annual_volatility * 100
+
+        logger.info(f"📊 [Risk Stance] KOSPI 변동성: {volatility_pct:.2f}%")
+        return float(volatility_pct)
 
     def _adjust_for_volatility(
         self,
