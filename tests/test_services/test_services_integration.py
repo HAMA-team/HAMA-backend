@@ -67,7 +67,7 @@ async def test_dart_service():
         print(f"✅ 재무제표 항목: {len(financial)}개\n")
 
     # 4. 종목코드로 고유번호 찾기
-    found_corp_code = dart_service.search_corp_code_by_stock_code("005930")
+    found_corp_code = await dart_service.search_corp_code_by_stock_code("005930")
     assert found_corp_code == "00126380"
     print(f"✅ 종목코드 매핑: 005930 -> {found_corp_code}\n")
 
@@ -107,7 +107,7 @@ async def test_full_workflow():
         print(f"2️⃣ 주가 데이터: {len(price_data)}일")
 
     # 3. DART 고유번호 찾기
-    corp_code = dart_service.search_corp_code_by_stock_code(stock_code)
+    corp_code = await dart_service.search_corp_code_by_stock_code(stock_code)
     if corp_code:
         print(f"3️⃣ 고유번호: {corp_code}")
 

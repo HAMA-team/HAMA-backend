@@ -166,7 +166,7 @@ async def test_random_full_flow():
 
     # 2.2. DART 재무 정보
     try:
-        corp_code = dart_service.search_corp_code_by_stock_code(scenario['stock_code'])
+        corp_code = await dart_service.search_corp_code_by_stock_code(scenario['stock_code'])
         if corp_code:
             company_info = await dart_service.get_company_info(corp_code)
             if company_info:
