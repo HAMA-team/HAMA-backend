@@ -14,12 +14,12 @@ Master Agent의 역할 (순수 조율자):
 from typing import Dict, Any
 from langgraph_supervisor import create_supervisor
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 import logging
 
 # Config
 from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 
 # Compiled Agents import
 from src.agents.research import research_agent
@@ -49,11 +49,9 @@ def build_supervisor(automation_level: int = 2):
     Returns:
         StateGraph: Supervisor 그래프
     """
-    # LLM 초기화
-    llm = ChatAnthropic(
-        model="claude-3-5-sonnet-20241022",
+    # LLM 초기화 (모드에 따라 Gemini or Claude)
+    llm = get_llm(
         temperature=0,
-        api_key=settings.ANTHROPIC_API_KEY,
         max_tokens=4000
     )
 

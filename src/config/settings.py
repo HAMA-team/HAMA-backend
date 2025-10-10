@@ -1,6 +1,7 @@
 """
 Application configuration and settings
 """
+import os
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -24,7 +25,8 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """ENV에 따라 DATABASE_URL 동적 변경"""
-        if self.ENV == "test":
+        env = os.getenv("ENV", self.ENV).lower()
+        if env == "test":
             return "sqlite:///./test_hama.db"
         return self.DATABASE_URL
 
@@ -32,13 +34,37 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     ANTHROPIC_API_KEY: str | None = None
-    DEFAULT_LLM_MODEL: str = "claude-sonnet-4-5-20250929"
     CLAUDE_MODEL: str = "claude-sonnet-4-5-20250929"
+    GEMINI_API_KEY: str | None = None
+    GEMINI_MODEL: str = "gemini-2.0-flash-exp"
+
+    # LLM Mode: "test" (Gemini) or "production" (Claude)
+    LLM_MODE: str = "test"  # test, production, demo 등
 
     # LLM Settings
     LLM_TIMEOUT: int = 30
     MAX_TOKENS: int = 4000
     LLM_TEMPERATURE: float = 0.1
+
+    @property
+    def llm_provider(self) -> str:
+        """현재 LLM 모드에 따라 사용할 프로바이더 반환"""
+        mode = os.getenv("LLM_MODE", self.LLM_MODE).lower()
+        if mode in ["production", "prod", "demo"]:
+            return "anthropic"
+        else:  # test, development 등
+            return "google"
+
+    @property
+    def llm_model_name(self) -> str:
+        """현재 프로바이더에 맞는 모델명 반환"""
+        provider = self.llm_provider
+        if provider == "anthropic":
+            return self.CLAUDE_MODEL
+        elif provider == "google":
+            return self.GEMINI_MODEL
+        else:
+            return self.CLAUDE_MODEL  # fallback
 
     # GPT-5 nano Settings (Intent & Supervisor)
     INTENT_MODEL: str = "gpt-5-nano"
@@ -102,6 +128,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "ignore"  # .env의 추가 필드 무시
 
 
 # Global settings instance
