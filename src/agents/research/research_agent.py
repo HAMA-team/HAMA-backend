@@ -10,7 +10,7 @@ Responsibilities:
 from src.agents.legacy import LegacyAgent
 from src.schemas.agent import AgentInput, AgentOutput
 from src.agents.legacy.data_collection import data_collection_agent
-from langchain_anthropic import ChatAnthropic
+from src.utils.llm_factory import get_llm
 from src.config.settings import settings
 import json
 
@@ -28,9 +28,7 @@ class ResearchAgent(LegacyAgent):
     def __init__(self):
         super().__init__("research_agent")
         self.data_agent = data_collection_agent
-        self.llm = ChatAnthropic(
-            model=settings.CLAUDE_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
+        self.llm = get_llm(
             max_tokens=4000,
             temperature=0.1
         )
@@ -99,7 +97,7 @@ class ResearchAgent(LegacyAgent):
                     }
                 },
                 metadata={
-                    "llm_model": settings.CLAUDE_MODEL,
+                    "llm_model": settings.llm_model_name,
                     "data_sources": ["FinanceDataReader", "DART"]
                 }
             )
