@@ -16,6 +16,7 @@ from .kis_service import (
 from .dart_service import dart_service
 from .stock_data_service import stock_data_service
 from .portfolio_optimizer import portfolio_optimizer
+from .chat_history_service import chat_history_service
 
 __all__ = [
     "portfolio_service",
@@ -25,6 +26,7 @@ __all__ = [
     "dart_service",
     "stock_data_service",
     "portfolio_optimizer",
+    "chat_history_service",
     "PortfolioNotFoundError",
     "InsufficientHoldingsError",
     "OrderNotFoundError",
@@ -32,4 +34,3 @@ __all__ = [
     "KISAPIError",
     "KISAuthError",
 ]
-

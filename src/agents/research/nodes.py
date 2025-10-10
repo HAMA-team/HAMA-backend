@@ -7,10 +7,10 @@ import json
 import logging
 import re
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 
 from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
 
@@ -133,12 +133,7 @@ async def bull_analyst_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"🐂 [Research/Bull] 강세 분석 시작")
 
-    if not settings.ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다")
-
-    llm = ChatAnthropic(
-        model=settings.CLAUDE_MODEL,
-        api_key=settings.ANTHROPIC_API_KEY,
+    llm = get_llm(
         max_tokens=2000,
         temperature=0.3
     )
@@ -206,12 +201,7 @@ async def bear_analyst_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"🐻 [Research/Bear] 약세 분석 시작")
 
-    if not settings.ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY가 설정되지 않았습니다")
-
-    llm = ChatAnthropic(
-        model=settings.CLAUDE_MODEL,
-        api_key=settings.ANTHROPIC_API_KEY,
+    llm = get_llm(
         max_tokens=2000,
         temperature=0.3
     )

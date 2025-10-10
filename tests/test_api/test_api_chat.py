@@ -6,8 +6,10 @@ HITL (Human-in-the-Loop) 플로우 검증:
 2. /approve - 승인 처리 확인
 """
 import pytest
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from src.main import app
+
+transport = ASGITransport(app=app)
 
 
 class TestChatAPI:
@@ -16,7 +18,7 @@ class TestChatAPI:
     @pytest.mark.asyncio
     async def test_simple_query(self):
         """간단한 질의응답 테스트 (HITL 없음)"""
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/api/v1/chat/",
                 json={
@@ -25,13 +27,22 @@ class TestChatAPI:
                 }
             )
 
-        assert response.status_code == 200
-        data = response.json()
+            assert response.status_code == 200
+            data = response.json()
 
-        assert "message" in data
-        assert "conversation_id" in data
-        assert "requires_approval" in data
-        assert data["requires_approval"] is False  # 일반 질문은 승인 불필요
+            assert "message" in data
+            assert "conversation_id" in data
+            assert "requires_approval" in data
+            assert data["requires_approval"] is False  # 일반 질문은 승인 불필요
+
+            conversation_id = data["conversation_id"]
+            history = await client.get(f"/api/v1/chat/history/{conversation_id}")
+            assert history.status_code == 200
+            history_data = history.json()
+            assert len(history_data["messages"]) >= 2  # user + assistant
+
+            # Clean up conversation
+            await client.delete(f"/api/v1/chat/history/{conversation_id}")
 
         print(f"\n✅ 일반 질의응답 테스트 통과")
         print(f"   응답: {data['message'][:100]}...")
@@ -39,7 +50,7 @@ class TestChatAPI:
     @pytest.mark.asyncio
     async def test_stock_analysis_query(self):
         """종목 분석 요청 (HITL 없음)"""
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.post(
                 "/api/v1/chat/",
                 json={
@@ -48,11 +59,13 @@ class TestChatAPI:
                 }
             )
 
-        assert response.status_code == 200
-        data = response.json()
+            assert response.status_code == 200
+            data = response.json()
 
-        assert "message" in data
-        assert data["requires_approval"] is False  # 분석은 승인 불필요
+            assert "message" in data
+            assert data["requires_approval"] is False  # 분석은 승인 불필요
+
+            await client.delete(f"/api/v1/chat/history/{data['conversation_id']}")
 
         print(f"\n✅ 종목 분석 테스트 통과")
         print(f"   대화 ID: {data['conversation_id']}")
@@ -64,7 +77,7 @@ class TestChatAPI:
 
         automation_level=2 (Copilot) → interrupt 발생 예상
         """
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1. 매매 요청
             response = await client.post(
                 "/api/v1/chat/",
@@ -74,18 +87,23 @@ class TestChatAPI:
                 }
             )
 
-        assert response.status_code == 200
-        data = response.json()
+            assert response.status_code == 200
+            data = response.json()
 
-        # Interrupt 발생 확인
-        assert data["requires_approval"] is True
-        assert "approval_request" in data
-        assert data["approval_request"] is not None
+            # Interrupt 발생 확인
+            assert data["requires_approval"] is True
+            assert "approval_request" in data
+            assert data["approval_request"] is not None
 
-        # Approval request 구조 확인
-        approval_req = data["approval_request"]
-        assert "thread_id" in approval_req
-        assert "interrupt_data" in approval_req
+            # Approval request 구조 확인
+            approval_req = data["approval_request"]
+            assert "thread_id" in approval_req
+            assert "interrupt_data" in approval_req
+
+            history = await client.get(f"/api/v1/chat/history/{data['conversation_id']}")
+            assert history.status_code == 200
+            history_data = history.json()
+            assert any(msg["role"] == "assistant" for msg in history_data["messages"])
 
         print(f"\n✅ 매매 요청 HITL 테스트 통과")
         print(f"   Interrupt 발생: {data['requires_approval']}")
@@ -102,7 +120,7 @@ class TestChatAPI:
         1. 매매 요청 → interrupt
         2. 승인 → 거래 실행
         """
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1단계: 매매 요청
             chat_response = await client.post(
                 "/api/v1/chat/",
@@ -138,6 +156,13 @@ class TestChatAPI:
             assert approval_data["status"] == "approved"
             assert "result" in approval_data
 
+            history = await client.get(f"/api/v1/chat/history/{thread_id}")
+            assert history.status_code == 200
+            history_data = history.json()
+            assert any(msg["metadata"] and msg["metadata"].get("decision") == "approved" for msg in history_data["messages"])
+
+            await client.delete(f"/api/v1/chat/history/{thread_id}")
+
             print(f"\n✅ 승인 플로우 테스트 통과")
             print(f"   Thread ID: {thread_id}")
             print(f"   승인 상태: {approval_data['status']}")
@@ -151,7 +176,7 @@ class TestChatAPI:
         1. 매매 요청 → interrupt
         2. 거부 → 거래 취소
         """
-        async with AsyncClient(app=app, base_url="http://test") as client:
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
             # 1단계: 매매 요청
             chat_response = await client.post(
                 "/api/v1/chat/",
@@ -186,6 +211,13 @@ class TestChatAPI:
 
             assert rejection_data["status"] == "rejected"
             assert rejection_data["result"]["cancelled"] is True
+
+            history = await client.get(f"/api/v1/chat/history/{thread_id}")
+            assert history.status_code == 200
+            history_data = history.json()
+            assert any(msg["metadata"] and msg["metadata"].get("decision") == "rejected" for msg in history_data["messages"])
+
+            await client.delete(f"/api/v1/chat/history/{thread_id}")
 
             print(f"\n✅ 거부 플로우 테스트 통과")
             print(f"   Thread ID: {thread_id}")

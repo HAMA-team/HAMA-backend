@@ -11,8 +11,7 @@ from typing import Dict, Any
 from src.schemas.strategy import MarketCycle
 from src.services.bok_service import bok_service
 from src.services.sector_data_service import sector_data_service
-from langchain_anthropic import ChatAnthropic
-from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 import json
 
 
@@ -27,9 +26,7 @@ class MarketAnalyzer:
     """
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model=settings.CLAUDE_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
+        self.llm = get_llm(
             max_tokens=2000,
             temperature=0.1
         )

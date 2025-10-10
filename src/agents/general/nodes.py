@@ -4,10 +4,9 @@ General Agent 노드 함수들
 일반 질의응답을 위한 노드
 """
 import logging
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from src.agents.general.state import GeneralState
-from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +25,9 @@ async def answer_question_node(state: GeneralState) -> dict:
 
     logger.info(f"💬 [General] 질문 응답 중: {query[:50]}...")
 
-    # LLM 초기화 (Anthropic Claude 사용)
-    llm = ChatAnthropic(
-        model="claude-3-5-sonnet-20241022",
+    # LLM 초기화 (모드별 자동 선택)
+    llm = get_llm(
         temperature=0.3,
-        api_key=settings.ANTHROPIC_API_KEY,
         max_tokens=1024
     )
 

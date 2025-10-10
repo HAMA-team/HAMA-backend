@@ -10,6 +10,7 @@ Sector Rotator - 섹터 로테이션 전략 서브모듈
 from typing import Dict, Any, List
 from decimal import Decimal
 from src.schemas.strategy import SectorStrategy, SectorWeight
+from src.utils.llm_factory import get_llm
 
 
 class SectorRotator:
@@ -55,8 +56,6 @@ class SectorRotator:
             SectorStrategy: 섹터 전략
         """
         from src.services.sector_data_service import sector_data_service
-        from langchain_anthropic import ChatAnthropic
-        from src.config.settings import settings
         import json
 
         user_preferences = user_preferences or {}
@@ -66,9 +65,7 @@ class SectorRotator:
             sector_performance = await sector_data_service.get_sector_performance(days=30)
 
         # 2. LLM 기반 섹터 비중 결정
-        llm = ChatAnthropic(
-            model=settings.CLAUDE_MODEL,
-            api_key=settings.ANTHROPIC_API_KEY,
+        llm = get_llm(
             max_tokens=2000,
             temperature=0.1
         )
