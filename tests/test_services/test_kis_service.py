@@ -4,6 +4,7 @@ KIS Service 기본 테스트
 KIS API 키가 .env에 설정되어 있어야 테스트가 통과합니다.
 설정되지 않았으면 테스트를 스킵하지 않고 실패시킵니다 (CLAUDE.md 원칙)
 """
+import asyncio
 import pytest
 
 from src.services.kis_service import KISService, KISAuthError, KISAPIError
@@ -144,6 +145,9 @@ class TestKISService:
         stock_code = "005930"  # 삼성전자
         quantity = 1
 
+        # Rate limit 준수를 위한 대기
+        await asyncio.sleep(1.2)
+
         # 매수 주문 실행 (시장가)
         try:
             result = await kis.place_order(
@@ -179,6 +183,9 @@ class TestKISService:
         stock_code = "005930"
         quantity = 1
         price = 60000  # 지정가 (현재가보다 낮게)
+
+        # Rate limit 준수를 위한 대기
+        await asyncio.sleep(1.2)
 
         try:
             result = await kis.place_order(
@@ -258,6 +265,7 @@ if __name__ == "__main__":
         # 6. 주문 테스트 (매수)
         if settings.KIS_ACCOUNT_NUMBER:
             print("[6/7] 주문 테스트 (매수 - 시장가)...")
+            await asyncio.sleep(1.2)  # Rate limit 준수
             try:
                 result = await kis.place_order(
                     stock_code="005930",
@@ -274,6 +282,7 @@ if __name__ == "__main__":
         # 7. 지정가 주문 테스트
         if settings.KIS_ACCOUNT_NUMBER:
             print("[7/7] 주문 테스트 (매수 - 지정가)...")
+            await asyncio.sleep(1.2)  # Rate limit 준수
             try:
                 result = await kis.place_order(
                     stock_code="005930",

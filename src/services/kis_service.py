@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from decimal import Decimal
@@ -25,6 +26,36 @@ from src.config.settings import settings
 from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
+
+
+class RateLimiter:
+    """API 호출 제한 관리 (초당 1회)"""
+
+    def __init__(self, calls_per_second: float = 1.0):
+        """
+        Args:
+            calls_per_second: 초당 허용 호출 수 (기본 1회)
+        """
+        self.min_interval = 1.0 / calls_per_second  # 최소 간격 (초)
+        self.last_call_time: float = 0.0
+        self._lock = asyncio.Lock()
+
+    async def acquire(self):
+        """
+        Rate limit을 준수하며 API 호출 허가를 얻음.
+        필요시 대기.
+        """
+        async with self._lock:
+            current_time = time.time()
+            time_since_last_call = current_time - self.last_call_time
+
+            if time_since_last_call < self.min_interval:
+                # 최소 간격이 지나지 않았으면 대기
+                wait_time = self.min_interval - time_since_last_call
+                logger.debug(f"⏳ Rate limit: waiting {wait_time:.2f}s")
+                await asyncio.sleep(wait_time)
+
+            self.last_call_time = time.time()
 
 
 class KISAPIError(Exception):
@@ -90,6 +121,9 @@ class KISService:
         # 토큰 관리
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+
+        # Rate Limiter 설정 (초당 1회)
+        self._rate_limiter = RateLimiter(calls_per_second=1.0)
 
         logger.info(f"✅ KIS Service initialized (env={env}, base_url={self.base_url})")
 
@@ -195,6 +229,9 @@ class KISService:
         Raises:
             KISAPIError: API 호출 실패 시
         """
+        # Rate Limit 적용
+        await self._rate_limiter.acquire()
+
         access_token = await self._get_access_token()
         url = f"{self.base_url}{url_path}"
 
