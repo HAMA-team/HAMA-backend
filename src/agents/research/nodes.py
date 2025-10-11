@@ -165,24 +165,31 @@ JSON 형식으로:
 }}
 """
 
-    try:
-        response = await llm.ainvoke(prompt)
-        content = response.content
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            content = response.content
 
-        # 안전한 JSON 파싱
-        analysis = safe_json_parse(content, "Research/Bull")
-        logger.info(f"✅ [Research/Bull] 강세 분석 완료")
+            # 안전한 JSON 파싱
+            analysis = safe_json_parse(content, "Research/Bull")
+            logger.info(f"✅ [Research/Bull] 강세 분석 완료")
 
-        # Supervisor 호환성: messages 전파
-        messages = list(state.get("messages", []))
+            # Supervisor 호환성: messages 전파
+            messages = list(state.get("messages", []))
 
-        return {
-            "bull_analysis": analysis,
-            "messages": messages,
-        }
-    except Exception as e:
-        logger.error(f"❌ [Research/Bull] LLM 호출 실패: {e}")
-        raise RuntimeError(f"강세 분석 실패: {e}") from e
+            return {
+                "bull_analysis": analysis,
+                "messages": messages,
+            }
+        except Exception as e:
+            logger.error(f"❌ [Research/Bull] LLM 호출 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"   재시도 중...")
+                import asyncio
+                await asyncio.sleep(2)
+            else:
+                raise RuntimeError(f"강세 분석 실패: {e}") from e
 
 
 async def bear_analyst_node(state: ResearchState) -> ResearchState:
@@ -227,24 +234,31 @@ JSON 형식으로:
 }}
 """
 
-    try:
-        response = await llm.ainvoke(prompt)
-        content = response.content
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            content = response.content
 
-        # 안전한 JSON 파싱
-        analysis = safe_json_parse(content, "Research/Bear")
-        logger.info(f"✅ [Research/Bear] 약세 분석 완료")
+            # 안전한 JSON 파싱
+            analysis = safe_json_parse(content, "Research/Bear")
+            logger.info(f"✅ [Research/Bear] 약세 분석 완료")
 
-        # Supervisor 호환성: messages 전파
-        messages = list(state.get("messages", []))
+            # Supervisor 호환성: messages 전파
+            messages = list(state.get("messages", []))
 
-        return {
-            "bear_analysis": analysis,
-            "messages": messages,
-        }
-    except Exception as e:
-        logger.error(f"❌ [Research/Bear] LLM 호출 실패: {e}")
-        raise RuntimeError(f"약세 분석 실패: {e}") from e
+            return {
+                "bear_analysis": analysis,
+                "messages": messages,
+            }
+        except Exception as e:
+            logger.error(f"❌ [Research/Bear] LLM 호출 실패 (시도 {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"   재시도 중...")
+                import asyncio
+                await asyncio.sleep(2)
+            else:
+                raise RuntimeError(f"약세 분석 실패: {e}") from e
 
 
 # ==================== Consensus Node ====================
