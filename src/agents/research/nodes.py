@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.config.settings import settings
 from src.utils.llm_factory import get_llm
+from src.utils.json_parser import safe_json_parse
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
 
@@ -168,14 +169,8 @@ JSON 형식으로:
         response = await llm.ainvoke(prompt)
         content = response.content
 
-        if "```json" in content:
-            json_start = content.find("```json") + 7
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        else:
-            json_str = content.strip()
-
-        analysis = json.loads(json_str)
+        # 안전한 JSON 파싱
+        analysis = safe_json_parse(content, "Research/Bull")
         logger.info(f"✅ [Research/Bull] 강세 분석 완료")
 
         # Supervisor 호환성: messages 전파
@@ -236,14 +231,8 @@ JSON 형식으로:
         response = await llm.ainvoke(prompt)
         content = response.content
 
-        if "```json" in content:
-            json_start = content.find("```json") + 7
-            json_end = content.find("```", json_start)
-            json_str = content[json_start:json_end].strip()
-        else:
-            json_str = content.strip()
-
-        analysis = json.loads(json_str)
+        # 안전한 JSON 파싱
+        analysis = safe_json_parse(content, "Research/Bear")
         logger.info(f"✅ [Research/Bear] 약세 분석 완료")
 
         # Supervisor 호환성: messages 전파

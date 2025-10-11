@@ -11,6 +11,7 @@ from typing import Dict, Any, List
 from decimal import Decimal
 from src.schemas.strategy import SectorStrategy, SectorWeight
 from src.utils.llm_factory import get_llm
+from src.utils.json_parser import safe_json_parse
 
 
 class SectorRotator:
@@ -112,15 +113,8 @@ class SectorRotator:
             response = await llm.ainvoke(prompt)
             content = response.content
 
-            # JSON 추출
-            if "```json" in content:
-                json_start = content.find("```json") + 7
-                json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
-            else:
-                json_str = content.strip()
-
-            result = json.loads(json_str)
+            # 안전한 JSON 파싱
+            result = safe_json_parse(content, "Sector Rotator")
 
             # SectorWeight 객체 생성
             sectors = []

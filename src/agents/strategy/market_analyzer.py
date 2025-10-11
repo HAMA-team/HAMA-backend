@@ -12,6 +12,7 @@ from src.schemas.strategy import MarketCycle
 from src.services.bok_service import bok_service
 from src.services.sector_data_service import sector_data_service
 from src.utils.llm_factory import get_llm
+from src.utils.json_parser import safe_json_parse
 import json
 
 
@@ -129,19 +130,8 @@ class MarketAnalyzer:
             response = await self.llm.ainvoke(prompt)
             content = response.content
 
-            # JSON 추출
-            if "```json" in content:
-                json_start = content.find("```json") + 7
-                json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
-            elif "```" in content:
-                json_start = content.find("```") + 3
-                json_end = content.find("```", json_start)
-                json_str = content[json_start:json_end].strip()
-            else:
-                json_str = content.strip()
-
-            analysis = json.loads(json_str)
+            # 안전한 JSON 파싱
+            analysis = safe_json_parse(content, "Market Analyzer")
 
             print(f"✅ [Market Analyzer] 시장 사이클: {analysis['cycle']} (신뢰도: {analysis['confidence']:.0%})")
 
