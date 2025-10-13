@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # LangGraph persistence
+    LANGGRAPH_CHECKPOINT_TTL_MINUTES: int = 43200  # 30일
+    LANGGRAPH_CHECKPOINT_REFRESH_ON_READ: bool = True
+    GRAPH_CHECKPOINT_BACKEND: str = "memory"  # memory | sqlite | redis
+    GRAPH_CHECKPOINT_SQLITE_PATH: str = "data/langgraph_checkpoints.sqlite"
+
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
 
@@ -124,6 +130,14 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string"""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+
+    @property
+    def langgraph_default_ttl(self) -> int:
+        """환경에 따라 LangGraph 체크포인트 TTL(분)을 조정"""
+        env = os.getenv("ENV", self.ENV).lower()
+        if env == "test":
+            return min(self.LANGGRAPH_CHECKPOINT_TTL_MINUTES, 120)
+        return self.LANGGRAPH_CHECKPOINT_TTL_MINUTES
 
     class Config:
         env_file = ".env"

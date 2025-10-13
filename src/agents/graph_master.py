@@ -11,51 +11,41 @@ Master Agent의 역할 (순수 조율자):
       모든 실제 작업은 서브그래프(에이전트)가 수행
       HITL도 각 서브그래프 내부에서 처리
 """
-from typing import Dict, Any
-from langgraph_supervisor import create_supervisor
-from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import HumanMessage
+import asyncio
 import logging
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-# Config
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph_supervisor import create_supervisor
+
+from src.agents.general import general_agent
+from src.agents.portfolio import portfolio_agent
+from src.agents.research import research_agent
+from src.agents.risk import risk_agent
+from src.agents.strategy import strategy_agent
+from src.agents.trading import trading_agent
 from src.config.settings import settings
 from src.utils.llm_factory import get_llm
-
-# Compiled Agents import
-from src.agents.research import research_agent
-from src.agents.strategy import strategy_agent
-from src.agents.risk import risk_agent
-from src.agents.trading import trading_agent
-from src.agents.general import general_agent
-
-# Legacy agents (TODO: 서브그래프로 전환)
-from src.agents.portfolio import portfolio_agent
 
 logger = logging.getLogger(__name__)
 
 
 # ==================== Supervisor 구성 ====================
 
-def build_supervisor(automation_level: int = 2):
+def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = None):
     """
-    LangGraph Supervisor 패턴 기반 Master Agent
-
-    Args:
-        automation_level: 자동화 레벨
-            - 1 (Pilot): 거의 자동
-            - 2 (Copilot): 매매/리밸런싱 승인 필요 (기본값)
-            - 3 (Advisor): 모든 결정 승인 필요
-
-    Returns:
-        StateGraph: Supervisor 그래프
+    LangGraph Supervisor 패턴 기반 Master Agent 정의를 생성합니다.
     """
-    # LLM 초기화 (모드에 따라 Gemini or Claude)
-    llm = get_llm(
-        temperature=0,
-        max_tokens=4000
-    )
+    if llm is None:
+        llm = get_llm(
+            temperature=0,
+            max_tokens=settings.MAX_TOKENS,
+        )
 
-    # Supervisor 프롬프트
     supervisor_prompt = f"""당신은 투자 에이전트 팀을 관리하는 Supervisor입니다.
 
 **사용 가능한 에이전트:**
@@ -118,7 +108,6 @@ def build_supervisor(automation_level: int = 2):
 사용자 요청을 분석하고, 적절한 에이전트들을 선택하세요.
 """
 
-    # Supervisor 생성
     supervisor = create_supervisor(
         agents=[
             research_agent,
@@ -130,62 +119,126 @@ def build_supervisor(automation_level: int = 2):
             # monitoring_agent,
         ],
         model=llm,
-        parallel_tool_calls=True,  # ⭐ 병렬 실행 활성화
+        parallel_tool_calls=True,
         prompt=supervisor_prompt,
     )
 
-    logger.info(f"✅ [Supervisor] 생성 완료 (자동화 레벨: {automation_level})")
+    logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s)", automation_level)
 
     return supervisor
 
 
-# ==================== 그래프 빌드 ====================
-
-def build_graph(automation_level: int = 2):
+def build_state_graph(automation_level: int = 2):
     """
-    최종 그래프 빌드
+    Supervisor 기반 LangGraph 정의를 반환합니다.
 
-    Args:
-        automation_level: 자동화 레벨
-
-    Returns:
-        Compiled graph
+    그래프 정의 단계에서는 순수하게 구조만 생성하고 부수효과를 최소화합니다.
     """
-    supervisor = build_supervisor(automation_level)
-
-    # 컴파일 (checkpointer 설정)
-    app = supervisor.compile(
-        checkpointer=MemorySaver(),  # TODO: AsyncSqliteSaver로 변경
+    llm = get_llm(
+        temperature=0,
+        max_tokens=settings.MAX_TOKENS,
     )
+    return build_supervisor(automation_level=automation_level, llm=llm)
 
-    logger.info(f"🔧 [Graph] 컴파일 완료")
+
+def _resolve_backend_key(backend: Optional[str] = None) -> str:
+    if backend:
+        return backend.lower()
+    return getattr(settings, "GRAPH_CHECKPOINT_BACKEND", "memory").lower()
+
+
+def _create_checkpointer(backend_key: str):
+    """
+    backend_key에 따라 적절한 체크포인터 인스턴스를 생성합니다.
+    """
+    key = backend_key.lower()
+
+    if key == "sqlite":
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
+            raise ImportError(
+                "langgraph-checkpoint-sqlite 패키지가 필요합니다."
+            ) from exc
+
+        db_path = getattr(
+            settings,
+            "GRAPH_CHECKPOINT_SQLITE_PATH",
+            "data/langgraph_checkpoints.sqlite",
+        )
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        return SqliteSaver(db_path)
+
+    if key == "redis":
+        try:
+            from langgraph.checkpoint.redis import RedisSaver
+        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
+            raise ImportError(
+                "langgraph-checkpoint-redis 패키지가 필요합니다."
+            ) from exc
+
+        return RedisSaver.from_conn_string(settings.REDIS_URL)
+
+    # 기본값: 인메모리 Saver
+    return MemorySaver()
+
+
+def _loop_token() -> str:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return "sync"
+    return f"loop-{id(loop)}"
+
+
+@lru_cache(maxsize=16)
+def get_compiled_graph(automation_level: int, backend_key: str, loop_token: str):
+    """
+    automation_level, backend_key 조합으로 컴파일된 그래프를 캐싱합니다.
+    """
+    state_graph = build_state_graph(automation_level=automation_level)
+    checkpointer = _create_checkpointer(backend_key)
+    app = state_graph.compile(checkpointer=checkpointer)
+
+    logger.info(
+        "🔧 [Graph] 컴파일 완료 (automation_level=%s, backend=%s, loop=%s)",
+        automation_level,
+        backend_key,
+        loop_token,
+    )
 
     return app
 
 
-# Global compiled graph (필요 시 lazy 초기화)
-# graph_app = build_graph(automation_level=2)  # 주석 처리: lazy init
-
-
 # ==================== Main Interface ====================
+
+def build_graph(
+    automation_level: int = 2,
+    *,
+    backend_key: Optional[str] = None,
+):
+    """
+    Backwards compatible helper that mirrors the legacy API expected by
+    existing routes. Returns a compiled LangGraph application.
+    """
+    resolved_backend = _resolve_backend_key(backend_key)
+    loop_token = _loop_token()
+    return get_compiled_graph(
+        automation_level=automation_level,
+        backend_key=resolved_backend,
+        loop_token=loop_token,
+    )
+
 
 async def run_graph(
     query: str,
     automation_level: int = 2,
-    request_id: str = None,
-    thread_id: str = None
+    request_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    backend_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    그래프 실행 함수
-
-    Args:
-        query: 사용자 질의
-        automation_level: 자동화 레벨 (1-3)
-        request_id: 요청 ID
-        thread_id: 대화 스레드 ID (HITL 재개 시 필요)
-
-    Returns:
-        최종 응답 딕셔너리
+    LangGraph Supervisor 그래프 실행 함수
     """
     import uuid
 
@@ -195,34 +248,40 @@ async def run_graph(
     if not thread_id:
         thread_id = request_id
 
-    # Supervisor 그래프 빌드
-    app = build_graph(automation_level=automation_level)
+    resolved_backend = _resolve_backend_key(backend_key)
+    loop_token = _loop_token()
+    app = get_compiled_graph(
+        automation_level=automation_level,
+        backend_key=resolved_backend,
+        loop_token=loop_token,
+    )
 
-    # Config
     config = {
         "configurable": {
             "thread_id": thread_id,
+            "request_id": request_id,
         }
     }
 
-    # 초기 State
+    configured_app = app.with_config(config)
+
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
-        "request_id": request_id,  # 서브그래프에서 필요
+        "request_id": request_id,
     }
 
-    logger.info(f"🚀 [Graph] 실행 시작: {query[:50]}...")
+    logger.info("🚀 [Graph] 실행 시작: %s...", query[:50])
 
-    # 실행 (Supervisor가 모든 조율 수행)
-    result = await app.ainvoke(initial_state, config=config)
+    result = await configured_app.ainvoke(initial_state)
 
-    logger.info(f"✅ [Graph] 실행 완료")
+    logger.info("✅ [Graph] 실행 완료 (request_id=%s)", request_id)
 
-    # 최종 응답 추출
     final_message = result["messages"][-1]
 
     return {
-        "message": final_message.content if hasattr(final_message, 'content') else str(final_message),
+        "message": final_message.content
+        if hasattr(final_message, "content")
+        else str(final_message),
         "messages": result.get("messages", []),
     }
