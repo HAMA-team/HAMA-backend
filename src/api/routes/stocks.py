@@ -1,5 +1,5 @@
 """
-Stocks API endpoints
+주식 데이터 관련 API 엔드포인트 모음
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 class StockInfo(BaseModel):
-    """Basic stock information"""
+    """주식 기본 정보"""
 
     stock_code: str
     stock_name: str
@@ -32,7 +32,7 @@ class StockInfo(BaseModel):
 
 
 class StockPrice(BaseModel):
-    """Stock price data"""
+    """주가 데이터"""
 
     date: date
     open_price: Decimal
@@ -43,7 +43,7 @@ class StockPrice(BaseModel):
 
 
 async def _latest_price(stock_code: str) -> Dict[str, Any]:
-    """Fetch the latest price and volume for a stock code."""
+    """지정한 종목 코드의 최신 종가와 거래량을 조회합니다."""
     df = await stock_data_service.get_stock_price(stock_code, days=2)
     if df is None or df.empty:
         return {}
@@ -64,12 +64,12 @@ async def _latest_price(stock_code: str) -> Dict[str, Any]:
 
 @router.get("/search")
 async def search_stocks(q: str = Query(..., min_length=1), market: str = Query("KOSPI")):
-    """Search stocks by name or code"""
+    """종목명 또는 종목코드로 주식을 검색합니다."""
     df = await stock_data_service.get_stock_listing(market)
     if df is None or df.empty:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Stock listing unavailable",
+            detail="종목 목록을 조회할 수 없습니다.",
         )
 
     query = q.strip().upper()
@@ -118,17 +118,17 @@ async def search_stocks(q: str = Query(..., min_length=1), market: str = Query("
 
 @router.get("/{stock_code}", response_model=StockInfo)
 async def get_stock_info(stock_code: str, market: str = Query("KOSPI")):
-    """Get detailed stock information"""
+    """특정 종목의 기본 정보를 조회합니다."""
     df = await stock_data_service.get_stock_listing(market)
     if df is None or df.empty:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Stock listing unavailable",
+            detail="종목 목록을 조회할 수 없습니다.",
         )
 
     match = df[df["Code"] == stock_code].head(1)
     if match.empty:
-        raise HTTPException(status_code=404, detail="Stock not found")
+        raise HTTPException(status_code=404, detail="요청한 종목을 찾을 수 없습니다.")
 
     row = match.iloc[0]
     price_payload = await _latest_price(stock_code)
@@ -149,12 +149,12 @@ async def get_price_history(
     stock_code: str,
     days: int = Query(30, ge=1, le=365),
 ):
-    """Get stock price history"""
+    """특정 종목의 기간별 주가 히스토리를 반환합니다."""
     df = await stock_data_service.get_stock_price(stock_code, days=days)
     if df is None or df.empty:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Price history unavailable",
+            detail="주가 히스토리를 조회할 수 없습니다.",
         )
 
     prices: List[Dict[str, Any]] = []
@@ -180,8 +180,7 @@ async def get_price_history(
 @router.get("/{stock_code}/analysis")
 async def get_stock_analysis(stock_code: str):
     """
-    Get comprehensive stock analysis
-    This will trigger Research Agent
+    리서치 에이전트를 호출해 종합 종목 분석을 제공합니다.
     """
     try:
         result = await research_agent.ainvoke(
@@ -195,7 +194,7 @@ async def get_stock_analysis(stock_code: str):
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Research agent unavailable: {exc}",
+            detail=f"리서치 에이전트를 사용할 수 없습니다: {exc}",
         ) from exc
 
     consensus = result.get("consensus")

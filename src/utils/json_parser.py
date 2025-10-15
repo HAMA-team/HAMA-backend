@@ -29,6 +29,7 @@ def safe_json_parse(content: str, logger_name: str = "LLM") -> dict:
         - 빈 응답이나 닫는 마커가 없는 경우도 처리
     """
     if not content or len(content.strip()) == 0:
+        logger.error(f"⚠️ [{logger_name}] LLM 응답이 비어 있습니다.")
         raise ValueError("빈 응답 수신")
 
     # 1. ```json ... ``` 마커 제거
@@ -49,6 +50,10 @@ def safe_json_parse(content: str, logger_name: str = "LLM") -> dict:
             json_str = content[json_start:json_end].strip()
     else:
         json_str = content.strip()
+
+    logger.debug(
+        f"🧪 [{logger_name}] JSON 파싱 시도 (preview={json_str[:200]!r})"
+    )
 
     # 2. JSON 파싱 시도
     try:

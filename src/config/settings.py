@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash-exp"
 
     # LLM Mode: "test" (Gemini) or "production" (Claude)
-    LLM_MODE: str = "test"  # test, production, demo 등
+    LLM_MODE: str = "production"  # test, production, demo 등
 
     # LLM Settings
     LLM_TIMEOUT: int = 30

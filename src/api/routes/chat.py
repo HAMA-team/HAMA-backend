@@ -1,5 +1,5 @@
 """
-Chat API endpoints - Main interface for user interaction
+채팅 및 승인 관련 API 엔드포인트 모음
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -43,25 +43,36 @@ def _serialize_datetime(dt) -> Optional[str]:
 
 
 class ChatMessage(BaseModel):
-    """Chat message schema"""
+    """채팅 메시지 스키마"""
     role: str  # "user" or "assistant"
     content: str
 
 
 class ChatRequest(BaseModel):
-    """Chat request schema"""
+    """채팅 요청 스키마"""
     message: str
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3, description="자동화 레벨: 1=Pilot, 2=Copilot, 3=Advisor")
 
 
 class ChatResponse(BaseModel):
-    """Chat response schema"""
+    """채팅 응답 스키마"""
     message: str
     conversation_id: str
     requires_approval: bool = False
     approval_request: Optional[dict] = None
     metadata: Optional[dict] = None
+
+
+class ChatSessionSummary(BaseModel):
+    """채팅 세션 요약 스키마"""
+    conversation_id: str
+    title: str
+    last_message: Optional[str] = None
+    last_message_at: Optional[str] = None
+    automation_level: int
+    message_count: int
+    created_at: Optional[str] = None
 
 
 async def _mock_chat_response(
@@ -190,15 +201,15 @@ async def _mock_approval_response(approval: "ApprovalRequest") -> "ApprovalRespo
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Main chat endpoint - Routes user queries to appropriate agents
+    메인 채팅 엔드포인트입니다.
 
-    Flow:
-    1. Master Agent receives query
-    2. Master Agent routes to appropriate sub-agents
-    3. Sub-agents process and return results
-    4. Master Agent aggregates results
-    5. HITL check and response generation
-    6. Interrupt 확인 및 승인 요청
+    처리 흐름:
+    1. 마스터 에이전트가 질의를 수신합니다.
+    2. 적절한 서브 에이전트를 선택해 작업을 분배합니다.
+    3. 서브 에이전트가 결과를 생성합니다.
+    4. 마스터 에이전트가 결과를 통합합니다.
+    5. HITL 조건을 확인하고 응답을 생성합니다.
+    6. 중단 지점이 있는 경우 승인 요청을 반환합니다.
     """
     try:
         conversation_uuid = _ensure_uuid(request.conversation_id)
@@ -415,7 +426,7 @@ async def chat(request: ChatRequest):
 
 @router.get("/history/{conversation_id}")
 async def get_chat_history(conversation_id: str, limit: int = Query(100, ge=1, le=500)):
-    """Get chat history for a conversation"""
+    """특정 대화의 메시지 히스토리를 조회합니다."""
     conversation_uuid = _ensure_uuid(conversation_id)
     history = await chat_history_service.get_history(conversation_id=conversation_uuid, limit=limit)
 
@@ -450,16 +461,58 @@ async def get_chat_history(conversation_id: str, limit: int = Query(100, ge=1, l
 
 @router.delete("/history/{conversation_id}")
 async def delete_chat_history(conversation_id: str):
-    """Delete chat history"""
+    """특정 대화 히스토리를 영구 삭제합니다."""
     conversation_uuid = _ensure_uuid(conversation_id)
     await chat_history_service.delete_history(conversation_id=conversation_uuid)
     return {"status": "deleted", "conversation_id": conversation_id}
 
 
+@router.get("/sessions", response_model=List[ChatSessionSummary])
+async def list_chat_sessions(limit: int = Query(50, ge=1, le=100)):
+    """최근 활동 순으로 정렬된 채팅 세션 목록을 반환합니다."""
+    summaries = await chat_history_service.list_sessions(limit=limit)
+
+    response: List[ChatSessionSummary] = []
+    for summary in summaries:
+        session = summary["session"]
+        first_user_message = summary.get("first_user_message")
+        last_message = summary.get("last_message")
+        message_count = summary.get("message_count") or 0
+
+        raw_title = session.summary
+        if not raw_title and first_user_message and first_user_message.content:
+            raw_title = first_user_message.content.strip()
+        if not raw_title:
+            raw_title = "새 대화"
+
+        title = raw_title[:50]
+        last_message_text = None
+        if last_message and last_message.content:
+            last_message_text = last_message.content.strip()[:100]
+
+        last_message_at = (
+            last_message.created_at if last_message else session.last_message_at or session.updated_at
+        )
+
+        response.append(
+            ChatSessionSummary(
+                conversation_id=str(session.conversation_id),
+                title=title,
+                last_message=last_message_text,
+                last_message_at=_serialize_datetime(last_message_at),
+                automation_level=session.automation_level or 2,
+                message_count=message_count,
+                created_at=_serialize_datetime(session.created_at),
+            )
+        )
+
+    return response
+
+
 # ==================== Approval Endpoint ====================
 
 class ApprovalRequest(BaseModel):
-    """Approval request schema"""
+    """승인 요청 스키마"""
     thread_id: str = Field(description="대화 스레드 ID")
     decision: str = Field(description="승인 결정: approved, rejected, modified")
     automation_level: int = Field(default=2, ge=1, le=3)
@@ -468,7 +521,7 @@ class ApprovalRequest(BaseModel):
 
 
 class ApprovalResponse(BaseModel):
-    """Approval response schema"""
+    """승인 응답 스키마"""
     status: str
     message: str
     conversation_id: str
@@ -478,12 +531,12 @@ class ApprovalResponse(BaseModel):
 @router.post("/approve", response_model=ApprovalResponse)
 async def approve_action(approval: ApprovalRequest):
     """
-    승인/거부 처리 엔드포인트
+    승인 혹은 거부 결정을 처리하는 엔드포인트입니다.
 
-    Flow:
-    1. thread_id로 중단된 그래프 상태 조회
-    2. 승인 여부에 따라 Command(resume=...) 전달
-    3. 그래프 재개 및 결과 반환
+    처리 흐름:
+    1. thread_id를 통해 중단된 그래프 상태를 조회합니다.
+    2. 결정 값에 따라 Command(resume=...)를 전달합니다.
+    3. 그래프를 재개하고 최종 결과를 반환합니다.
     """
     try:
         conversation_uuid = _ensure_uuid(approval.thread_id)

@@ -148,5 +148,71 @@ class ChatHistoryService:
 
         await asyncio.to_thread(_delete)
 
+    async def list_sessions(self, *, limit: int = 50) -> Sequence[Dict[str, Any]]:
+        """Return chat session summaries ordered by last activity."""
+
+        def _list() -> Sequence[Dict[str, Any]]:
+            with self._session_factory() as session:  # type: Session
+                sessions: Sequence[ChatSession] = (
+                    session.query(ChatSession)
+                    .order_by(ChatSession.last_message_at.desc().nullslast())
+                    .limit(limit)
+                    .all()
+                )
+
+                if not sessions:
+                    return []
+
+                conversation_ids = [s.conversation_id for s in sessions]
+
+                messages: Sequence[ChatMessage] = (
+                    session.query(ChatMessage)
+                    .filter(ChatMessage.conversation_id.in_(conversation_ids))
+                    .order_by(ChatMessage.conversation_id.asc(), ChatMessage.created_at.asc())
+                    .all()
+                )
+
+                grouped_messages: Dict[uuid.UUID, Sequence[ChatMessage]] = {}
+                current_conversation = None
+                buffer: list[ChatMessage] = []
+
+                for message in messages:
+                    if message.conversation_id != current_conversation:
+                        if current_conversation is not None:
+                            grouped_messages[current_conversation] = list(buffer)
+                        current_conversation = message.conversation_id
+                        buffer = [message]
+                    else:
+                        buffer.append(message)
+
+                if current_conversation is not None:
+                    grouped_messages[current_conversation] = list(buffer)
+
+                summaries: list[Dict[str, Any]] = []
+                for chat_session in sessions:
+                    convo_id = chat_session.conversation_id
+                    session_messages = grouped_messages.get(convo_id, [])
+
+                    first_user_message = next(
+                        (msg for msg in session_messages if msg.role == "user" and msg.content),
+                        None,
+                    )
+                    last_message = session_messages[-1] if session_messages else None
+                    message_count = len(session_messages)
+
+                    summaries.append(
+                        {
+                            "conversation_id": convo_id,
+                            "session": chat_session,
+                            "first_user_message": first_user_message,
+                            "last_message": last_message,
+                            "message_count": message_count,
+                        }
+                    )
+
+                return summaries
+
+        return await asyncio.to_thread(_list)
+
 
 chat_history_service = ChatHistoryService()
