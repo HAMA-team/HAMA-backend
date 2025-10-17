@@ -65,8 +65,55 @@ class Position(Base):
     last_updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
 
 
+class Order(Base):
+    """주문 정보 (KIS API 호환)"""
+    __tablename__ = "orders"
+
+    order_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    portfolio_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    stock_code = Column(String(20), nullable=False, index=True)
+
+    # 주문 정보
+    order_type = Column(String(10), nullable=False, index=True)  # BUY, SELL
+    order_price_type = Column(String(20), nullable=False)  # MARKET(시장가), LIMIT(지정가)
+    order_price = Column(DECIMAL(15, 2))
+    order_quantity = Column(Integer, nullable=False)
+
+    # 체결 정보
+    filled_quantity = Column(Integer, default=0)
+    unfilled_quantity = Column(Integer)
+    filled_avg_price = Column(DECIMAL(15, 2))
+    total_filled_amount = Column(DECIMAL(15, 2))
+
+    # 주문 상태
+    order_status = Column(String(20), nullable=False, default="pending", index=True)
+    # pending: 접수 대기
+    # accepted: 주문 접수
+    # partially_filled: 부분 체결
+    # filled: 체결 완료
+    # cancelled: 취소
+    # rejected: 거부
+
+    # KIS API 주문번호 (실제 API 연동 시 사용)
+    kis_order_number = Column(String(50))
+
+    # 수수료 및 세금
+    fee = Column(DECIMAL(15, 2), default=0)
+    tax = Column(DECIMAL(15, 2), default=0)
+
+    # AI 추천 추적
+    signal_id = Column(UUID(as_uuid=True))
+
+    # 주문/체결 시간
+    ordered_at = Column(TIMESTAMP, server_default=func.now(), index=True)
+    filled_at = Column(TIMESTAMP)
+    cancelled_at = Column(TIMESTAMP)
+
+    notes = Column(Text)
+
+
 class Transaction(Base):
-    """거래 내역"""
+    """거래 내역 (체결 완료된 주문)"""
     __tablename__ = "transactions"
 
     transaction_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -81,9 +128,8 @@ class Transaction(Base):
     fee = Column(DECIMAL(15, 2), default=0)
     tax = Column(DECIMAL(15, 2), default=0)
 
-    # 주문 정보 (Phase 2)
-    order_id = Column(UUID(as_uuid=True))
-    order_status = Column(String(20))
+    # 주문 정보
+    order_id = Column(UUID(as_uuid=True), index=True)
 
     # AI 추천 추적
     signal_id = Column(UUID(as_uuid=True))

@@ -55,7 +55,7 @@ docs/
    - Mock → Real 전환 방법
 
 5. **[data-sources-integration.md](plan/data-sources-integration.md)**
-   - pykrx, DART API 연동 방법
+   - FinanceDataReader, DART API 연동 방법
    - 데이터 수집 전략
 
 ### 🟢 완료된 문서 (아카이브)

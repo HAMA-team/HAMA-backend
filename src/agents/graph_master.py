@@ -1,361 +1,287 @@
 """
-LangGraph 기반 마스터 에이전트
+LangGraph Supervisor 패턴 기반 마스터 에이전트
 
-StateGraph를 사용한 에이전트 오케스트레이션
+Master Agent의 역할 (순수 조율자):
+1. 사용자 질의를 LLM으로 분석
+2. 적절한 에이전트들 선택 (LLM 기반 동적 라우팅)
+3. 에이전트 실행 (병렬 가능)
+4. 결과 통합
+
+중요: Master는 비즈니스 로직을 수행하지 않음!
+      모든 실제 작업은 서브그래프(에이전트)가 수행
+      HITL도 각 서브그래프 내부에서 처리
 """
-from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional
-from langgraph.graph import StateGraph, END
-import operator
+import asyncio
 import logging
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, Optional
 
-from src.agents.research import research_agent
-from src.agents.strategy import strategy_agent
-from src.agents.risk import risk_agent
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph_supervisor import create_supervisor
+
+from src.agents.general import general_agent
 from src.agents.portfolio import portfolio_agent
-from src.agents.monitoring import monitoring_agent
-from src.agents.education import education_agent
-from src.schemas.agent import AgentInput, AgentOutput
+from src.agents.research import research_agent
+from src.agents.risk import risk_agent
+from src.agents.strategy import strategy_agent
+from src.agents.trading import trading_agent
+from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
 
-# ==================== State Definition ====================
+# ==================== Supervisor 구성 ====================
 
-class AgentState(TypedDict):
+def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = None):
     """
-    LangGraph State for HAMA
-
-    Reducer 함수를 사용하여 상태를 누적합니다.
+    LangGraph Supervisor 패턴 기반 Master Agent 정의를 생성합니다.
     """
-    # 기본 정보
-    query: str
-    request_id: str
-    automation_level: int
+    if llm is None:
+        llm = get_llm(
+            temperature=0,
+            max_tokens=settings.MAX_TOKENS,
+        )
 
-    # 의도 분석
-    intent: Optional[str]
+    supervisor_prompt = f"""당신은 투자 에이전트 팀을 관리하는 Supervisor입니다.
 
-    # 에이전트 결과 (누적)
-    agent_results: Annotated[Dict[str, Any], operator.or_]
+**사용 가능한 에이전트:**
 
-    # 라우팅 정보
-    agents_to_call: List[str]
-    agents_called: Annotated[List[str], operator.add]
+1. **research_agent** (종목 분석)
+   - 기업 재무 분석 (재무제표, 비율)
+   - 기술적 분석 (차트, 지표)
+   - 뉴스 감정 분석
+   - 종합 평가 및 등급 산출
 
-    # 리스크 및 HITL
-    risk_level: Optional[str]
-    hitl_required: bool
+2. **strategy_agent** (투자 전략)
+   - 시장 사이클 분석
+   - 섹터 로테이션 전략
+   - 자산 배분 결정
+   - Strategic Blueprint 생성
 
-    # 최종 결과
-    summary: Optional[str]
-    final_response: Optional[Dict[str, Any]]
+3. **risk_agent** (리스크 평가)
+   - 포트폴리오 리스크 측정 (VaR, 변동성)
+   - 집중도 리스크 분석
+   - 리스크 경고 및 권고사항 생성
 
+4. **trading_agent** (매매 실행)
+   - 매매 주문 생성 및 실행
+   - ⚠️ automation_level {automation_level}에서는 승인 필요
 
-# ==================== Intent Categories ====================
+5. **portfolio_agent** (포트폴리오 관리)
+   - 포트폴리오 구성 및 최적화
+   - 리밸런싱 제안
 
-class IntentCategory:
-    """Intent categories"""
-    STOCK_ANALYSIS = "stock_analysis"
-    TRADE_EXECUTION = "trade_execution"
-    PORTFOLIO_EVALUATION = "portfolio_evaluation"
-    REBALANCING = "rebalancing"
-    PERFORMANCE_CHECK = "performance_check"
-    MARKET_STATUS = "market_status"
-    GENERAL_QUESTION = "general_question"
+6. **monitoring_agent** (시장 모니터링)
+   - 가격 변동 추적
+   - 이벤트 감지 (거래량 급증, VI 발동)
+   - 정기 리포트 생성
 
+7. **general_agent** (일반 질의응답)
+   - 투자 용어 설명 (PER, PBR 등)
+   - 일반 시장 질문 응답
+   - 투자 전략 교육
 
-# ==================== Node Functions ====================
+**중요 규칙:**
 
-def analyze_intent_node(state: AgentState) -> AgentState:
-    """
-    의도 분석 노드
-    사용자 쿼리를 분석하여 의도를 파악
-    """
-    query = state["query"].lower()
+1. **병렬 실행 가능**: 여러 에이전트를 동시에 호출할 수 있습니다.
+   예: 종목 분석 시 research + strategy + risk 동시 호출
 
-    # 키워드 기반 의도 분석
-    if any(word in query for word in ["분석", "어때", "평가"]):
-        intent = IntentCategory.STOCK_ANALYSIS
-    elif any(word in query for word in ["매수", "매도", "사", "팔"]):
-        intent = IntentCategory.TRADE_EXECUTION
-    elif any(word in query for word in ["포트폴리오", "자산배분"]):
-        intent = IntentCategory.PORTFOLIO_EVALUATION
-    elif "리밸런싱" in query:
-        intent = IntentCategory.REBALANCING
-    elif any(word in query for word in ["수익률", "현황", "상태"]):
-        intent = IntentCategory.PERFORMANCE_CHECK
-    elif "시장" in query:
-        intent = IntentCategory.MARKET_STATUS
-    else:
-        intent = IntentCategory.GENERAL_QUESTION
+2. **에이전트 조합 예시:**
+   - "삼성전자 분석해줘" → research_agent + strategy_agent + risk_agent
+   - "내 포트폴리오 리밸런싱" → portfolio_agent + risk_agent
+   - "PER이 뭐야?" → general_agent
+   - "삼성전자 10주 매수" → trading_agent
 
-    logger.info(f"Detected intent: {intent}")
+3. **HITL (Human-in-the-Loop):**
+   - 각 에이전트가 내부적으로 HITL을 처리합니다.
+   - 현재 automation_level: {automation_level}
+   - trading_agent는 레벨 2+ 에서 자동 승인 요청
 
-    return {
-        **state,
-        "intent": intent,
-    }
+4. **필요한 에이전트만 선택:**
+   - 불필요한 에이전트는 호출하지 마세요.
+   - 사용자 요청을 정확히 분석하세요.
 
+사용자 요청을 분석하고, 적절한 에이전트들을 선택하세요.
+"""
 
-def determine_agents_node(state: AgentState) -> AgentState:
-    """
-    에이전트 결정 노드
-    의도에 따라 호출할 에이전트 결정
-    """
-    intent = state["intent"]
-
-    routing_map = {
-        IntentCategory.STOCK_ANALYSIS: ["research_agent", "strategy_agent", "risk_agent"],
-        IntentCategory.TRADE_EXECUTION: ["strategy_agent", "risk_agent"],
-        IntentCategory.PORTFOLIO_EVALUATION: ["portfolio_agent", "risk_agent"],
-        IntentCategory.REBALANCING: ["portfolio_agent", "strategy_agent"],
-        IntentCategory.PERFORMANCE_CHECK: ["portfolio_agent"],
-        IntentCategory.MARKET_STATUS: ["research_agent", "monitoring_agent"],
-        IntentCategory.GENERAL_QUESTION: ["education_agent"],
-    }
-
-    agents = routing_map.get(intent, ["education_agent"])
-    logger.info(f"Agents to call: {agents}")
-
-    return {
-        **state,
-        "agents_to_call": agents,
-    }
-
-
-async def call_agents_node(state: AgentState) -> AgentState:
-    """
-    에이전트 호출 노드
-    결정된 에이전트들을 병렬로 호출
-    """
-    agents_to_call = state["agents_to_call"]
-
-    agent_registry = {
-        "research_agent": research_agent,
-        "strategy_agent": strategy_agent,
-        "risk_agent": risk_agent,
-        "portfolio_agent": portfolio_agent,
-        "monitoring_agent": monitoring_agent,
-        "education_agent": education_agent,
-    }
-
-    # AgentInput 생성
-    agent_input = AgentInput(
-        request_id=state["request_id"],
-        automation_level=state["automation_level"],
-        context={
-            "query": state["query"],
-            "intent": state["intent"],
-        }
+    supervisor = create_supervisor(
+        agents=[
+            research_agent,
+            strategy_agent,
+            risk_agent,
+            trading_agent,
+            general_agent,
+            portfolio_agent,
+            # monitoring_agent,
+        ],
+        model=llm,
+        parallel_tool_calls=True,
+        prompt=supervisor_prompt,
     )
 
-    # 에이전트 호출
-    results = {}
-    for agent_id in agents_to_call:
-        agent = agent_registry.get(agent_id)
-        if agent:
-            try:
-                output = await agent.execute(agent_input)
-                if output.status == "success":
-                    results[agent_id] = output.data
-            except Exception as e:
-                logger.error(f"Agent {agent_id} failed: {str(e)}")
+    logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s)", automation_level)
 
-    logger.info(f"Called agents: {list(results.keys())}")
-
-    return {
-        **state,
-        "agent_results": results,
-        "agents_called": list(results.keys()),
-    }
+    return supervisor
 
 
-def check_risk_node(state: AgentState) -> AgentState:
+def build_state_graph(automation_level: int = 2):
     """
-    리스크 체크 노드
-    에이전트 결과에서 리스크 수준 추출
+    Supervisor 기반 LangGraph 정의를 반환합니다.
+
+    그래프 정의 단계에서는 순수하게 구조만 생성하고 부수효과를 최소화합니다.
     """
-    agent_results = state.get("agent_results", {})
-
-    # risk_agent 결과에서 리스크 레벨 추출
-    risk_level = None
-    if "risk_agent" in agent_results:
-        risk_data = agent_results["risk_agent"]
-        risk_level = risk_data.get("risk_level")
-
-    logger.info(f"Risk level: {risk_level}")
-
-    return {
-        **state,
-        "risk_level": risk_level,
-    }
+    llm = get_llm(
+        temperature=0,
+        max_tokens=settings.MAX_TOKENS,
+    )
+    return build_supervisor(automation_level=automation_level, llm=llm)
 
 
-def check_hitl_node(state: AgentState) -> AgentState:
+def _resolve_backend_key(backend: Optional[str] = None) -> str:
+    if backend:
+        return backend.lower()
+    return getattr(settings, "GRAPH_CHECKPOINT_BACKEND", "memory").lower()
+
+
+def _create_checkpointer(backend_key: str):
     """
-    HITL 트리거 체크 노드
-    자동화 레벨과 리스크를 고려하여 HITL 필요 여부 판단
+    backend_key에 따라 적절한 체크포인터 인스턴스를 생성합니다.
     """
-    intent = state["intent"]
-    automation_level = state["automation_level"]
-    risk_level = state.get("risk_level")
+    key = backend_key.lower()
 
-    hitl_required = False
+    if key == "sqlite":
+        try:
+            from langgraph.checkpoint.sqlite import SqliteSaver
+        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
+            raise ImportError(
+                "langgraph-checkpoint-sqlite 패키지가 필요합니다."
+            ) from exc
 
-    # Trade execution always requires approval in Level 2+
-    if intent == IntentCategory.TRADE_EXECUTION and automation_level >= 2:
-        hitl_required = True
+        db_path = getattr(
+            settings,
+            "GRAPH_CHECKPOINT_SQLITE_PATH",
+            "data/langgraph_checkpoints.sqlite",
+        )
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        return SqliteSaver(db_path)
 
-    # Rebalancing requires approval in Level 2+
-    if intent == IntentCategory.REBALANCING and automation_level >= 2:
-        hitl_required = True
+    if key == "redis":
+        try:
+            from langgraph.checkpoint.redis import RedisSaver
+        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
+            raise ImportError(
+                "langgraph-checkpoint-redis 패키지가 필요합니다."
+            ) from exc
 
-    # High risk always triggers HITL
-    if risk_level in ["high", "critical"]:
-        hitl_required = True
+        return RedisSaver.from_conn_string(settings.REDIS_URL)
 
-    # Level 3 (Advisor) requires approval for most actions
-    if automation_level == 3 and intent not in [
-        IntentCategory.GENERAL_QUESTION,
-        IntentCategory.PERFORMANCE_CHECK
-    ]:
-        hitl_required = True
-
-    logger.info(f"HITL required: {hitl_required}")
-
-    return {
-        **state,
-        "hitl_required": hitl_required,
-    }
+    # 기본값: 인메모리 Saver
+    return MemorySaver()
 
 
-def aggregate_results_node(state: AgentState) -> AgentState:
+def _loop_token() -> str:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return "sync"
+    return f"loop-{id(loop)}"
+
+
+@lru_cache(maxsize=16)
+def get_compiled_graph(automation_level: int, backend_key: str, loop_token: str):
     """
-    결과 통합 노드
-    모든 에이전트 결과를 통합하여 최종 응답 생성
+    automation_level, backend_key 조합으로 컴파일된 그래프를 캐싱합니다.
     """
-    agent_results = state.get("agent_results", {})
+    state_graph = build_state_graph(automation_level=automation_level)
+    checkpointer = _create_checkpointer(backend_key)
+    app = state_graph.compile(checkpointer=checkpointer)
 
-    # 요약 생성
-    summary_parts = []
-
-    if "research_agent" in agent_results:
-        research = agent_results["research_agent"]
-        stock_name = research.get("stock_name", "종목")
-        rating = research.get("rating", "N/A")
-        summary_parts.append(f"{stock_name} 분석 완료 (평가: {rating}/5)")
-
-    if "strategy_agent" in agent_results:
-        strategy = agent_results["strategy_agent"]
-        action = strategy.get("action", "N/A")
-        confidence = strategy.get("confidence", 0)
-        summary_parts.append(f"매매 의견: {action} (신뢰도: {confidence})")
-
-    if "risk_agent" in agent_results:
-        risk = agent_results["risk_agent"]
-        risk_level = risk.get("risk_level", "N/A")
-        summary_parts.append(f"리스크 수준: {risk_level}")
-
-    summary = " | ".join(summary_parts) if summary_parts else "분석 완료"
-
-    # 최종 응답 구성
-    final_response = {
-        "summary": summary,
-        "details": agent_results,
-        "intent": state["intent"],
-        "agents_called": state.get("agents_called", []),
-        "hitl_required": state.get("hitl_required", False),
-        "risk_level": state.get("risk_level"),
-    }
-
-    return {
-        **state,
-        "summary": summary,
-        "final_response": final_response,
-    }
-
-
-# ==================== Router Functions ====================
-
-def should_continue(state: AgentState) -> str:
-    """
-    다음 노드 결정
-    """
-    # 모든 처리가 완료되면 END
-    return END
-
-
-# ==================== Build Graph ====================
-
-def build_graph() -> StateGraph:
-    """
-    LangGraph StateGraph 구성
-    """
-    # 그래프 생성
-    workflow = StateGraph(AgentState)
-
-    # 노드 추가
-    workflow.add_node("analyze_intent", analyze_intent_node)
-    workflow.add_node("determine_agents", determine_agents_node)
-    workflow.add_node("call_agents", call_agents_node)
-    workflow.add_node("check_risk", check_risk_node)
-    workflow.add_node("check_hitl", check_hitl_node)
-    workflow.add_node("aggregate_results", aggregate_results_node)
-
-    # 엣지 추가 (플로우 정의)
-    workflow.set_entry_point("analyze_intent")
-    workflow.add_edge("analyze_intent", "determine_agents")
-    workflow.add_edge("determine_agents", "call_agents")
-    workflow.add_edge("call_agents", "check_risk")
-    workflow.add_edge("check_risk", "check_hitl")
-    workflow.add_edge("check_hitl", "aggregate_results")
-    workflow.add_edge("aggregate_results", END)
-
-    # 그래프 컴파일
-    app = workflow.compile()
+    logger.info(
+        "🔧 [Graph] 컴파일 완료 (automation_level=%s, backend=%s, loop=%s)",
+        automation_level,
+        backend_key,
+        loop_token,
+    )
 
     return app
 
 
-# Global compiled graph
-graph_app = build_graph()
-
-
 # ==================== Main Interface ====================
 
-async def run_graph(query: str, automation_level: int = 2, request_id: str = None) -> Dict[str, Any]:
+def build_graph(
+    automation_level: int = 2,
+    *,
+    backend_key: Optional[str] = None,
+):
     """
-    그래프 실행 함수
+    Backwards compatible helper that mirrors the legacy API expected by
+    existing routes. Returns a compiled LangGraph application.
+    """
+    resolved_backend = _resolve_backend_key(backend_key)
+    loop_token = _loop_token()
+    return get_compiled_graph(
+        automation_level=automation_level,
+        backend_key=resolved_backend,
+        loop_token=loop_token,
+    )
 
-    Args:
-        query: 사용자 질의
-        automation_level: 자동화 레벨 (1-3)
-        request_id: 요청 ID
 
-    Returns:
-        최종 응답 딕셔너리
+async def run_graph(
+    query: str,
+    automation_level: int = 2,
+    request_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    backend_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    LangGraph Supervisor 그래프 실행 함수
     """
     import uuid
 
     if not request_id:
         request_id = str(uuid.uuid4())
 
-    # 초기 상태
-    initial_state = {
-        "query": query,
-        "request_id": request_id,
-        "automation_level": automation_level,
-        "intent": None,
-        "agent_results": {},
-        "agents_to_call": [],
-        "agents_called": [],
-        "risk_level": None,
-        "hitl_required": False,
-        "summary": None,
-        "final_response": None,
+    if not thread_id:
+        thread_id = request_id
+
+    resolved_backend = _resolve_backend_key(backend_key)
+    loop_token = _loop_token()
+    app = get_compiled_graph(
+        automation_level=automation_level,
+        backend_key=resolved_backend,
+        loop_token=loop_token,
+    )
+
+    config = {
+        "configurable": {
+            "thread_id": thread_id,
+            "request_id": request_id,
+        }
     }
 
-    # 그래프 실행
-    result = await graph_app.ainvoke(initial_state)
+    configured_app = app.with_config(config)
 
-    return result.get("final_response", {})
+    initial_state = {
+        "messages": [HumanMessage(content=query)],
+        "query": query,
+        "request_id": request_id,
+    }
+
+    logger.info("🚀 [Graph] 실행 시작: %s...", query[:50])
+
+    result = await configured_app.ainvoke(initial_state)
+
+    logger.info("✅ [Graph] 실행 완료 (request_id=%s)", request_id)
+
+    final_message = result["messages"][-1]
+
+    return {
+        "message": final_message.content
+        if hasattr(final_message, "content")
+        else str(final_message),
+        "messages": result.get("messages", []),
+    }

@@ -27,6 +27,13 @@ class Stock(Base):
     listing_shares = Column(BigInteger)
     par_value = Column(DECIMAL(10, 2))
 
+    # KIS API 호환 필드 추가
+    market_cap = Column(BigInteger)  # 시가총액
+    week52_high = Column(DECIMAL(15, 2))  # 52주 최고가
+    week52_low = Column(DECIMAL(15, 2))  # 52주 최저가
+    dividend_yield = Column(DECIMAL(5, 4))  # 배당수익률
+    is_managed = Column(String(1), default="N")  # 관리종목 여부 (Y/N)
+
     # 상태
     status = Column(String(20), default="active", index=True)
 
@@ -157,3 +164,113 @@ class News(Base):
 
     # 임베딩 ID
     embedding_id = Column(String(100))
+
+
+class StockQuote(Base):
+    """실시간 호가 정보 (KIS API 호환)"""
+    __tablename__ = "stock_quotes"
+
+    quote_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    stock_code = Column(String(20), nullable=False, index=True)
+
+    # 호가 시간
+    quote_time = Column(TIMESTAMP, nullable=False, index=True)
+
+    # 매도 호가 (10단계)
+    ask_price_1 = Column(DECIMAL(15, 2))
+    ask_price_2 = Column(DECIMAL(15, 2))
+    ask_price_3 = Column(DECIMAL(15, 2))
+    ask_price_4 = Column(DECIMAL(15, 2))
+    ask_price_5 = Column(DECIMAL(15, 2))
+    ask_price_6 = Column(DECIMAL(15, 2))
+    ask_price_7 = Column(DECIMAL(15, 2))
+    ask_price_8 = Column(DECIMAL(15, 2))
+    ask_price_9 = Column(DECIMAL(15, 2))
+    ask_price_10 = Column(DECIMAL(15, 2))
+
+    # 매도 잔량 (10단계)
+    ask_volume_1 = Column(BigInteger)
+    ask_volume_2 = Column(BigInteger)
+    ask_volume_3 = Column(BigInteger)
+    ask_volume_4 = Column(BigInteger)
+    ask_volume_5 = Column(BigInteger)
+    ask_volume_6 = Column(BigInteger)
+    ask_volume_7 = Column(BigInteger)
+    ask_volume_8 = Column(BigInteger)
+    ask_volume_9 = Column(BigInteger)
+    ask_volume_10 = Column(BigInteger)
+
+    # 매수 호가 (10단계)
+    bid_price_1 = Column(DECIMAL(15, 2))
+    bid_price_2 = Column(DECIMAL(15, 2))
+    bid_price_3 = Column(DECIMAL(15, 2))
+    bid_price_4 = Column(DECIMAL(15, 2))
+    bid_price_5 = Column(DECIMAL(15, 2))
+    bid_price_6 = Column(DECIMAL(15, 2))
+    bid_price_7 = Column(DECIMAL(15, 2))
+    bid_price_8 = Column(DECIMAL(15, 2))
+    bid_price_9 = Column(DECIMAL(15, 2))
+    bid_price_10 = Column(DECIMAL(15, 2))
+
+    # 매수 잔량 (10단계)
+    bid_volume_1 = Column(BigInteger)
+    bid_volume_2 = Column(BigInteger)
+    bid_volume_3 = Column(BigInteger)
+    bid_volume_4 = Column(BigInteger)
+    bid_volume_5 = Column(BigInteger)
+    bid_volume_6 = Column(BigInteger)
+    bid_volume_7 = Column(BigInteger)
+    bid_volume_8 = Column(BigInteger)
+    bid_volume_9 = Column(BigInteger)
+    bid_volume_10 = Column(BigInteger)
+
+    # 총 매도/매수 잔량
+    total_ask_volume = Column(BigInteger)
+    total_bid_volume = Column(BigInteger)
+
+    created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+class RealtimePrice(Base):
+    """실시간 현재가 정보 (KIS API 호환)"""
+    __tablename__ = "realtime_prices"
+
+    price_id = Column(BigInteger, primary_key=True, autoincrement=True)
+    stock_code = Column(String(20), nullable=False, index=True)
+
+    # 시간 정보
+    timestamp = Column(TIMESTAMP, nullable=False, index=True)
+
+    # 가격 정보
+    current_price = Column(DECIMAL(15, 2), nullable=False)
+    open_price = Column(DECIMAL(15, 2))
+    high_price = Column(DECIMAL(15, 2))
+    low_price = Column(DECIMAL(15, 2))
+    prev_close = Column(DECIMAL(15, 2))
+
+    # 변동 정보
+    change_amount = Column(DECIMAL(15, 2))
+    change_rate = Column(DECIMAL(10, 6))
+    change_sign = Column(String(1))  # 1:상한, 2:상승, 3:보합, 4:하한, 5:하락
+
+    # 거래 정보
+    volume = Column(BigInteger)
+    trading_value = Column(BigInteger)
+    volume_turnover_ratio = Column(DECIMAL(10, 6))
+
+    # 시가총액
+    market_cap = Column(BigInteger)
+
+    # 52주 최고/최저
+    week52_high = Column(DECIMAL(15, 2))
+    week52_low = Column(DECIMAL(15, 2))
+
+    # PER, PBR 등 (실시간 계산)
+    per = Column(DECIMAL(10, 4))
+    pbr = Column(DECIMAL(10, 4))
+
+    # 호가 관련
+    best_ask_price = Column(DECIMAL(15, 2))
+    best_bid_price = Column(DECIMAL(15, 2))
+
+    created_at = Column(TIMESTAMP, server_default=func.now())

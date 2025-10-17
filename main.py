@@ -1,13 +1,8 @@
-from fastapi import FastAPI
+"""
+Legacy entry point for backwards compatibility.
 
-app = FastAPI()
-
-
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-
-@app.get("/hello/{name}")
-async def say_hello(name: str):
-    return {"message": f"Hello {name}"}
+The actual FastAPI application lives in ``src.main``. Import the shared
+application instance so tooling that still references ``main:app`` continues
+to work without duplicating route registrations.
+"""
+from src.main import app  # noqa: F401
