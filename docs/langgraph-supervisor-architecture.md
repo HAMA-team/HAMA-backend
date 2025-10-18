@@ -1,6 +1,7 @@
 # HAMA LangGraph Supervisor 아키텍처
 
 **작성일**: 2025-10-05
+**최종 업데이트**: 2025-10-19 (실제 구현 반영)
 **목적**: LangGraph Supervisor 패턴 기반 Multi-Agent 시스템 아키텍처
 
 ---
@@ -95,13 +96,13 @@ app = supervisor.compile(checkpointer=MemorySaver())
 
 | 에이전트 | 역할 | 서브그래프 | HITL |
 |---------|------|----------|------|
-| `research_agent` | 종목 심층 분석 | ✅ | - |
-| `strategy_agent` | 투자 전략 수립 | ✅ | - |
-| `risk_agent` | 리스크 평가 | ✅ | 조건부 |
-| `portfolio_agent` | 포트폴리오 관리 | ✅ | 조건부 |
-| `trading_agent` | 매매 실행 | ✅ | ✅ (L2+) |
-| `monitoring_agent` | 시장 모니터링 | 🚧 TODO | - |
-| `general_agent` | 일반 질의응답 | 🚧 TODO | - |
+| `research_agent` | 종목 심층 분석 | ✅ 구현 완료 | - |
+| `strategy_agent` | 투자 전략 수립 | ✅ 구현 완료 | - |
+| `risk_agent` | 리스크 평가 | ✅ 구현 완료 | 조건부 |
+| `portfolio_agent` | 포트폴리오 관리 | ✅ 구현 완료 | 조건부 |
+| `trading_agent` | 매매 실행 | ✅ 구현 완료 | ✅ (L2+) |
+| `monitoring_agent` | 시장 모니터링 | ❌ Phase 2 | - |
+| `general_agent` | 일반 질의응답 | ✅ 구현 완료 | - |
 
 **변경 사항:**
 - ❌ `education_agent` 삭제 → `general_agent`로 통합
@@ -222,13 +223,14 @@ def build_supervisor(automation_level: int = 2):
 
 
 # 3. 그래프 컴파일
-def build_graph(automation_level: int = 2):
+def build_graph(automation_level: int = 2, backend_key: str = None):
     """최종 그래프 빌드"""
     supervisor = build_supervisor(automation_level)
 
-    return supervisor.compile(
-        checkpointer=MemorySaver()
-    )
+    # Checkpointer 선택 (Memory, SQLite, Redis)
+    checkpointer = _create_checkpointer(backend_key or "memory")
+
+    return supervisor.compile(checkpointer=checkpointer)
 
 
 # 4. 실행
@@ -242,6 +244,86 @@ async def run_graph(query: str, automation_level: int = 2):
 
     return result["messages"][-1].content
 ```
+
+---
+
+## 🔧 Checkpointer 설정 (상태 저장)
+
+HAMA는 3가지 Checkpointer 백엔드를 지원하여 그래프 실행 상태를 저장하고 HITL 재개를 가능하게 합니다.
+
+### 지원 백엔드
+
+| 백엔드 | 용도 | 설정 방법 |
+|-------|------|---------|
+| **Memory** | 개발/테스트 | 기본값 (설정 불필요) |
+| **SQLite** | 단일 서버 | `GRAPH_CHECKPOINT_BACKEND=sqlite` |
+| **Redis** | 분산 환경 (프로덕션) | `GRAPH_CHECKPOINT_BACKEND=redis` |
+
+### 구현 코드
+
+```python
+def _create_checkpointer(backend_key: str):
+    """backend_key에 따라 적절한 체크포인터 생성"""
+    key = backend_key.lower()
+
+    if key == "sqlite":
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        db_path = settings.GRAPH_CHECKPOINT_SQLITE_PATH or "data/checkpoints.sqlite"
+        return SqliteSaver(db_path)
+
+    if key == "redis":
+        from langgraph.checkpoint.redis import RedisSaver
+        return RedisSaver.from_conn_string(settings.REDIS_URL)
+
+    # 기본값: 인메모리
+    return MemorySaver()
+```
+
+### 환경 변수 설정
+
+```bash
+# .env 파일
+GRAPH_CHECKPOINT_BACKEND=redis  # memory | sqlite | redis
+GRAPH_CHECKPOINT_SQLITE_PATH=data/langgraph_checkpoints.sqlite
+REDIS_URL=redis://localhost:6379/0
+```
+
+### 사용 예시
+
+```python
+# Memory (기본값)
+app = build_graph(automation_level=2)
+
+# SQLite
+app = build_graph(automation_level=2, backend_key="sqlite")
+
+# Redis (프로덕션)
+app = build_graph(automation_level=2, backend_key="redis")
+```
+
+### 그래프 컴파일 캐싱
+
+성능 최적화를 위해 컴파일된 그래프를 캐싱합니다:
+
+```python
+from functools import lru_cache
+
+@lru_cache(maxsize=16)
+def get_compiled_graph(automation_level: int, backend_key: str, loop_token: str):
+    """automation_level, backend_key 조합으로 캐싱"""
+    state_graph = build_state_graph(automation_level)
+    checkpointer = _create_checkpointer(backend_key)
+    return state_graph.compile(checkpointer=checkpointer)
+```
+
+**캐싱 키:**
+- `automation_level`: 1, 2, 3
+- `backend_key`: memory, sqlite, redis
+- `loop_token`: asyncio 이벤트 루프 식별자 (비동기 안전성)
+
+**효과:**
+- 같은 설정의 그래프 재사용 → 컴파일 오버헤드 제거
+- API 요청마다 재컴파일하지 않음 → 응답 속도 향상
 
 ---
 
@@ -299,12 +381,12 @@ async def consensus_node(state: ResearchState) -> dict:
 
 **서브그래프 플로우:**
 ```
-market_outlook → sector_strategy → asset_allocation → blueprint
+market_analysis → sector_rotation → asset_allocation → blueprint_creation
 ```
 
 **함수 시그니처:**
 ```python
-async def market_outlook_node(state: StrategyState) -> dict:
+async def market_analysis_node(state: StrategyState) -> dict:
     """
     시장 사이클 분석 (LLM)
 
@@ -312,7 +394,7 @@ async def market_outlook_node(state: StrategyState) -> dict:
         dict: market_outlook (cycle, indicators)
     """
 
-async def sector_strategy_node(state: StrategyState) -> dict:
+async def sector_rotation_node(state: StrategyState) -> dict:
     """
     섹터 로테이션 전략 (LLM)
 
@@ -343,7 +425,7 @@ async def blueprint_creation_node(state: StrategyState) -> dict:
 
 **서브그래프 플로우:**
 ```
-collect_portfolio → concentration_check → market_risk → assess_risk
+collect_portfolio_data → concentration_check → market_risk → final_assessment
 ```
 
 **함수 시그니처:**
@@ -372,7 +454,7 @@ async def market_risk_node(state: RiskState) -> dict:
         dict: market_risk (VaR, volatility)
     """
 
-async def assess_risk_node(state: RiskState) -> dict:
+async def final_assessment_node(state: RiskState) -> dict:
     """
     종합 리스크 평가
 
@@ -387,7 +469,7 @@ async def assess_risk_node(state: RiskState) -> dict:
 
 **서브그래프 플로우:**
 ```
-prepare_trade → approval_trade (HITL) → execute_trade
+prepare_trade → approve_trade (HITL) → execute_trade
 ```
 
 **함수 시그니처:**
@@ -400,15 +482,19 @@ def prepare_trade_node(state: TradingState) -> dict:
         dict: trade_order_id, trade_prepared=True
     """
 
-def approval_trade_node(state: TradingState) -> dict:
+def approve_trade_node(state: TradingState) -> dict:
     """
     HITL 승인 (interrupt 발생)
+
+    Automation Level에 따라 조건부 처리:
+    - Level 1 (Pilot): 자동 승인
+    - Level 2+ (Copilot/Advisor): interrupt() 호출
 
     Returns:
         dict: trade_approved=True
 
     Raises:
-        interrupt: 사용자 승인 대기
+        interrupt: 사용자 승인 대기 (Level 2+)
     """
 
 def execute_trade_node(state: TradingState) -> dict:
@@ -493,7 +579,7 @@ async def monitor_news_node(state: MonitoringState) -> dict:
 
 ### 7. General Agent (일반 질의응답)
 
-**TODO: 신규 생성 필요**
+**✅ 구현 완료**
 
 **역할:**
 - 투자 용어 설명
@@ -501,17 +587,22 @@ async def monitor_news_node(state: MonitoringState) -> dict:
 - 투자 전략 교육
 - PER, PBR 등 기본 개념 설명
 
+**서브그래프 플로우:**
+```
+answer_question → END
+```
+
 **함수 시그니처:**
 ```python
-async def answer_general_question_node(state: GeneralState) -> dict:
+async def answer_question_node(state: GeneralState) -> dict:
     """
-    일반 질문 응답 (LLM + RAG)
+    일반 질문 응답 (LLM 기반)
 
     Args:
         state: GeneralState (query 포함)
 
     Returns:
-        dict: answer, sources
+        dict: answer, sources (optional)
     """
 ```
 
@@ -525,16 +616,77 @@ async def answer_general_question_node(state: GeneralState) -> dict:
 ```python
 from langgraph.types import interrupt
 
-def approval_node(state):
-    # Interrupt 발생 - 사용자 승인 대기
+def approve_trade_node(state):
+    """HITL 승인 노드"""
+
+    # Automation Level 조건부 처리
+    automation_level = state.get("automation_level", 2)
+
+    if automation_level == 1:  # Pilot - 자동 승인
+        return {"trade_approved": True}
+
+    # Level 2+ - Interrupt 발생 (사용자 승인 대기)
     approval = interrupt({
         "type": "trade_approval",
-        "order_id": state["order_id"],
+        "order_id": state["trade_order_id"],
+        "stock_code": state["stock_code"],
+        "quantity": state["quantity"],
+        "order_type": state["order_type"],
+        "automation_level": automation_level,
         "message": "매매를 승인하시겠습니까?"
     })
 
     # 재개 후 승인 결과 처리
-    return {"approved": True}
+    if approval and approval.get("approved"):
+        return {"trade_approved": True}
+    else:
+        return {"trade_approved": False, "error": "User rejected"}
+```
+
+### 승인 결정 유형
+
+HAMA는 3가지 승인 결정을 지원합니다:
+
+| 결정 | 설명 | API 사용 |
+|------|------|---------|
+| **approved** | 제안 그대로 승인 | `{"decision": "approved"}` |
+| **modified** | 조건 수정 후 승인 | `{"decision": "modified", "modifications": {...}}` |
+| **rejected** | 거부 (취소) | `{"decision": "rejected"}` |
+
+**Modified 승인 예시:**
+
+```python
+# API 요청
+POST /chat/approve
+{
+  "thread_id": "conversation_uuid",
+  "decision": "modified",
+  "modifications": {
+    "quantity": 5,      # 10주 → 5주로 변경
+    "order_price": 65000  # 시장가 → 지정가로 변경
+  },
+  "user_notes": "수량을 줄이고 지정가로 변경"
+}
+
+# 그래프 재개
+resume_value = {
+    "approved": True,
+    "user_id": user_id,
+    "modifications": approval.modifications,
+    "notes": approval.user_notes
+}
+
+result = await app.ainvoke(Command(resume=resume_value), config)
+```
+
+**Modified 승인 처리 플로우:**
+
+```
+1. Trading Agent → interrupt() 발생
+2. API → requires_approval: true 반환
+3. 사용자 → 조건 수정 (quantity: 10 → 5)
+4. API → Command(resume={...modifications...}) 전달
+5. Trading Agent → 수정된 조건으로 execute_trade_node 실행
 ```
 
 ### 안전 패턴
@@ -579,21 +731,59 @@ def execute_node(state):
 
 ### GraphState (Master)
 
+Master Graph에서 사용하는 전체 공유 상태입니다. API 레이어에서 초기화됩니다.
+
 ```python
-class GraphState(TypedDict):
-    """Master Graph 공유 State"""
+from typing import TypedDict, List, Dict, Any, Optional, Annotated
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+
+class GraphState(TypedDict, total=False):
+    """Master Graph 공유 State (API 초기화)"""
 
     # LangGraph 표준
-    messages: Annotated[Sequence[BaseMessage], add_messages]
+    messages: Annotated[List[BaseMessage], add_messages]
 
     # 사용자 컨텍스트
     user_id: str
     conversation_id: str
-    automation_level: int  # 전역으로 전달
+    automation_level: int
+
+    # 의도 및 라우팅
+    intent: Optional[str]
+    query: str
+    agents_to_call: List[str]
+    agents_called: List[str]
 
     # 에이전트 결과
-    agent_results: Annotated[Dict[str, Any], operator.or_]
+    agent_results: Dict[str, Any]
+
+    # 리스크 정보
+    risk_level: Optional[str]
+    hitl_required: bool
+
+    # Trading Agent 실행 플래그 (안전 패턴)
+    trade_prepared: bool
+    trade_approved: bool
+    trade_executed: bool
+    trade_order_id: Optional[str]
+    trade_result: Optional[Dict[str, Any]]
+
+    # 최종 응답
+    summary: Optional[str]
+    final_response: Optional[Dict[str, Any]]
 ```
+
+**주요 필드 설명:**
+
+- `messages`: LangGraph 표준 메시지 스택 (add_messages reducer 적용)
+- `agents_called`: 실행된 에이전트 추적 (모니터링용)
+- `trade_*` 플래그: Interrupt 재실행 안전성 보장
+- `final_response`: API 응답 구성용 최종 데이터
+
+**total=False 이유:**
+- 부분 업데이트 허용 (노드마다 필요한 필드만 업데이트)
+- Optional 필드 명시적 표현
 
 ### 서브그래프 State 예시
 
@@ -611,6 +801,213 @@ class ResearchState(TypedDict):
     bull_analysis: Optional[dict]
     bear_analysis: Optional[dict]
     consensus: Optional[dict]
+```
+
+---
+
+## 🧪 테스트 모드
+
+API 키가 없거나 테스트 환경에서는 Mock 응답을 반환합니다.
+
+### 활성화 조건
+
+```python
+def _is_test_mode() -> bool:
+    env_value = os.getenv("ENV", settings.ENV or "").lower()
+    return env_value == "test" or not settings.ANTHROPIC_API_KEY
+```
+
+**테스트 모드 활성화:**
+- `ENV=test` 환경 변수 설정
+- `ANTHROPIC_API_KEY` 미설정
+
+### Mock 응답 예시
+
+```python
+# 일반 질문
+request: "삼성전자 분석해줘"
+response: {
+    "message": "📋 테스트 응답입니다.\n요청하신 메시지: 삼성전자 분석해줘",
+    "requires_approval": false,
+    "metadata": {
+        "intent": "general_inquiry",
+        "agents_called": ["mock_general_agent"]
+    }
+}
+
+# 매매 요청 (HITL 시뮬레이션)
+request: "삼성전자 10주 매수"
+response: {
+    "message": "🔔 현재 환경은 테스트 모드입니다.\n모의 매매 요청이 접수되었으며 승인이 필요합니다.",
+    "requires_approval": true,
+    "approval_request": {
+        "type": "trade_approval",
+        "thread_id": "conversation_id",
+        "message": "모의 매매 주문을 승인하시겠습니까?"
+    }
+}
+```
+
+**장점:**
+- API 키 없이 프론트엔드 개발 가능
+- CI/CD 파이프라인에서 통합 테스트 실행
+- HITL 플로우 시뮬레이션
+
+---
+
+## 🌐 API 엔드포인트
+
+### POST /chat
+
+메인 채팅 엔드포인트입니다.
+
+**Request:**
+```json
+{
+  "message": "삼성전자 분석해줘",
+  "conversation_id": "optional-uuid",
+  "automation_level": 2
+}
+```
+
+**Response (정상 완료):**
+```json
+{
+  "message": "📊 분석 결과\n\n삼성전자는 반도체 업황 회복과...",
+  "conversation_id": "uuid",
+  "requires_approval": false,
+  "metadata": {
+    "intent": "stock_analysis",
+    "agents_called": ["research_agent", "strategy_agent"],
+    "automation_level": 2
+  }
+}
+```
+
+**Response (HITL 중단):**
+```json
+{
+  "message": "🔔 사용자 승인이 필요합니다.",
+  "conversation_id": "uuid",
+  "requires_approval": true,
+  "approval_request": {
+    "type": "trade_approval",
+    "thread_id": "uuid",
+    "pending_node": "approve_trade",
+    "interrupt_data": {
+      "stock_code": "005930",
+      "quantity": 10,
+      "order_type": "BUY"
+    },
+    "message": "매매 주문을 승인하시겠습니까?"
+  }
+}
+```
+
+### POST /chat/approve
+
+승인/거부 처리 엔드포인트입니다.
+
+**Request (승인):**
+```json
+{
+  "thread_id": "conversation-uuid",
+  "decision": "approved",
+  "automation_level": 2
+}
+```
+
+**Request (수정 후 승인):**
+```json
+{
+  "thread_id": "conversation-uuid",
+  "decision": "modified",
+  "automation_level": 2,
+  "modifications": {
+    "quantity": 5,
+    "order_price": 65000
+  },
+  "user_notes": "수량 절반으로 변경"
+}
+```
+
+**Request (거부):**
+```json
+{
+  "thread_id": "conversation-uuid",
+  "decision": "rejected",
+  "automation_level": 2,
+  "user_notes": "지금은 매수 타이밍이 아닌 것 같음"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "approved",  // approved | rejected | modified
+  "message": "승인 완료 - 매매가 실행되었습니다.",
+  "conversation_id": "uuid",
+  "result": {
+    "summary": "삼성전자 10주 매수 완료",
+    "trade_result": {
+      "order_id": "ORD123",
+      "status": "filled",
+      "price": 70000,
+      "quantity": 10
+    }
+  }
+}
+```
+
+### GET /chat/history/{conversation_id}
+
+대화 히스토리 조회
+
+**Response:**
+```json
+{
+  "conversation_id": "uuid",
+  "user_id": "user-uuid",
+  "automation_level": 2,
+  "summary": "삼성전자 분석 및 매매",
+  "created_at": "2025-10-19T12:00:00",
+  "messages": [
+    {
+      "message_id": "msg-uuid",
+      "role": "user",
+      "content": "삼성전자 분석해줘",
+      "created_at": "2025-10-19T12:00:00"
+    },
+    {
+      "message_id": "msg-uuid2",
+      "role": "assistant",
+      "content": "📊 분석 결과\n\n...",
+      "metadata": {
+        "agents_called": ["research_agent"]
+      },
+      "created_at": "2025-10-19T12:00:15"
+    }
+  ]
+}
+```
+
+### GET /chat/sessions
+
+최근 대화 목록 조회
+
+**Response:**
+```json
+[
+  {
+    "conversation_id": "uuid",
+    "title": "삼성전자 분석 및 매매",
+    "last_message": "승인 완료 - 매매가 실행되었습니다.",
+    "last_message_at": "2025-10-19T12:05:00",
+    "automation_level": 2,
+    "message_count": 8,
+    "created_at": "2025-10-19T12:00:00"
+  }
+]
 ```
 
 ---
@@ -644,27 +1041,55 @@ result = await run_graph(
 
 ---
 
-## 📦 다음 단계
+## 📦 구현 현황 및 다음 단계
 
-### Phase 1: 서브그래프 전환
-- [ ] Portfolio Agent → 서브그래프
-- [ ] Monitoring Agent → 서브그래프
-- [ ] General Agent → 서브그래프 (신규)
+### Phase 1: 서브그래프 전환 ✅ **85% 완료**
 
-### Phase 2: 고도화
+- [x] Research Agent → 서브그래프 (✅ 완료)
+- [x] Strategy Agent → 서브그래프 (✅ 완료)
+- [x] Risk Agent → 서브그래프 (✅ 완료)
+- [x] Trading Agent → 서브그래프 + HITL (✅ 완료)
+- [x] Portfolio Agent → 서브그래프 (✅ 완료)
+- [x] General Agent → 서브그래프 (✅ 완료)
+- [ ] Monitoring Agent → 서브그래프 (⏸️ Phase 2로 연기)
+
+**추가 구현 완료:**
+- [x] 3가지 Checkpointer 지원 (Memory, SQLite, Redis)
+- [x] 그래프 컴파일 캐싱 (@lru_cache)
+- [x] Modified 승인 패턴
+- [x] 테스트 모드 (Mock 응답)
+- [x] 세션 히스토리 관리 (DB)
+- [x] E2E 테스트 (6개 통과)
+
+### Phase 2: 고도화 (예정)
+
+- [ ] Monitoring Agent 구현
 - [ ] LLM 기반 Stock Code 추출 (NER)
-- [ ] AsyncSqliteSaver로 Checkpointer 전환
-- [ ] 실제 API 연동 (한국투자증권)
-- [ ] 성능 최적화 (캐싱, 병렬화)
+- [ ] 실제 한국투자증권 API 연동 (실시간 시세, 매매)
+- [ ] 뉴스 크롤링 및 감정 분석
+- [ ] WebSocket 실시간 알림
+- [ ] 성능 최적화 (추가 캐싱, 병렬화)
 
-### Phase 3: 프로덕션
-- [ ] 로깅 및 모니터링
-- [ ] 에러 핸들링 강화
-- [ ] 통합 테스트 작성
-- [ ] API 문서화
+### Phase 3: 프로덕션 (예정)
+
+- [ ] 구조화된 로깅 및 모니터링
+- [ ] 에러 핸들링 강화 (재시도, fallback)
+- [ ] 통합 테스트 확장
+- [ ] API 문서 자동화 (OpenAPI/Swagger)
+- [ ] 프로덕션 배포 (AWS, Kubernetes)
+
+---
+
+## 📚 참고 자료
+
+- [LangGraph Supervisor 공식 문서](https://langchain-ai.github.io/langgraph/tutorials/multi_agent/agent_supervisor/)
+- [LangGraph HITL 가이드](https://langchain-ai.github.io/langgraph/how-tos/human-in-the-loop/)
+- [LangGraph Checkpointer](https://langchain-ai.github.io/langgraph/reference/checkpoints/)
+- [LangGraph Command API](https://langchain-ai.github.io/langgraph/reference/types/#langgraph.types.Command)
 
 ---
 
 **작성자**: HAMA 개발팀
-**최종 업데이트**: 2025-10-05
-**참고**: [LangGraph Supervisor 공식 문서](https://langchain-ai.github.io/langgraph/tutorials/multi_agent/agent_supervisor/)
+**최초 작성일**: 2025-10-05
+**최종 업데이트**: 2025-10-19 (실제 구현 반영)
+**문서 버전**: 2.0
