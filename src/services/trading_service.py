@@ -1,4 +1,4 @@
-"""Trading service utilities bridging LangGraph nodes and the database."""
+"""Trading service utilities bridging Langgraph nodes and the database."""
 from __future__ import annotations
 
 import asyncio

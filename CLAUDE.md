@@ -343,7 +343,7 @@ def idempotent_trade_node(state):
 **자동화 레벨별 Interrupt 설정:**
 
 ```python
-from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.memory import MemorySaver
 
 def build_graph(automation_level: int):
     workflow = StateGraph(GraphState)
@@ -369,8 +369,9 @@ def build_graph(automation_level: int):
             "build_portfolio"
         ])
 
-    # Checkpointer 설정
-    checkpointer = SqliteSaver.from_conn_string("data/checkpoints.db")
+    # Checkpointer 설정 (MVP: MemorySaver)
+    # Note: Redis/PostgreSQL checkpointer는 비동기 초기화가 필요하여 Phase 2로 연기
+    checkpointer = MemorySaver()
 
     app = workflow.compile(
         checkpointer=checkpointer,
@@ -466,7 +467,7 @@ from langchain_core.messages import BaseMessage
 
 class GraphState(TypedDict):
     """전체 그래프 공유 상태"""
-    # LangGraph 표준 패턴
+    # Langgraph 표준 패턴
     messages: Annotated[Sequence[BaseMessage], add_messages]
 
     # 사용자 컨텍스트

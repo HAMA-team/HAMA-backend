@@ -1,7 +1,7 @@
 """
 Strategy Agent 서브그래프
 
-LangGraph 네이티브 구현
+Langgraph 네이티브 구현
 """
 from langgraph.graph import StateGraph, END
 from .state import StrategyState

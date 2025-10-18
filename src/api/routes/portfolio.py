@@ -1,8 +1,9 @@
 """
-Portfolio API endpoints
+포트폴리오 관련 API 엔드포인트 모음
 """
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -10,9 +11,16 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 
 from src.agents.portfolio.nodes import rebalance_plan_node
-from src.services import portfolio_optimizer, portfolio_service
+from src.services import (
+    KISAPIError,
+    KISAuthError,
+    PortfolioNotFoundError,
+    portfolio_optimizer,
+    portfolio_service,
+)
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _to_decimal(value: Optional[Any]) -> Optional[Decimal]:
@@ -26,7 +34,7 @@ def _to_decimal(value: Optional[Any]) -> Optional[Decimal]:
 
 
 class Position(BaseModel):
-    """Portfolio position"""
+    """포트폴리오 보유 종목"""
 
     stock_code: str
     stock_name: str
@@ -41,7 +49,7 @@ class Position(BaseModel):
 
 
 class PortfolioSummary(BaseModel):
-    """Portfolio summary"""
+    """포트폴리오 요약"""
 
     portfolio_id: str
     total_value: Decimal
@@ -51,6 +59,55 @@ class PortfolioSummary(BaseModel):
     positions: List[Position]
     risk_profile: Optional[str] = None
     last_updated: Optional[str] = None
+
+
+class PortfolioSummarySection(BaseModel):
+    """포트폴리오 전체 요약 정보"""
+
+    total_value: float
+    principal: float
+    profit: float
+    profit_rate: float
+    cash: float
+    cash_percentage: float
+    updated_at: Optional[str] = None
+
+
+class PortfolioHoldingItem(BaseModel):
+    """보유 종목 세부 정보"""
+
+    stock_code: str
+    stock_name: str
+    quantity: int
+    avg_price: float
+    current_price: float
+    market_value: float
+    profit: float
+    profit_rate: float
+    weight: float
+
+
+class AllocationItem(BaseModel):
+    """배분 정보 항목"""
+
+    name: str
+    value: float
+    percentage: float
+
+
+class PortfolioAllocation(BaseModel):
+    """자산 및 섹터 배분 정보"""
+
+    sectors: List[AllocationItem]
+    asset_classes: List[AllocationItem]
+
+
+class PortfolioOverview(BaseModel):
+    """포트폴리오 오버뷰 응답 페이로드"""
+
+    summary: PortfolioSummarySection
+    holdings: List[PortfolioHoldingItem]
+    allocation: PortfolioAllocation
 
 
 def _build_positions(holdings: List[Dict[str, Any]]) -> List[Position]:
@@ -80,9 +137,157 @@ def _build_positions(holdings: List[Dict[str, Any]]) -> List[Position]:
     return positions
 
 
+def _float(value: Optional[Any], default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, float):
+            return value
+        if isinstance(value, Decimal):
+            return float(value)
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _percent(numerator: float, denominator: float) -> float:
+    if denominator == 0:
+        return 0.0
+    return (numerator / denominator) * 100.0
+
+
+@router.get("/", response_model=PortfolioOverview)
+async def get_portfolio_overview():
+    """대시보드와 포트폴리오 화면에 필요한 요약 데이터를 제공합니다."""
+    snapshot = await portfolio_service.get_portfolio_snapshot()
+
+    if snapshot is None or not (snapshot.portfolio_data or {}).get("holdings"):
+        try:
+            snapshot = await portfolio_service.sync_with_kis()
+        except (KISAPIError, KISAuthError, PortfolioNotFoundError) as exc:
+            logger.warning("KIS 동기화 실패 - 기본 스냅샷 사용: %s", exc)
+        except Exception as exc:  # pragma: no cover - 방어
+            logger.exception("KIS 동기화 중 예기치 못한 오류: %s", exc)
+
+    if snapshot is None or snapshot.portfolio_data is None:
+        empty_summary = PortfolioSummarySection(
+            total_value=0.0,
+            principal=0.0,
+            profit=0.0,
+            profit_rate=0.0,
+            cash=0.0,
+            cash_percentage=0.0,
+            updated_at=None,
+        )
+        empty_allocation = PortfolioAllocation(sectors=[], asset_classes=[])
+        return PortfolioOverview(summary=empty_summary, holdings=[], allocation=empty_allocation)
+
+    portfolio_data = snapshot.portfolio_data or {}
+    market_data = snapshot.market_data or {}
+
+    total_value = _float(portfolio_data.get("total_value"))
+    principal = _float(portfolio_data.get("invested_amount"))
+    cash = _float(portfolio_data.get("cash_balance"))
+    profit = total_value - principal
+    profit_rate = _percent(profit, principal) if principal else 0.0
+    cash_percentage = _percent(cash, total_value) if total_value else 0.0
+
+    holdings_payload: List[PortfolioHoldingItem] = []
+    stock_total = 0.0
+    holdings_data: List[Dict[str, Any]] = portfolio_data.get("holdings") or []
+    for holding in holdings_data:
+        stock_code = holding.get("stock_code") or ""
+        if stock_code.upper() == "CASH":
+            continue
+
+        quantity = int(holding.get("quantity") or 0)
+        avg_price = _float(holding.get("average_price"))
+        current_price = _float(holding.get("current_price"), avg_price)
+        market_value = _float(holding.get("market_value"), current_price * quantity)
+        cost_basis = avg_price * quantity
+        profit_value = market_value - cost_basis
+        profit_rate_value = _percent(profit_value, cost_basis) if cost_basis else 0.0
+        weight_ratio = _float(holding.get("weight"))
+        weight_percentage = weight_ratio * 100.0 if weight_ratio else _percent(market_value, total_value)
+
+        stock_total += market_value
+
+        holdings_payload.append(
+            PortfolioHoldingItem(
+                stock_code=stock_code,
+                stock_name=str(holding.get("stock_name") or stock_code),
+                quantity=quantity,
+                avg_price=avg_price,
+                current_price=current_price,
+                market_value=market_value,
+                profit=profit_value,
+                profit_rate=profit_rate_value,
+                weight=weight_percentage,
+            )
+        )
+
+    sector_map = portfolio_data.get("sectors") or {}
+    sectors: List[AllocationItem] = []
+    for name, ratio in sector_map.items():
+        ratio_value = _float(ratio)
+        value = total_value * ratio_value if total_value else 0.0
+        sectors.append(
+            AllocationItem(
+                name=name,
+                value=value,
+                percentage=ratio_value * 100.0,
+            )
+        )
+
+    asset_classes: List[AllocationItem] = []
+    if total_value:
+        if stock_total:
+            asset_classes.append(
+                AllocationItem(
+                    name="주식",
+                    value=stock_total,
+                    percentage=_percent(stock_total, total_value),
+                )
+            )
+        if cash:
+            asset_classes.append(
+                AllocationItem(
+                    name="현금",
+                    value=cash,
+                    percentage=_percent(cash, total_value),
+                )
+            )
+    else:
+        if stock_total:
+            asset_classes.append(AllocationItem(name="주식", value=stock_total, percentage=0.0))
+        if cash:
+            asset_classes.append(AllocationItem(name="현금", value=cash, percentage=0.0))
+
+    summary = PortfolioSummarySection(
+        total_value=total_value,
+        principal=principal,
+        profit=profit,
+        profit_rate=profit_rate,
+        cash=cash,
+        cash_percentage=cash_percentage,
+        updated_at=market_data.get("last_updated"),
+    )
+
+    allocation = PortfolioAllocation(
+        sectors=sectors,
+        asset_classes=asset_classes,
+    )
+
+    return PortfolioOverview(
+        summary=summary,
+        holdings=holdings_payload,
+        allocation=allocation,
+    )
+
+
 @router.get("/{portfolio_id}", response_model=PortfolioSummary)
 async def get_portfolio(portfolio_id: str):
-    """Get portfolio details"""
+    """지정한 포트폴리오의 세부 정보를 조회합니다."""
     snapshot = await portfolio_service.get_portfolio_snapshot(portfolio_id=portfolio_id)
 
     if snapshot is None or snapshot.portfolio_data is None:
@@ -117,7 +322,7 @@ async def get_portfolio(portfolio_id: str):
 
 @router.get("/{portfolio_id}/performance")
 async def get_portfolio_performance(portfolio_id: str):
-    """Get portfolio performance metrics"""
+    """지정한 포트폴리오의 성과 지표를 반환합니다."""
     snapshot = await portfolio_service.get_portfolio_snapshot(portfolio_id=portfolio_id)
 
     if snapshot is None or snapshot.portfolio_data is None:
@@ -157,7 +362,7 @@ async def get_portfolio_performance(portfolio_id: str):
 
 @router.post("/{portfolio_id}/rebalance")
 async def rebalance_portfolio(portfolio_id: str):
-    """Request portfolio rebalancing"""
+    """포트폴리오 리밸런싱 제안과 예상 지표를 생성합니다."""
     snapshot = await portfolio_service.get_portfolio_snapshot(portfolio_id=portfolio_id)
     if snapshot is None or snapshot.portfolio_data is None:
         raise HTTPException(

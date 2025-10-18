@@ -14,10 +14,10 @@ class ResearchState(TypedDict, total=False):
     2. bull_analysis + bear_analysis: 병렬 분석
     3. consensus: 최종 의견 통합
 
-    Note: total=False로 설정하여 partial update 지원 (LangGraph 패턴)
+    Note: total=False로 설정하여 partial update 지원 (Langgraph 패턴)
     """
 
-    # LangGraph 메시지 스택
+    # Langgraph 메시지 스택
     messages: Annotated[List[BaseMessage], add_messages]
 
     # 입력

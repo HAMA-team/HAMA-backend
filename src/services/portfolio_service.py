@@ -142,6 +142,31 @@ class PortfolioService:
             profile=base_snapshot.get("profile", {}),
         )
 
+    async def sync_with_kis(
+        self,
+        *,
+        user_id: Optional[str] = None,
+        portfolio_id: Optional[str] = None,
+    ) -> Optional[PortfolioSnapshot]:
+        """KIS API를 통해 최신 계좌 잔고를 조회하고 DB와 동기화합니다."""
+        try:
+            from src.services.kis_service import kis_service  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            logger.warning("[PortfolioService] KIS 서비스 모듈을 불러오지 못해 동기화를 건너뜁니다")
+            return None
+
+        resolved_id = await self.resolve_portfolio_id(user_id=user_id, portfolio_id=portfolio_id)
+        if not resolved_id:
+            raise PortfolioNotFoundError("포트폴리오를 찾을 수 없어 KIS 동기화를 수행할 수 없습니다.")
+
+        balance = await kis_service.get_account_balance()
+        await asyncio.to_thread(self._sync_kis_balance_sync, resolved_id, balance)
+
+        snapshot = await self.get_portfolio_snapshot(portfolio_id=resolved_id)
+        if snapshot:
+            snapshot.portfolio_data["data_source"] = "kis_api"
+        return snapshot
+
     async def apply_trade(
         self,
         *,
@@ -496,6 +521,89 @@ class PortfolioService:
     # ------------------------------------------------------------------
     # Utility helpers
     # ------------------------------------------------------------------
+    def _sync_kis_balance_sync(
+        self,
+        portfolio_id: str,
+        balance: Dict[str, Any],
+    ) -> None:
+        pid = uuid.UUID(str(portfolio_id))
+        with self._session_factory() as session:
+            portfolio = session.query(Portfolio).filter(Portfolio.portfolio_id == pid).with_for_update().first()
+            if not portfolio:
+                raise PortfolioNotFoundError(f"Portfolio {portfolio_id} not found")
+
+            stocks: List[Dict[str, Any]] = balance.get("stocks", []) or []
+            cash_balance = self._decimal(balance.get("cash_balance"), Decimal("0"))
+            total_assets = self._decimal(balance.get("total_assets"), Decimal("0"))
+
+            existing_positions = {
+                position.stock_code: position
+                for position in session.query(Position).filter(Position.portfolio_id == pid)
+            }
+            seen_codes: set[str] = set()
+
+            for stock in stocks:
+                code = stock.get("stock_code")
+                if not code:
+                    continue
+
+                quantity = int(stock.get("quantity") or 0)
+                if quantity <= 0:
+                    stale = existing_positions.get(code)
+                    if stale:
+                        session.delete(stale)
+                    continue
+
+                seen_codes.add(code)
+                avg_price = self._decimal(stock.get("avg_price"), Decimal("0"))
+                current_price = self._decimal(stock.get("current_price"), avg_price)
+                market_value = self._decimal(
+                    stock.get("eval_amount"),
+                    (current_price or Decimal("0")) * quantity,
+                )
+                profit_loss = self._decimal(stock.get("profit_loss"), Decimal("0"))
+                profit_rate = self._decimal(stock.get("profit_rate"), Decimal("0"))
+
+                position = existing_positions.get(code)
+                if not position:
+                    position = Position(portfolio_id=pid, stock_code=code)
+                    session.add(position)
+
+                position.quantity = quantity
+                position.average_price = avg_price
+                position.current_price = current_price
+                position.market_value = market_value
+                position.unrealized_pnl = profit_loss
+                position.unrealized_pnl_rate = profit_rate
+                position.last_updated_at = datetime.utcnow()
+
+            for code, position in list(existing_positions.items()):
+                if code not in seen_codes:
+                    session.delete(position)
+
+            session.flush()
+
+            positions = session.query(Position).filter(Position.portfolio_id == pid).all()
+            total_market_value = Decimal("0")
+            for pos in positions:
+                mv = self._decimal(pos.market_value, Decimal("0"))
+                pos.market_value = mv
+                total_market_value += mv
+
+            total_value = total_assets if total_assets and total_assets > 0 else total_market_value + cash_balance
+            invested_amount = total_value - cash_balance
+
+            portfolio.cash_balance = cash_balance
+            portfolio.total_value = total_value
+            portfolio.invested_amount = invested_amount if invested_amount >= 0 else Decimal("0")
+
+            if total_value > 0:
+                for pos in positions:
+                    mv = self._decimal(pos.market_value, Decimal("0"))
+                    pos.weight = (mv / total_value) if mv is not None else None
+
+            session.commit()
+
     def _decimal(self, value: Any, default: Optional[Decimal] = Decimal("0")) -> Optional[Decimal]:
         if value is None:
             return default

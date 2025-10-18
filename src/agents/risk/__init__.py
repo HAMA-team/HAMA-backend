@@ -1,5 +1,5 @@
 """
-Risk Agent - LangGraph 서브그래프
+Risk Agent - Langgraph 서브그래프
 
 리스크 평가 및 경고 시스템
 """

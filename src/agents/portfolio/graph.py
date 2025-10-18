@@ -1,6 +1,6 @@
 """Portfolio Agent 서브그래프
 
-포트폴리오 분석 및 리밸런싱 제안을 위한 LangGraph 그래프"""
+포트폴리오 분석 및 리밸런싱 제안을 위한 Langgraph 그래프"""
 from __future__ import annotations
 
 from langgraph.graph import StateGraph, END

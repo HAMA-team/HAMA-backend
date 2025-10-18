@@ -1,7 +1,7 @@
 """
 Strategy Agent 노드 함수들
 
-LangGraph 서브그래프 노드 구현
+Langgraph 서브그래프 노드 구현
 """
 from .state import StrategyState
 from src.schemas.strategy import InvestmentStyle

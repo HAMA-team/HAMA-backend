@@ -741,7 +741,7 @@ from langgraph.graph.message import add_messages
 class GraphState(TypedDict, total=False):
     """Master Graph 공유 State (API 초기화)"""
 
-    # LangGraph 표준
+    # Langgraph 표준
     messages: Annotated[List[BaseMessage], add_messages]
 
     # 사용자 컨텍스트

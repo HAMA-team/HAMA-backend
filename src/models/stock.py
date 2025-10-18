@@ -1,8 +1,8 @@
 """
 Stock-related database models
 """
-from sqlalchemy import Column, String, Integer, TIMESTAMP, Date, DECIMAL, BigInteger, Text, JSON, ARRAY
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Integer, TIMESTAMP, Date, DECIMAL, BigInteger, Text, JSON
+from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from sqlalchemy.sql import func
 import uuid
 

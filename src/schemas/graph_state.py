@@ -1,7 +1,7 @@
 """
-LangGraph GraphState 정의
+Langgraph GraphState 정의
 
-LangGraph 표준 패턴을 준수하는 State 정의
+Langgraph 표준 패턴을 준수하는 State 정의
 - messages 필드 (add_messages reducer)
 - 대화 히스토리 자동 관리
 - LangChain 도구 통합 가능
@@ -14,15 +14,15 @@ import operator
 
 class GraphState(TypedDict):
     """
-    Master Graph State - LangGraph 표준 준수
+    Master Graph State - Langgraph 표준 준수
 
     주요 특징:
-    - messages: LangGraph 표준 필드 (대화 히스토리)
+    - messages: Langgraph 표준 필드 (대화 히스토리)
     - add_messages: 자동 메시지 병합 reducer
     - 기존 AgentState 필드 모두 포함 (하위 호환성)
     """
 
-    # ==================== LangGraph 표준 필드 ====================
+    # ==================== Langgraph 표준 필드 ====================
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
     """대화 메시지 리스트 (HumanMessage, AIMessage 등)"""

@@ -1,5 +1,5 @@
 """
-Trading Agent Module - 매매 실행 (LangGraph 서브그래프)
+Trading Agent Module - 매매 실행 (Langgraph 서브그래프)
 """
 from .graph import build_trading_subgraph
 from langgraph.checkpoint.memory import MemorySaver

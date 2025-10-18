@@ -11,6 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from src.api.routes import chat, dashboard, portfolio, stocks
 from src.config.settings import settings
 from src.models.database import SessionLocal, init_db
+from src.services import init_kis_service
 
 tags_metadata = [
     {
@@ -66,6 +67,13 @@ app.include_router(chat.router, prefix=f"{api_prefix}/chat", tags=["chat"])
 app.include_router(dashboard.router, prefix=f"{api_prefix}/dashboard", tags=["dashboard"])
 app.include_router(portfolio.router, prefix=f"{api_prefix}/portfolio", tags=["portfolio"])
 app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"])
+
+
+@app.on_event("startup")
+async def initialize_kis_service():
+    """애플리케이션 시작 시 KIS 서비스 초기화."""
+    kis_env = "real" if settings.ENV.lower() == "production" else "demo"
+    await init_kis_service(env=kis_env)
 
 
 @app.get("/")

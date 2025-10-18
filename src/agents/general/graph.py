@@ -1,7 +1,7 @@
 """
 General Agent 서브그래프
 
-일반 질의응답을 위한 LangGraph 서브그래프
+일반 질의응답을 위한 Langgraph 서브그래프
 """
 from langgraph.graph import StateGraph, END
 from .state import GeneralState

@@ -1,8 +1,8 @@
-"""Legacy agent base class retained for non-LangGraph agents.
+"""Legacy agent base class retained for non-Langgraph agents.
 
 This module exists to isolate the old BaseAgent pattern from the new
-LangGraph-first architecture. All remaining subclasses should migrate to
-LangGraph StateGraphs and drop LegacyAgent usage over time.
+Langgraph-first architecture. All remaining subclasses should migrate to
+Langgraph StateGraphs and drop LegacyAgent usage over time.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class LegacyAgent(ABC):
     """Legacy async agent abstraction.
 
-    New work should prefer LangGraph StateGraph agents. This class remains only
+    New work should prefer Langgraph StateGraph agents. This class remains only
     to support modules that have not yet been migrated.
     """
 

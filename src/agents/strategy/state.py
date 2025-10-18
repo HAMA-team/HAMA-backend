@@ -1,7 +1,7 @@
 """
 Strategy Agent State 정의
 
-LangGraph 서브그래프를 위한 State
+Langgraph 서브그래프를 위한 State
 """
 from typing import TypedDict, Optional, List, Annotated
 

@@ -1,7 +1,7 @@
 """Deprecated legacy agent base.
 
 Import `LegacyAgent` from `src.agents.legacy` instead. This shim exists to
-provide a soft migration path while agents transition to LangGraph subgraphs.
+provide a soft migration path while agents transition to Langgraph subgraphs.
 """
 from __future__ import annotations
 

@@ -24,19 +24,19 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """ENV에 따라 DATABASE_URL 동적 변경"""
+        """환경과 관계없이 기본적으로 PostgreSQL URL을 사용합니다."""
         env = os.getenv("ENV", self.ENV).lower()
         if env == "test":
-            return "sqlite:///./test_hama.db"
-        return self.DATABASE_URL
+            return os.getenv("TEST_DATABASE_URL", self.DATABASE_URL)
+        return os.getenv("DATABASE_URL", self.DATABASE_URL)
 
     # LLM APIs
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4o"
     ANTHROPIC_API_KEY: str | None = None
-    CLAUDE_MODEL: str = "claude-sonnet-4-5-20250929"
+    CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemini-2.0-flash-exp"
+    GEMINI_MODEL: str = "gemini-2.5-flash-exp"
 
     # LLM Mode: "test" (Gemini) or "production" (Claude)
     LLM_MODE: str = "production"  # test, production, demo 등
@@ -117,11 +117,12 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
-    # LangGraph persistence
+    # Langgraph persistence
     LANGGRAPH_CHECKPOINT_TTL_MINUTES: int = 43200  # 30일
     LANGGRAPH_CHECKPOINT_REFRESH_ON_READ: bool = True
-    GRAPH_CHECKPOINT_BACKEND: str = "memory"  # memory | sqlite | redis
-    GRAPH_CHECKPOINT_SQLITE_PATH: str = "data/langgraph_checkpoints.sqlite"
+    GRAPH_CHECKPOINT_BACKEND: str = "memory"  # memory | redis (비동기 구조 개선 후)
+    # Note: Redis/PostgreSQL checkpointer는 비동기 context manager로 구현되어
+    # 현재 동기 캐싱 구조에서는 사용 복잡. 추후 비동기 초기화로 개선 예정 (Phase 2)
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
@@ -133,7 +134,7 @@ class Settings(BaseSettings):
 
     @property
     def langgraph_default_ttl(self) -> int:
-        """환경에 따라 LangGraph 체크포인트 TTL(분)을 조정"""
+        """환경에 따라 Langgraph 체크포인트 TTL(분)을 조정"""
         env = os.getenv("ENV", self.ENV).lower()
         if env == "test":
             return min(self.LANGGRAPH_CHECKPOINT_TTL_MINUTES, 120)

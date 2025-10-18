@@ -1,5 +1,5 @@
 """
-General Agent Module - 일반 질의응답 (LangGraph 서브그래프)
+General Agent Module - 일반 질의응답 (Langgraph 서브그래프)
 """
 from .graph import general_subgraph
 

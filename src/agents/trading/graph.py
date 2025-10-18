@@ -1,7 +1,7 @@
 """
 Trading Agent 서브그래프
 
-매매 실행을 위한 LangGraph 서브그래프
+매매 실행을 위한 Langgraph 서브그래프
 """
 from langgraph.graph import StateGraph, END
 from .state import TradingState

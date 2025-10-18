@@ -1,5 +1,5 @@
 """
-LangGraph Supervisor 패턴 기반 마스터 에이전트
+Langgraph Supervisor 패턴 기반 마스터 에이전트
 
 Master Agent의 역할 (순수 조율자):
 1. 사용자 질의를 LLM으로 분석
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = None):
     """
-    LangGraph Supervisor 패턴 기반 Master Agent 정의를 생성합니다.
+    Langgraph Supervisor 패턴 기반 Master Agent 정의를 생성합니다.
     """
     if llm is None:
         llm = get_llm(
@@ -130,7 +130,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
 def build_state_graph(automation_level: int = 2):
     """
-    Supervisor 기반 LangGraph 정의를 반환합니다.
+    Supervisor 기반 Langgraph 정의를 반환합니다.
 
     그래프 정의 단계에서는 순수하게 구조만 생성하고 부수효과를 최소화합니다.
     """
@@ -150,24 +150,21 @@ def _resolve_backend_key(backend: Optional[str] = None) -> str:
 def _create_checkpointer(backend_key: str):
     """
     backend_key에 따라 적절한 체크포인터 인스턴스를 생성합니다.
+
+    Note: PostgresSaver는 context manager이므로 __enter__()를 호출하여
+    실제 인스턴스를 얻습니다. 연결은 프로세스 종료 시까지 유지됩니다.
     """
     key = backend_key.lower()
 
-    if key == "sqlite":
-        try:
-            from langgraph.checkpoint.sqlite import SqliteSaver
-        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
-            raise ImportError(
-                "langgraph-checkpoint-sqlite 패키지가 필요합니다."
-            ) from exc
-
-        db_path = getattr(
-            settings,
-            "GRAPH_CHECKPOINT_SQLITE_PATH",
-            "data/langgraph_checkpoints.sqlite",
+    # PostgreSQL checkpointer는 비동기 context manager로 구현되어
+    # 현재 동기 캐싱 구조에서는 사용이 복잡함
+    # 프로덕션에서는 Redis checkpointer 사용 권장
+    if key == "postgres":
+        logger.warning(
+            "PostgreSQL checkpointer는 비동기 초기화가 필요하여 지원하지 않습니다. "
+            "Redis checkpointer 사용을 권장합니다."
         )
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        return SqliteSaver(db_path)
+        return MemorySaver()
 
     if key == "redis":
         try:
@@ -177,7 +174,10 @@ def _create_checkpointer(backend_key: str):
                 "langgraph-checkpoint-redis 패키지가 필요합니다."
             ) from exc
 
-        return RedisSaver.from_conn_string(settings.REDIS_URL)
+        # Context manager를 열어서 실제 RedisSaver 인스턴스 반환
+        # 연결은 애플리케이션 생명주기 동안 유지됨
+        conn_manager = RedisSaver.from_conn_string(settings.REDIS_URL)
+        return conn_manager.__enter__()
 
     # 기본값: 인메모리 Saver
     return MemorySaver()
@@ -219,7 +219,7 @@ def build_graph(
 ):
     """
     Backwards compatible helper that mirrors the legacy API expected by
-    existing routes. Returns a compiled LangGraph application.
+    existing routes. Returns a compiled Langgraph application.
     """
     resolved_backend = _resolve_backend_key(backend_key)
     loop_token = _loop_token()
@@ -238,7 +238,7 @@ async def run_graph(
     backend_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    LangGraph Supervisor 그래프 실행 함수
+    Langgraph Supervisor 그래프 실행 함수
     """
     import uuid
 

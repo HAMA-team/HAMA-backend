@@ -240,7 +240,7 @@ async def chat(request: ChatRequest):
             }
         }
 
-        # Initial state - LangGraph 표준: messages 사용
+        # Initial state - Langgraph 표준: messages 사용
         initial_state = {
             "messages": [HumanMessage(content=request.message)],
             "user_id": str(DEFAULT_USER_UUID),
@@ -262,7 +262,7 @@ async def chat(request: ChatRequest):
             "final_response": None,
         }
 
-        # Run LangGraph
+        # Run Langgraph
         result = await app.ainvoke(initial_state, config=config)
 
         # Check for interrupt
@@ -312,7 +312,7 @@ async def chat(request: ChatRequest):
         # No interrupt - 정상 완료
         data = result.get("final_response", {})
 
-        # LangGraph 표준: messages에서 AI 응답 추출
+        # Langgraph 표준: messages에서 AI 응답 추출
         ai_messages = [msg for msg in result.get("messages", []) if isinstance(msg, AIMessage)]
         last_ai_message = ai_messages[-1] if ai_messages else None
 

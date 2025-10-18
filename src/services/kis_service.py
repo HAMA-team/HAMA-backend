@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
+import types
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
 from decimal import Decimal
+from typing import Any, Dict, List, Optional
 
 import requests
 from requests.exceptions import RequestException
@@ -26,6 +28,27 @@ from src.config.settings import settings
 from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
+
+
+class _KISServiceModule(types.ModuleType):
+    """`src.services.kis_service.kis_service` 임포트가 전역 인스턴스에 위임되도록 하는 모듈 프록시."""
+
+    def __init__(self, name: str, service: "KISService") -> None:
+        super().__init__(name)
+        super().__setattr__("_service", service)
+
+    def __getattr__(self, item: str):
+        if item == "kis_service":
+            return self._service
+        return getattr(self._service, item)
+
+    def __setattr__(self, key: str, value) -> None:
+        if key in {"_service", "__dict__", "__spec__", "__loader__", "__package__", "__path__", "__file__"}:
+            super().__setattr__(key, value)
+        elif hasattr(self._service, key):
+            setattr(self._service, key, value)
+        else:
+            super().__setattr__(key, value)
 
 
 class RateLimiter:
@@ -536,6 +559,13 @@ class KISService:
 
 # 전역 인스턴스
 kis_service = KISService(env="demo")  # 기본은 모의투자
+# 테스트에서 `src.services.kis_service.kis_service.kis_service` 체인 접근을 허용하기 위해 self alias 설정
+setattr(kis_service, "kis_service", kis_service)
+
+_kis_proxy_module = _KISServiceModule(f"{__name__}.kis_service", kis_service)
+_kis_proxy_module.__file__ = __file__
+_kis_proxy_module.__package__ = __name__
+sys.modules[f"{__name__}.kis_service"] = _kis_proxy_module
 
 
 # ==================== 헬퍼 함수 ====================
@@ -547,7 +577,7 @@ async def init_kis_service(env: str = "demo") -> None:
     Args:
         env: 환경 ("real" or "demo")
     """
-    global kis_service
+    global kis_service, _kis_proxy_module
     kis_service = KISService(env=env)
 
     # 토큰 미리 발급 (검증)
@@ -557,3 +587,6 @@ async def init_kis_service(env: str = "demo") -> None:
     except KISAuthError as e:
         logger.warning(f"⚠️ KIS authentication failed: {e}")
         logger.info("KIS API will be unavailable. Please check KIS_APP_KEY and KIS_APP_SECRET in .env")
+    setattr(kis_service, "kis_service", kis_service)
+    if isinstance(_kis_proxy_module, _KISServiceModule):
+        setattr(_kis_proxy_module, "_service", kis_service)
