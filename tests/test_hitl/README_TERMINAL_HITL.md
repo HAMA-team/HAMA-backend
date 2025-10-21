@@ -310,9 +310,9 @@ Phase 2에서 추가될 기능:
 
 ## 참고 문서
 
-- [PRD.md](../docs/PRD.md) - 제품 요구사항
-- [CLAUDE.md](../CLAUDE.md) - LangGraph HITL 구현 가이드
-- [chat.py](../src/api/routes/chat.py) - API 라우터 구현
+- [PRD.md](../../docs/PRD.md) - 제품 요구사항
+- [CLAUDE.md](../../CLAUDE.md) - LangGraph HITL 구현 가이드
+- [chat.py](../../src/api/routes/chat.py) - API 라우터 구현
 
 ---
 

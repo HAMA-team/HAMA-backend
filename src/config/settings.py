@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # LLM Mode: "test" (Gemini) or "production" (Claude)
     LLM_MODE: str = "production"  # test, production, demo 등
 
+    # Router 전용 모델 (빠른 라우팅을 위해 경량 모델 사용)
+    ROUTER_MODEL_PROVIDER: str = "anthropic"  # anthropic, openai, google
+    ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
+
     # LLM Settings
     LLM_TIMEOUT: int = 30
     MAX_TOKENS: int = 4000

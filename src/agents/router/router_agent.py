@@ -12,6 +12,8 @@ from typing import Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain_anthropic import ChatAnthropic
+from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
 from src.config.settings import settings
@@ -145,9 +147,28 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
         ]
     )
 
-    llm = ChatOpenAI(
-        model="gpt-4o", temperature=0, api_key=settings.OPENAI_API_KEY
-    )
+    # Router 전용 LLM 초기화 (설정에 따라 동적 선택)
+    router_provider = settings.ROUTER_MODEL_PROVIDER.lower()
+
+    if router_provider == "anthropic":
+        llm = ChatAnthropic(
+            model=settings.ROUTER_MODEL,
+            temperature=0,
+            api_key=settings.ANTHROPIC_API_KEY,
+        )
+    elif router_provider == "google":
+        llm = ChatGoogleGenerativeAI(
+            model=settings.ROUTER_MODEL,
+            temperature=0,
+            google_api_key=settings.GEMINI_API_KEY,
+        )
+    else:  # openai (fallback)
+        llm = ChatOpenAI(
+            model=settings.ROUTER_MODEL,
+            temperature=0,
+            api_key=settings.OPENAI_API_KEY,
+        )
+
     structured_llm = llm.with_structured_output(RoutingDecision)
 
     # 대화 히스토리 포맷팅
