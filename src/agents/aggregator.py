@@ -1,0 +1,219 @@
+"""
+Aggregator - 답변 개인화
+
+에이전트 결과를 사용자 프로파일에 맞게 조절하여 최종 응답 생성
+"""
+import json
+import logging
+from typing import Dict, Any, Optional
+
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+
+from src.config.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+async def personalize_response(
+    agent_results: Dict[str, Any],
+    user_profile: Dict[str, Any],
+    routing_decision: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    에이전트 결과를 사용자 프로파일에 맞게 개인화
+
+    Args:
+        agent_results: 각 에이전트의 원본 결과
+            예: {"research": {...}, "strategy": {...}}
+        user_profile: 사용자 프로파일
+        routing_decision: Router 판단 (depth_level, personalization 등)
+
+    Returns:
+        개인화된 최종 응답
+    """
+    logger.info("🎨 [Aggregator] 답변 개인화 시작")
+
+    # 프로파일 정보 추출
+    expertise_level = user_profile.get("expertise_level", "intermediate")
+    technical_level = user_profile.get("technical_level", "intermediate")
+    wants_explanations = user_profile.get("wants_explanations", True)
+    wants_analogies = user_profile.get("wants_analogies", False)
+
+    # Router 판단 정보
+    depth_level = "detailed"
+    personalization_settings = {}
+    if routing_decision:
+        depth_level = routing_decision.get("depth_level", "detailed")
+        personalization_settings = routing_decision.get("personalization", {})
+
+    # 개인화 프롬프트 구성
+    personalization_prompt = ChatPromptTemplate.from_messages([
+        ("system", """당신은 투자 분석 결과를 사용자에게 맞게 전달하는 Aggregator입니다.
+
+**사용자 프로파일:**
+- 투자 경험: {expertise_level}
+- 기술적 이해도: {technical_level}
+- 용어 설명 필요: {wants_explanations}
+- 비유 선호: {wants_analogies}
+
+**개인화 원칙:**
+
+1. **초보자 (beginner):**
+   - 전문 용어 설명 추가
+   - 비유 사용 (예: "PER은 주식의 가격표 같은 것")
+   - 단순화된 표현
+   - 핵심만 1-2개
+   - 결론을 명확하게
+
+   예시:
+   "삼성전자는 현재 75,000원입니다.
+
+   **PER 8.5**란?
+   → 주식의 '가격표'예요. 업종 평균(12)보다 낮아서 저렴한 편입니다.
+
+   **결론:** 지금 매수를 고려해볼 만해요!"
+
+2. **중급자 (intermediate):**
+   - 주요 지표 중심 (3-5개)
+   - 간단한 설명만
+   - 근거 포함
+   - 비교 분석 (업종 평균)
+
+   예시:
+   "삼성전자 분석:
+   - 현재가: 75,000원
+   - PER 8.5 (업종 평균 12 대비 저평가)
+   - PBR 1.2 (적정)
+   - ROE 15.3% (우수)
+
+   반도체 업황 개선 기대감으로 매수 타이밍입니다."
+
+3. **전문가 (expert):**
+   - 원데이터 제공
+   - 계산 과정 포함
+   - 모든 지표
+   - 민감도 분석
+   - 정량적 근거
+
+   예시:
+   "삼성전자 (005930)
+
+   ## Valuation
+   - PER: 8.5x (Sector: 12.0x, -29%)
+   - PBR: 1.2x (Sector: 1.5x, -20%)
+   - EV/EBITDA: 5.8x
+
+   ## DCF
+   - WACC: 8.0% (rf=3.5%, β=1.2, ERP=5.5%)
+   - Terminal g: 3.0%
+   - Intrinsic Value: 85,000원 (+13% upside)
+
+   ## Sensitivity
+   WACC 7-9%: 78,000-92,000원"
+
+**답변 깊이 수준: {depth_level}**
+- brief: 1-2문장, 핵심만
+- detailed: 3-5개 지표, 근거 포함
+- comprehensive: 모든 지표, 계산 과정
+
+**에이전트 결과:**
+{agent_results}
+
+위 결과를 사용자 프로파일에 맞게 재구성하세요.
+응답은 Markdown 형식으로 작성하세요.
+"""),
+        ("human", "사용자에게 맞게 답변을 작성해주세요.")
+    ])
+
+    # LLM 호출
+    llm = ChatOpenAI(
+        model="gpt-4o",
+        temperature=0.3,
+        api_key=settings.OPENAI_API_KEY
+    )
+
+    try:
+        response = await llm.ainvoke(
+            personalization_prompt.format_messages(
+                expertise_level=expertise_level,
+                technical_level=technical_level,
+                wants_explanations="예" if wants_explanations else "아니오",
+                wants_analogies="예" if wants_analogies else "아니오",
+                depth_level=depth_level,
+                agent_results=json.dumps(agent_results, ensure_ascii=False, indent=2)
+            )
+        )
+
+        personalized_response = response.content
+
+        logger.info("✅ [Aggregator] 개인화 완료")
+
+        return {
+            "success": True,
+            "response": personalized_response,
+            "metadata": {
+                "expertise_level": expertise_level,
+                "depth_level": depth_level,
+                "personalization_applied": True
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [Aggregator] 에러: {e}")
+
+        # Fallback: 원본 결과 반환
+        fallback_response = json.dumps(agent_results, ensure_ascii=False, indent=2)
+
+        return {
+            "success": False,
+            "response": fallback_response,
+            "error": str(e),
+            "metadata": {
+                "expertise_level": expertise_level,
+                "depth_level": depth_level,
+                "personalization_applied": False
+            }
+        }
+
+
+async def aggregate_multi_agent_results(
+    query: str,
+    agent_results: Dict[str, Any],
+    user_profile: Dict[str, Any],
+    routing_decision: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    여러 에이전트 결과 통합 및 개인화
+
+    Args:
+        query: 사용자 질문
+        agent_results: 각 에이전트 결과
+            예: {
+                "research": {...},
+                "strategy": {...},
+                "risk": {...}
+            }
+        user_profile: 사용자 프로파일
+        routing_decision: Router 판단
+
+    Returns:
+        통합 및 개인화된 최종 응답
+    """
+    logger.info(f"🔗 [Aggregator] 다중 에이전트 결과 통합: {list(agent_results.keys())}")
+
+    # 1. 결과 통합
+    # TODO: 에이전트 간 결과 조합 로직 (현재는 단순 병합)
+
+    # 2. 개인화
+    personalized = await personalize_response(
+        agent_results=agent_results,
+        user_profile=user_profile,
+        routing_decision=routing_decision
+    )
+
+    return {
+        **personalized,
+        "query": query,
+        "agents_called": list(agent_results.keys())
+    }
