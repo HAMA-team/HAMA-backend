@@ -21,7 +21,7 @@ class BOKService:
         self.api_key = api_key
         self.base_url = "http://ecos.bok.or.kr/api"
 
-    async def get_base_rate(
+    def get_base_rate(
         self,
         start_date: str = None,
         end_date: str = None
@@ -37,7 +37,7 @@ class BOKService:
             기준금리 데이터 리스트
         """
         cache_key = f"bok:base_rate:{start_date}:{end_date}"
-        cached = await cache_manager.get(cache_key)
+        cached = cache_manager.get(cache_key)
         if cached:
             return cached
 
@@ -55,12 +55,12 @@ class BOKService:
         if "StatisticSearch" in data:
             rows = data["StatisticSearch"]["row"]
             # 캐싱 (1일)
-            await cache_manager.set(cache_key, rows, ttl=86400)
+            cache_manager.set(cache_key, rows, ttl=86400)
             return rows
 
         return []
 
-    async def get_cpi(
+    def get_cpi(
         self,
         start_date: str = None,
         end_date: str = None
@@ -76,7 +76,7 @@ class BOKService:
             CPI 데이터 리스트
         """
         cache_key = f"bok:cpi:{start_date}:{end_date}"
-        cached = await cache_manager.get(cache_key)
+        cached = cache_manager.get(cache_key)
         if cached:
             return cached
 
@@ -94,12 +94,12 @@ class BOKService:
         if "StatisticSearch" in data:
             rows = data["StatisticSearch"]["row"]
             # 캐싱 (1일)
-            await cache_manager.set(cache_key, rows, ttl=86400)
+            cache_manager.set(cache_key, rows, ttl=86400)
             return rows
 
         return []
 
-    async def get_exchange_rate(
+    def get_exchange_rate(
         self,
         start_date: str = None,
         end_date: str = None
@@ -115,7 +115,7 @@ class BOKService:
             환율 데이터 리스트
         """
         cache_key = f"bok:exchange_rate:{start_date}:{end_date}"
-        cached = await cache_manager.get(cache_key)
+        cached = cache_manager.get(cache_key)
         if cached:
             return cached
 
@@ -133,12 +133,12 @@ class BOKService:
         if "StatisticSearch" in data:
             rows = data["StatisticSearch"]["row"]
             # 캐싱 (1시간)
-            await cache_manager.set(cache_key, rows, ttl=3600)
+            cache_manager.set(cache_key, rows, ttl=3600)
             return rows
 
         return []
 
-    async def get_macro_indicators(self) -> Dict:
+    def get_macro_indicators(self) -> Dict:
         """
         주요 거시경제 지표 종합 조회
 
@@ -152,9 +152,9 @@ class BOKService:
             }
         """
         # 최근 데이터 조회
-        base_rate_data = await self.get_base_rate()
-        cpi_data = await self.get_cpi()
-        exchange_data = await self.get_exchange_rate()
+        base_rate_data = self.get_base_rate()
+        cpi_data = self.get_cpi()
+        exchange_data = self.get_exchange_rate()
 
         result = {
             "base_rate": None,

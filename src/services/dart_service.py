@@ -42,7 +42,7 @@ class DARTService:
         cache_key = f"dart_company:{corp_code}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return cached
@@ -59,7 +59,7 @@ class DARTService:
 
             if data.get("status") == "000":
                 # 캐싱 (1일 TTL - 기업 정보는 자주 변하지 않음)
-                await self.cache.set(cache_key, data, ttl=86400)
+                self.cache.set(cache_key, data, ttl=86400)
                 print(f"✅ 기업 개황 조회 성공: {data.get('corp_name', corp_code)}")
                 return data
             else:
@@ -91,7 +91,7 @@ class DARTService:
         cache_key = f"dart_disclosure:{corp_code}:{bgn_de}:{end_de}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return cached
@@ -115,7 +115,7 @@ class DARTService:
             if data.get("status") == "000":
                 disclosures = data.get("list", [])
                 # 캐싱 (5분 TTL)
-                await self.cache.set(
+                self.cache.set(
                     cache_key, disclosures, ttl=settings.CACHE_TTL_NEWS
                 )
                 print(f"✅ 공시 목록 조회 성공: {len(disclosures)}건")
@@ -146,7 +146,7 @@ class DARTService:
         cache_key = f"dart_financial:{corp_code}:{bsns_year}:{reprt_code}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return cached
@@ -170,7 +170,7 @@ class DARTService:
             if data.get("status") == "000":
                 statements = data.get("list", [])
                 # 캐싱 (1일 TTL)
-                await self.cache.set(
+                self.cache.set(
                     cache_key, statements, ttl=settings.CACHE_TTL_FINANCIAL_STATEMENTS
                 )
                 print(f"✅ 재무제표 조회 성공: {len(statements)}개 항목")
@@ -201,7 +201,7 @@ class DARTService:
         cache_key = f"dart_shareholder:{corp_code}:{bsns_year}:{reprt_code}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return cached
@@ -224,7 +224,7 @@ class DARTService:
             if data.get("status") == "000":
                 shareholders = data.get("list", [])
                 # 캐싱 (1일 TTL)
-                await self.cache.set(cache_key, shareholders, ttl=86400)
+                self.cache.set(cache_key, shareholders, ttl=86400)
                 print(f"✅ 주요주주 조회 성공: {len(shareholders)}명")
                 return shareholders
             else:
@@ -305,7 +305,7 @@ class DARTService:
         cache_key = "dart_corp_code_mapping"
 
         # 캐시에서 매핑 테이블 확인
-        cached_mapping = await self.cache.get(cache_key)
+        cached_mapping = self.cache.get(cache_key)
 
         if cached_mapping is None:
             # 캐시 미스: 새로 다운로드
@@ -314,12 +314,12 @@ class DARTService:
 
             if mapping:
                 # Redis 캐싱 (1일 TTL)
-                await self.cache.set(cache_key, mapping, ttl=86400)
+                self.cache.set(cache_key, mapping, ttl=86400)
                 logger.info(f"✅ DART 매핑 테이블 캐싱 완료: {len(mapping)}개 종목")
             else:
                 logger.warning("⚠️ DART 매핑 테이블이 비어있습니다.")
                 # 빈 딕셔너리도 캐싱 (1시간 TTL)
-                await self.cache.set(cache_key, {}, ttl=3600)
+                self.cache.set(cache_key, {}, ttl=3600)
                 return None
         else:
             mapping = cached_mapping

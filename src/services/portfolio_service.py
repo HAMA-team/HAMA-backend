@@ -16,7 +16,8 @@ from src.config.settings import settings
 from src.models.database import SessionLocal
 from src.models.portfolio import Portfolio, Position
 from src.models.stock import Stock
-from src.models.user import User, UserProfile
+from src.models.user import User
+from src.models.user_profile import UserProfile
 from src.services.stock_data_service import stock_data_service
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,8 @@ class PortfolioService:
     ) -> Optional[str]:
         """Resolve an incoming user/portfolio identifier to a portfolio UUID."""
 
+        effective_user_id = user_id or settings.DEMO_USER_ID
+
         def _resolve() -> Optional[str]:
             with self._session_factory() as session:
                 # Direct portfolio lookup first
@@ -70,14 +73,14 @@ class PortfolioService:
                             return str(portfolio.portfolio_id)
 
                 candidate_user_ids: List[uuid.UUID] = []
-                if user_id:
+                if effective_user_id:
                     try:
-                        candidate_user_ids.append(uuid.UUID(str(user_id)))
+                        candidate_user_ids.append(uuid.UUID(str(effective_user_id)))
                     except ValueError:
                         # Try to resolve by username/email alias
                         user = (
                             session.query(User)
-                            .filter((User.username == user_id) | (User.email == user_id))
+                            .filter((User.username == effective_user_id) | (User.email == effective_user_id))
                             .first()
                         )
                         if user:
@@ -114,7 +117,10 @@ class PortfolioService:
         Falls back to ``None`` when the portfolio cannot be resolved.
         """
 
-        resolved_id = await self.resolve_portfolio_id(user_id=user_id, portfolio_id=portfolio_id)
+        resolved_id = await self.resolve_portfolio_id(
+            user_id=user_id or settings.DEMO_USER_ID,
+            portfolio_id=portfolio_id,
+        )
         if not resolved_id:
             logger.warning("[PortfolioService] 포트폴리오 ID를 찾지 못해 기본 데이터를 반환합니다")
             return self._default_snapshot()
@@ -155,7 +161,10 @@ class PortfolioService:
             logger.warning("[PortfolioService] KIS 서비스 모듈을 불러오지 못해 동기화를 건너뜁니다")
             return None
 
-        resolved_id = await self.resolve_portfolio_id(user_id=user_id, portfolio_id=portfolio_id)
+        resolved_id = await self.resolve_portfolio_id(
+            user_id=user_id or settings.DEMO_USER_ID,
+            portfolio_id=portfolio_id,
+        )
         if not resolved_id:
             raise PortfolioNotFoundError("포트폴리오를 찾을 수 없어 KIS 동기화를 수행할 수 없습니다.")
 
@@ -214,7 +223,7 @@ class PortfolioService:
                     for stock in session.query(Stock).filter(Stock.stock_code.in_(stock_codes))
                 }
 
-            profile = {}
+            profile: Dict[str, Any] = {}
             if portfolio.user_id:
                 user_profile = (
                     session.query(UserProfile)
@@ -222,12 +231,12 @@ class PortfolioService:
                     .first()
                 )
                 if user_profile:
-                    profile = {
-                        "risk_tolerance": user_profile.risk_tolerance,
-                        "investment_goal": user_profile.investment_goal,
-                        "investment_horizon": user_profile.investment_horizon,
-                        "automation_level": user_profile.automation_level,
-                    }
+                    profile = user_profile.to_dict()
+
+                    # 레거시 호출부 호환용 필드 매핑
+                    profile.setdefault("investment_goal", profile.get("investment_style"))
+                    profile.setdefault("investment_horizon", profile.get("trading_style"))
+                    profile.setdefault("automation_level", 2)
 
             holdings, sector_breakdown, cash_balance, total_market_value = self._build_holdings_snapshot(
                 positions,

@@ -30,7 +30,7 @@ class SectorDataService:
     def __init__(self):
         pass
 
-    async def get_sector_performance(
+    def get_sector_performance(
         self,
         days: int = 30
     ) -> Dict[str, Dict]:
@@ -52,7 +52,7 @@ class SectorDataService:
             }
         """
         cache_key = f"sector:performance:{days}"
-        cached = await cache_manager.get(cache_key)
+        cached = cache_manager.get(cache_key)
         if cached:
             return cached
 
@@ -95,11 +95,11 @@ class SectorDataService:
                 }
 
         # 캐싱 (1시간)
-        await cache_manager.set(cache_key, sector_data, ttl=3600)
+        cache_manager.set(cache_key, sector_data, ttl=3600)
 
         return sector_data
 
-    async def get_sector_ranking(self, days: int = 30) -> List[Dict]:
+    def get_sector_ranking(self, days: int = 30) -> List[Dict]:
         """
         섹터 성과 순위
 
@@ -112,7 +112,7 @@ class SectorDataService:
                 ...
             ]
         """
-        sector_perf = await self.get_sector_performance(days)
+        sector_perf = self.get_sector_performance(days)
 
         # 순위 정렬
         ranking = []
@@ -131,7 +131,7 @@ class SectorDataService:
 
         return ranking
 
-    async def get_overweight_sectors(
+    def get_overweight_sectors(
         self,
         days: int = 30,
         threshold: float = 5.0
@@ -146,7 +146,7 @@ class SectorDataService:
         Returns:
             비중 확대 섹터 리스트
         """
-        sector_perf = await self.get_sector_performance(days)
+        sector_perf = self.get_sector_performance(days)
 
         overweight = []
         for sector, data in sector_perf.items():
@@ -155,7 +155,7 @@ class SectorDataService:
 
         return overweight
 
-    async def get_underweight_sectors(
+    def get_underweight_sectors(
         self,
         days: int = 30,
         threshold: float = -3.0
@@ -170,7 +170,7 @@ class SectorDataService:
         Returns:
             비중 축소 섹터 리스트
         """
-        sector_perf = await self.get_sector_performance(days)
+        sector_perf = self.get_sector_performance(days)
 
         underweight = []
         for sector, data in sector_perf.items():

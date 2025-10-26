@@ -2,6 +2,7 @@
 Application configuration and settings
 """
 import os
+import uuid
 from pydantic_settings import BaseSettings
 from typing import List
 
@@ -16,6 +17,7 @@ class Settings(BaseSettings):
     API_VERSION: str = "v1"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    DEMO_USER_ID: str = "3bd04ffb-350a-5fa4-bee5-6ce019fdad9c"
 
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/hama_db"
@@ -106,7 +108,7 @@ class Settings(BaseSettings):
 
     # LangSmith (Optional)
     LANGSMITH_API_KEY: str | None = None
-    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_TRACING_V2: bool = True
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
     LANGCHAIN_PROJECT: str = "hama-backend"
 
@@ -135,6 +137,11 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string"""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+
+    @property
+    def demo_user_uuid(self) -> uuid.UUID:
+        """프로토타입 데모 계정 UUID를 UUID 객체로 반환"""
+        return uuid.UUID(self.DEMO_USER_ID)
 
     @property
     def langgraph_default_ttl(self) -> int:

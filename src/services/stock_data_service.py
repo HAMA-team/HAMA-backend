@@ -38,7 +38,7 @@ class StockDataService:
         cache_key = f"stock_price:{stock_code}:{days}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return pd.DataFrame(cached)
@@ -52,7 +52,7 @@ class StockDataService:
 
             if df is not None and len(df) > 0:
                 # 캐싱 (60초 TTL)
-                await self.cache.set(
+                self.cache.set(
                     cache_key, df.to_dict("records"), ttl=settings.CACHE_TTL_MARKET_DATA
                 )
                 print(f"✅ 주가 데이터 조회 성공: {stock_code}")
@@ -79,7 +79,7 @@ class StockDataService:
         cache_key = f"stock_listing:{market}"
 
         # 캐시 확인
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
             return pd.DataFrame(cached)
@@ -90,7 +90,7 @@ class StockDataService:
 
             if df is not None and len(df) > 0:
                 # 캐싱 (1일 TTL)
-                await self.cache.set(cache_key, df.to_dict("records"), ttl=86400)
+                self.cache.set(cache_key, df.to_dict("records"), ttl=86400)
                 print(f"✅ 종목 리스트 조회 성공: {market}, {len(df)}개")
                 return df
             else:
@@ -198,7 +198,7 @@ class StockDataService:
         cache_key = f"market_index:{index_code}:{days}"
 
         # 캐시 확인 (1시간 TTL - Rate Limit 방지)
-        cached = await self.cache.get(cache_key)
+        cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ [Index] 캐시 히트: {cache_key}")
             return pd.DataFrame(cached)
@@ -216,7 +216,7 @@ class StockDataService:
 
                 if df is not None and len(df) > 0:
                     # 캐싱 (1시간 TTL - 지수는 실시간성 덜 중요)
-                    await self.cache.set(
+                    self.cache.set(
                         cache_key,
                         df.to_dict("records"),
                         ttl=settings.CACHE_TTL_MARKET_INDEX

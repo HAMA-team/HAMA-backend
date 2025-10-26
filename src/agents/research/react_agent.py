@@ -7,9 +7,9 @@ import logging
 from typing import Optional
 
 from langgraph.prebuilt import create_react_agent
-from langchain_openai import ChatOpenAI
 
 from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 from .tools import (
     get_stock_price,
     get_basic_ratios,
@@ -148,11 +148,10 @@ def create_research_agent(
 - 리스크: 반도체 사이클 하락 가능성"
 """
 
-    # LLM 생성
-    llm = ChatOpenAI(
-        model="gpt-4o",
+    # LLM 생성 (환경 모드에 맞춰 provider/model 자동 선택)
+    llm = get_llm(
         temperature=0.3,
-        api_key=settings.OPENAI_API_KEY
+        model=settings.llm_model_name,
     )
 
     # 도구 리스트 (depth_level에 따라 조절 가능)

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
+from src.config.settings import settings
 from src.models.chat import ChatMessage, ChatSession
 from src.models.database import SessionLocal
 
@@ -148,14 +149,24 @@ class ChatHistoryService:
 
         await asyncio.to_thread(_delete)
 
-    async def list_sessions(self, *, limit: int = 50) -> Sequence[Dict[str, Any]]:
+    async def list_sessions(
+        self,
+        *,
+        user_id: Optional[uuid.UUID] = None,
+        limit: int = 50,
+    ) -> Sequence[Dict[str, Any]]:
         """Return chat session summaries ordered by last activity."""
+
+        effective_user_id = user_id or settings.demo_user_uuid
 
         def _list() -> Sequence[Dict[str, Any]]:
             with self._session_factory() as session:  # type: Session
+                query = session.query(ChatSession)
+                if effective_user_id:
+                    query = query.filter(ChatSession.user_id == effective_user_id)
+
                 sessions: Sequence[ChatSession] = (
-                    session.query(ChatSession)
-                    .order_by(ChatSession.last_message_at.desc().nullslast())
+                    query.order_by(ChatSession.last_message_at.desc().nullslast())
                     .limit(limit)
                     .all()
                 )

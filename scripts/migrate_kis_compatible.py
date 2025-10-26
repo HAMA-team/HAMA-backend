@@ -25,7 +25,8 @@ from src.models.agent import (
     ResearchReport, TradingSignal, RiskAssessment,
     ApprovalRequest, UserDecision, AgentLog, Alert
 )
-from src.models.user import User, UserProfile, UserPreference
+from src.models.user import User, UserPreference
+from src.models.user_profile import UserProfile
 
 
 def check_column_exists(table_name: str, column_name: str) -> bool:

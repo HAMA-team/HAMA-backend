@@ -27,7 +27,7 @@
 4. `get_company_info` - 기업 정보 (DART API)
 5. `calculate_dcf_valuation` - DCF 밸류에이션
 6. `get_sector_comparison` - 업종 비교
-
+-> 재무 비율을 가져오는 게 DART 쓰는게 좀 낭비임. 
 ---
 
 ## 비교 분석

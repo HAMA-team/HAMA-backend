@@ -44,10 +44,10 @@ class MarketAnalyzer:
         """
         # 1. 거시경제 데이터 수집
         if not macro_data:
-            macro_data = await bok_service.get_macro_indicators()
+            macro_data = bok_service.get_macro_indicators()
 
         # 2. 섹터 성과 데이터 수집
-        sector_ranking = await sector_data_service.get_sector_ranking(days=30)
+        sector_ranking = sector_data_service.get_sector_ranking(days=30)
 
         # 3. LLM을 사용한 시장 사이클 분석
         cycle_analysis = await self._analyze_with_llm(macro_data, sector_ranking)

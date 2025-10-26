@@ -164,7 +164,7 @@ class KISService:
         """
         # 캐시에서 토큰 확인
         cache_key = f"kis_token:{self.env}:{self.app_key}"
-        cached_token = await cache_manager.get(cache_key)
+        cached_token = cache_manager.get(cache_key)
 
         if cached_token:
             logger.debug("✅ Using cached KIS access token")
@@ -216,7 +216,7 @@ class KISService:
             self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
             # Redis 캐싱 (TTL: expires_in - 5분)
-            await cache_manager.set(cache_key, access_token, ttl=max(expires_in - 300, 60))
+            cache_manager.set(cache_key, access_token, ttl=max(expires_in - 300, 60))
 
             logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")
             return access_token
@@ -422,7 +422,7 @@ class KISService:
 
         # 캐싱 (10초 TTL)
         cache_key = f"kis_stock_price:{stock_code}"
-        cached = await cache_manager.get(cache_key)
+        cached = cache_manager.get(cache_key)
         if cached:
             logger.debug(f"✅ Using cached price for {stock_code}")
             return cached
@@ -454,7 +454,7 @@ class KISService:
         }
 
         # 캐싱 (10초 TTL)
-        await cache_manager.set(cache_key, response, ttl=10)
+        cache_manager.set(cache_key, response, ttl=10)
 
         logger.info(f"✅ Stock price fetched: {stock_code} = {response['current_price']:,}원")
         return response

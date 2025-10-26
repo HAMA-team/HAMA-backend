@@ -38,30 +38,30 @@ class CacheManager:
         """Redis가 사용 가능한지 확인"""
         return self._redis_client is not None
 
-    async def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Optional[Any]:
         """캐시에서 데이터 조회"""
         if self._is_redis_available():
-            return await self._get_from_redis(key)
+            return self._get_from_redis(key)
         else:
             return self._get_from_memory(key)
 
-    async def set(
+    def set(
         self, key: str, value: Any, ttl: int = 300
     ) -> bool:  # ttl in seconds
         """캐시에 데이터 저장"""
         if self._is_redis_available():
-            return await self._set_to_redis(key, value, ttl)
+            return self._set_to_redis(key, value, ttl)
         else:
             return self._set_to_memory(key, value, ttl)
 
-    async def delete(self, key: str) -> bool:
+    def delete(self, key: str) -> bool:
         """캐시에서 데이터 삭제"""
         if self._is_redis_available():
-            return await self._delete_from_redis(key)
+            return self._delete_from_redis(key)
         else:
             return self._delete_from_memory(key)
 
-    async def exists(self, key: str) -> bool:
+    def exists(self, key: str) -> bool:
         """키가 존재하는지 확인"""
         if self._is_redis_available():
             return bool(self._redis_client.exists(key))
@@ -75,7 +75,7 @@ class CacheManager:
             return True
 
     # Redis 메서드
-    async def _get_from_redis(self, key: str) -> Optional[Any]:
+    def _get_from_redis(self, key: str) -> Optional[Any]:
         """Redis에서 데이터 조회"""
         try:
             value = self._redis_client.get(key)
@@ -86,7 +86,7 @@ class CacheManager:
             print(f"Redis get 에러: {e}")
             return None
 
-    async def _set_to_redis(self, key: str, value: Any, ttl: int) -> bool:
+    def _set_to_redis(self, key: str, value: Any, ttl: int) -> bool:
         """Redis에 데이터 저장"""
         try:
             serialized = json.dumps(value, default=str)
@@ -96,7 +96,7 @@ class CacheManager:
             print(f"Redis set 에러: {e}")
             return False
 
-    async def _delete_from_redis(self, key: str) -> bool:
+    def _delete_from_redis(self, key: str) -> bool:
         """Redis에서 데이터 삭제"""
         try:
             self._redis_client.delete(key)

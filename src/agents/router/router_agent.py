@@ -8,7 +8,7 @@ Router의 역할:
 4. 사용자 프로파일 기반 개인화 설정
 """
 import logging
-from typing import Optional
+from typing import Optional, Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -49,6 +49,25 @@ class RoutingDecision(BaseModel):
 
     # 5. 근거
     reasoning: str = Field(description="판단 근거")
+
+    def __getitem__(self, item: str) -> Any:
+        """dict 호환을 위한 키 기반 접근 지원"""
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        """dict.get과 동일한 동작 제공"""
+        return getattr(self, item, default)
+
+    def keys(self):
+        return self.dict().keys()
+
+    def items(self):
+        return self.dict().items()
+
+    def values(self):
+        return self.dict().values()
 
 
 async def route_query(

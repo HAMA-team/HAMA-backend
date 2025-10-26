@@ -63,7 +63,7 @@ class SectorRotator:
 
         # 1. 섹터 성과 데이터 수집 (제공되지 않은 경우)
         if not sector_performance:
-            sector_performance = await sector_data_service.get_sector_performance(days=30)
+            sector_performance = sector_data_service.get_sector_performance(days=30)
 
         # 2. LLM 기반 섹터 비중 결정
         llm = get_llm(

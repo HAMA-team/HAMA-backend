@@ -173,7 +173,7 @@ async def apply_profile_update(
     logger.info(f"🔄 [MemoryDetector] 프로파일 업데이트 적용: {update.field} = {update.value}")
 
     try:
-        updated_profile = await user_profile_service.update_user_profile(
+        updated_profile = user_profile_service.update_user_profile(
             user_id=user_id,
             updates={update.field: update.value},
             db=db

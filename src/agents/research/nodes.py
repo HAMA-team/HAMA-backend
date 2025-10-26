@@ -147,7 +147,6 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
         logger.info(f"✅ [Research/Collect] 데이터 수집 완료")
 
         return {
-            **state,
             "stock_code": stock_code,
             "price_data": price_data,
             "financial_data": financial_data,
@@ -157,7 +156,6 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
     except Exception as e:
         logger.error(f"❌ [Research/Collect] 에러: {e}")
         return {
-            **state,
             "error": str(e)
         }
 
@@ -220,12 +218,8 @@ JSON 형식으로:
             analysis = safe_json_parse(content, "Research/Bull")
             logger.info(f"✅ [Research/Bull] 강세 분석 완료")
 
-            # Supervisor 호환성: messages 전파
-            messages = list(state.get("messages", []))
-
             return {
                 "bull_analysis": analysis,
-                "messages": messages,
             }
         except Exception as e:
             retry_seconds = _extract_retry_delay(e)
@@ -302,12 +296,8 @@ JSON 형식으로:
             analysis = safe_json_parse(content, "Research/Bear")
             logger.info(f"✅ [Research/Bear] 약세 분석 완료")
 
-            # Supervisor 호환성: messages 전파
-            messages = list(state.get("messages", []))
-
             return {
                 "bear_analysis": analysis,
-                "messages": messages,
             }
         except Exception as e:
             retry_seconds = _extract_retry_delay(e)
@@ -380,18 +370,14 @@ async def consensus_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"✅ [Research/Consensus] 최종 의견: {recommendation}")
 
-    messages = list(state.get("messages", []))
-    messages.append(
-        AIMessage(
-            content=(
-                f"추천: {recommendation} (목표가 {target_price:,}원, 현재가 {current_price:,}원). "
-                f"상승여력 {upside:.1%}, 신뢰도 {confidence}/5."
-            )
+    message = AIMessage(
+        content=(
+            f"추천: {recommendation} (목표가 {target_price:,}원, 현재가 {current_price:,}원). "
+            f"상승여력 {upside:.1%}, 신뢰도 {confidence}/5."
         )
     )
 
     return {
-        **state,
         "consensus": consensus,
-        "messages": messages,
+        "messages": [message],
     }

@@ -11,7 +11,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.models.database import Base, engine, init_db
-from src.models.user import User, UserProfile, UserPreference
+from src.models.user import User, UserPreference
+from src.models.user_profile import UserProfile
 from src.models.stock import Stock, StockPrice, FinancialStatement, Disclosure, News
 from src.models.portfolio import Portfolio, Position, Transaction, PortfolioSnapshot
 from src.models.agent import (

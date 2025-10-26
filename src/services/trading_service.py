@@ -47,7 +47,7 @@ class TradingService:
         notes: Optional[str] = None,
     ) -> Dict[str, Any]:
         resolved_portfolio_id = await portfolio_service.resolve_portfolio_id(
-            user_id=user_id,
+            user_id=user_id or settings.DEMO_USER_ID,
             portfolio_id=portfolio_id,
         )
         if not resolved_portfolio_id:

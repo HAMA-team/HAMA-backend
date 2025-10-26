@@ -7,10 +7,11 @@ import json
 import logging
 from typing import Dict, Any, Optional
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage
 
+from langchain_core.prompts import ChatPromptTemplate
 from src.config.settings import settings
+from src.utils.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +127,27 @@ async def personalize_response(
         ("human", "사용자에게 맞게 답변을 작성해주세요.")
     ])
 
-    # LLM 호출
-    llm = ChatOpenAI(
-        model="gpt-4o",
+    def _serialize(value: Any) -> Any:
+        """
+        LangChain 메시지 등 JSON 직렬화 불가 객체를 안전한 형태로 변환
+        """
+        if isinstance(value, BaseMessage):
+            return {
+                "type": value.type,
+                "content": value.content,
+            }
+        if isinstance(value, dict):
+            return {key: _serialize(val) for key, val in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_serialize(item) for item in value]
+        return value
+
+    serializable_results = _serialize(agent_results)
+
+    # LLM 호출 (환경에 맞는 provider/model 사용)
+    llm = get_llm(
         temperature=0.3,
-        api_key=settings.OPENAI_API_KEY
+        model=settings.llm_model_name,
     )
 
     try:
@@ -141,7 +158,7 @@ async def personalize_response(
                 wants_explanations="예" if wants_explanations else "아니오",
                 wants_analogies="예" if wants_analogies else "아니오",
                 depth_level=depth_level,
-                agent_results=json.dumps(agent_results, ensure_ascii=False, indent=2)
+                agent_results=json.dumps(serializable_results, ensure_ascii=False, indent=2)
             )
         )
 
@@ -163,7 +180,7 @@ async def personalize_response(
         logger.error(f"❌ [Aggregator] 에러: {e}")
 
         # Fallback: 원본 결과 반환
-        fallback_response = json.dumps(agent_results, ensure_ascii=False, indent=2)
+        fallback_response = json.dumps(serializable_results, ensure_ascii=False, indent=2)
 
         return {
             "success": False,
