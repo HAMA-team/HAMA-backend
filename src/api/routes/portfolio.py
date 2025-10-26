@@ -18,6 +18,8 @@ from src.services import (
     portfolio_optimizer,
     portfolio_service,
 )
+from src.schemas.portfolio import PortfolioChartData, StockChartData
+from src.data.stock_sectors import get_sector
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -358,6 +360,117 @@ async def get_portfolio_performance(portfolio_id: str):
     }
 
     return response
+
+
+@router.get("/chart-data", response_model=PortfolioChartData)
+async def get_portfolio_chart_data():
+    """
+    포트폴리오 차트용 데이터
+
+    Frontend Recharts 연동을 위한 단순화된 데이터 구조:
+    - Treemap: 종목별 비중 (weight)
+    - Pie Chart: 섹터별 비중 (sectors)
+    - Bar Chart: 수익률 순위 (return_percent)
+    """
+    # 포트폴리오 스냅샷 조회
+    snapshot = await portfolio_service.get_portfolio_snapshot()
+
+    if snapshot is None or not (snapshot.portfolio_data or {}).get("holdings"):
+        # KIS 동기화 시도
+        try:
+            snapshot = await portfolio_service.sync_with_kis()
+        except (KISAPIError, KISAuthError, PortfolioNotFoundError) as exc:
+            logger.warning("KIS 동기화 실패: %s", exc)
+        except Exception as exc:
+            logger.exception("KIS 동기화 중 예기치 못한 오류: %s", exc)
+
+    # 빈 포트폴리오 반환
+    if snapshot is None or snapshot.portfolio_data is None:
+        return PortfolioChartData(
+            stocks=[],
+            total_value=0.0,
+            total_return=0.0,
+            total_return_percent=0.0,
+            cash=0.0,
+            sectors={"현금": 1.0}
+        )
+
+    portfolio_data = snapshot.portfolio_data or {}
+    holdings_data: List[Dict[str, Any]] = portfolio_data.get("holdings") or []
+
+    total_value = _float(portfolio_data.get("total_value"))
+    invested_amount = _float(portfolio_data.get("invested_amount"))
+    cash = _float(portfolio_data.get("cash_balance"))
+
+    # 총 수익률 계산
+    if invested_amount > 0:
+        total_return = total_value - invested_amount
+        total_return_percent = (total_return / invested_amount) * 100.0
+    else:
+        total_return = 0.0
+        total_return_percent = 0.0
+
+    # 차트 데이터 생성
+    stocks_data: List[StockChartData] = []
+    sector_weights: Dict[str, float] = {}
+
+    for holding in holdings_data:
+        stock_code = holding.get("stock_code") or ""
+
+        # 현금 제외
+        if stock_code.upper() == "CASH":
+            continue
+
+        quantity = int(holding.get("quantity") or 0)
+        avg_price = _float(holding.get("average_price"))
+        current_price = _float(holding.get("current_price"), avg_price)
+        market_value = current_price * quantity
+
+        # 비중 계산
+        weight = market_value / total_value if total_value > 0 else 0.0
+
+        # 수익률 계산
+        cost_basis = avg_price * quantity
+        if cost_basis > 0:
+            return_percent = ((market_value - cost_basis) / cost_basis) * 100.0
+        else:
+            return_percent = 0.0
+
+        # 섹터 정보 (Mock 데이터)
+        sector = get_sector(stock_code)
+
+        stock_chart_data = StockChartData(
+            stock_code=stock_code,
+            stock_name=str(holding.get("stock_name") or stock_code),
+            quantity=quantity,
+            current_price=current_price,
+            purchase_price=avg_price,
+            weight=round(weight, 4),
+            return_percent=round(return_percent, 2),
+            sector=sector
+        )
+
+        stocks_data.append(stock_chart_data)
+
+        # 섹터별 비중 집계
+        sector_weights[sector] = sector_weights.get(sector, 0.0) + weight
+
+    # 현금 비중 추가
+    if total_value > 0:
+        cash_weight = cash / total_value
+        sector_weights["현금"] = round(cash_weight, 4)
+
+    # 섹터 비중 반올림
+    sector_weights = {k: round(v, 4) for k, v in sector_weights.items()}
+
+    return PortfolioChartData(
+        stocks=stocks_data,
+        total_value=total_value,
+        total_return=total_return,
+        total_return_percent=round(total_return_percent, 2),
+        cash=cash,
+        sectors=sector_weights
+    )
 
 
 @router.post("/{portfolio_id}/rebalance")

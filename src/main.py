@@ -8,7 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.api.routes import chat, dashboard, portfolio, stocks
+from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream
+from src.api.middleware.logging import RequestLoggingMiddleware
+from src.api.error_handlers import setup_error_handlers
 from src.config.settings import settings
 from src.models.database import SessionLocal, init_db
 from src.services import init_kis_service
@@ -45,6 +47,9 @@ app = FastAPI(
     openapi_tags=tags_metadata,
 )
 
+# Logging middleware (요청/응답 추적)
+app.add_middleware(RequestLoggingMiddleware)
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +58,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 전역 에러 핸들러 등록
+setup_error_handlers(app)
 
 # Ensure database schema is present (noop if already created)
 try:
@@ -64,6 +72,7 @@ except SQLAlchemyError:
 api_prefix = f"/api/{settings.API_VERSION}"
 
 app.include_router(chat.router, prefix=f"{api_prefix}/chat", tags=["chat"])
+app.include_router(multi_agent_stream.router, prefix=f"{api_prefix}/chat", tags=["chat"])  # 멀티 에이전트 스트리밍
 app.include_router(dashboard.router, prefix=f"{api_prefix}/dashboard", tags=["dashboard"])
 app.include_router(portfolio.router, prefix=f"{api_prefix}/portfolio", tags=["portfolio"])
 app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"])
