@@ -6,16 +6,24 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 from src.agents.graph_master import build_graph
 from langgraph.types import Command
 from langchain_core.messages import HumanMessage, AIMessage
-from src.services import chat_history_service
+from src.services import chat_history_service, portfolio_service
+from src.services.portfolio_preview_service import (
+    calculate_portfolio_preview,
+    calculate_weight_change
+)
+from src.schemas.hitl import ApprovalRequest as HITLApprovalRequest
 from src.config.settings import settings
 
 router = APIRouter()
 
-DEFAULT_USER_UUID = uuid.uuid5(uuid.NAMESPACE_DNS, "user_001")
+DEMO_USER_UUID = settings.demo_user_uuid
 
 
 def _is_test_mode() -> bool:
@@ -125,7 +133,7 @@ async def _mock_chat_response(
     )
     await chat_history_service.upsert_session(
         conversation_id=conversation_uuid,
-        user_id=DEFAULT_USER_UUID,
+        user_id=DEMO_USER_UUID,
         automation_level=request.automation_level,
         metadata=message_metadata,
         summary=assistant_message.split("\n")[0],
@@ -183,7 +191,7 @@ async def _mock_approval_response(approval: "ApprovalRequest") -> "ApprovalRespo
     )
     await chat_history_service.upsert_session(
         conversation_id=conversation_uuid,
-        user_id=DEFAULT_USER_UUID,
+        user_id=DEMO_USER_UUID,
         automation_level=approval.automation_level,
         metadata=metadata,
         summary=summary,
@@ -218,7 +226,7 @@ async def chat(request: ChatRequest):
         # Ensure session exists and store the incoming user message
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
-            user_id=DEFAULT_USER_UUID,
+            user_id=DEMO_USER_UUID,
             automation_level=request.automation_level,
         )
         await chat_history_service.append_message(
@@ -243,7 +251,7 @@ async def chat(request: ChatRequest):
         # Initial state - Langgraph 표준: messages 사용
         initial_state = {
             "messages": [HumanMessage(content=request.message)],
-            "user_id": str(DEFAULT_USER_UUID),
+            "user_id": str(DEMO_USER_UUID),
             "conversation_id": conversation_id,
             "automation_level": request.automation_level,
             "intent": None,
@@ -276,13 +284,70 @@ async def chat(request: ChatRequest):
                 interrupt_task = interrupts[0]
                 interrupt_info = interrupt_task.interrupts[0] if interrupt_task.interrupts else None
 
+            # Interrupt 데이터 파싱
+            interrupt_data = interrupt_info.value if interrupt_info else {}
+
+            # 기본 approval_request (기존 형식)
             approval_request = {
                 "type": "trade_approval",
                 "thread_id": conversation_id,
                 "pending_node": state.next[0] if state.next else None,
-                "interrupt_data": interrupt_info.value if interrupt_info else {},
+                "interrupt_data": interrupt_data,
                 "message": "매매 주문을 승인하시겠습니까?",
             }
+
+            # 매매 주문인 경우 상세 정보 계산
+            if interrupt_data and interrupt_data.get("action") in ["buy", "sell"]:
+                try:
+                    # 포트폴리오 조회
+                    snapshot = await portfolio_service.get_portfolio_snapshot()
+
+                    if snapshot and snapshot.portfolio_data:
+                        portfolio_data = snapshot.portfolio_data
+                        holdings = portfolio_data.get("holdings", [])
+                        total_value = float(portfolio_data.get("total_value", 0))
+                        cash = float(portfolio_data.get("cash_balance", 0))
+
+                        # 현재/예상 비중 계산
+                        current_weight, expected_weight = await calculate_weight_change(
+                            current_holdings=holdings,
+                            new_order=interrupt_data,
+                            total_value=total_value,
+                            cash=cash
+                        )
+
+                        # 예상 포트폴리오 미리보기
+                        portfolio_preview = await calculate_portfolio_preview(
+                            current_holdings=holdings,
+                            new_order=interrupt_data,
+                            total_value=total_value,
+                            cash=cash
+                        )
+
+                        # 리스크 경고 생성
+                        risk_warning = None
+                        if expected_weight > 0.4:
+                            risk_warning = f"⚠️ 단일 종목 {expected_weight*100:.1f}% 집중 - 분산 투자를 권장합니다"
+
+                        # HITLApprovalRequest 구조로 변환
+                        approval_request = HITLApprovalRequest(
+                            action=interrupt_data.get("action", "buy"),
+                            stock_code=interrupt_data.get("stock_code", ""),
+                            stock_name=interrupt_data.get("stock_name", ""),
+                            quantity=interrupt_data.get("quantity", 0),
+                            price=interrupt_data.get("price", 0),
+                            total_amount=interrupt_data.get("total_amount", 0),
+                            current_weight=current_weight,
+                            expected_weight=expected_weight,
+                            risk_warning=risk_warning,
+                            alternatives=None,  # TODO: Risk Agent에서 생성
+                            expected_portfolio_preview=portfolio_preview.dict() if portfolio_preview else None
+                        ).dict()
+
+                except Exception as e:
+                    logger.warning(f"HITL 상세 정보 계산 실패: {e}")
+                    # 실패 시 기본 형식 유지
+
             message_text = "🔔 사용자 승인이 필요합니다."
 
             await chat_history_service.append_message(
@@ -293,7 +358,7 @@ async def chat(request: ChatRequest):
             )
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
-                user_id=DEFAULT_USER_UUID,
+                user_id=DEMO_USER_UUID,
                 automation_level=request.automation_level,
                 metadata={"interrupted": True},
             )
@@ -400,7 +465,7 @@ async def chat(request: ChatRequest):
         )
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
-            user_id=DEFAULT_USER_UUID,
+            user_id=DEMO_USER_UUID,
             automation_level=request.automation_level,
             metadata=message_metadata,
             summary=data.get("summary"),
@@ -470,7 +535,7 @@ async def delete_chat_history(conversation_id: str):
 @router.get("/sessions", response_model=List[ChatSessionSummary])
 async def list_chat_sessions(limit: int = Query(50, ge=1, le=100)):
     """최근 활동 순으로 정렬된 채팅 세션 목록을 반환합니다."""
-    summaries = await chat_history_service.list_sessions(limit=limit)
+    summaries = await chat_history_service.list_sessions(user_id=DEMO_USER_UUID, limit=limit)
 
     response: List[ChatSessionSummary] = []
     for summary in summaries:
@@ -550,7 +615,7 @@ async def approve_action(approval: ApprovalRequest):
 
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
-            user_id=DEFAULT_USER_UUID,
+            user_id=DEMO_USER_UUID,
             automation_level=approval.automation_level,
         )
         await chat_history_service.append_message(
@@ -585,7 +650,7 @@ async def approve_action(approval: ApprovalRequest):
         if approval.decision == "approved":
             resume_value = {
                 "approved": True,
-                "user_id": str(DEFAULT_USER_UUID),
+                "user_id": str(DEMO_USER_UUID),
                 "notes": approval.user_notes,
             }
 
@@ -601,7 +666,7 @@ async def approve_action(approval: ApprovalRequest):
             )
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
-                user_id=DEFAULT_USER_UUID,
+                user_id=DEMO_USER_UUID,
                 automation_level=approval.automation_level,
                 metadata={"decision": "approved"},
                 summary=final_response.get("summary"),
@@ -635,7 +700,7 @@ async def approve_action(approval: ApprovalRequest):
             )
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
-                user_id=DEFAULT_USER_UUID,
+                user_id=DEMO_USER_UUID,
                 automation_level=approval.automation_level,
                 metadata={"decision": "rejected"},
                 summary="사용자가 거부함",
@@ -651,7 +716,7 @@ async def approve_action(approval: ApprovalRequest):
         if approval.decision == "modified":
             resume_value = {
                 "approved": True,
-                "user_id": str(DEFAULT_USER_UUID),
+                "user_id": str(DEMO_USER_UUID),
                 "modifications": approval.modifications,
                 "notes": approval.user_notes,
             }
@@ -668,7 +733,7 @@ async def approve_action(approval: ApprovalRequest):
             )
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
-                user_id=DEFAULT_USER_UUID,
+                user_id=DEMO_USER_UUID,
                 automation_level=approval.automation_level,
                 metadata={"decision": "modified"},
                 summary=final_response.get("summary"),

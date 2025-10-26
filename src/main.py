@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream
+from src.api.routes import settings as settings_router
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.error_handlers import setup_error_handlers
 from src.config.settings import settings
@@ -31,6 +32,10 @@ tags_metadata = [
     {
         "name": "stocks",
         "description": "종목 검색 및 시세 조회와 같은 주식 데이터 관련 API입니다.",
+    },
+    {
+        "name": "settings",
+        "description": "사용자 설정 (자동화 레벨 등)을 관리하는 엔드포인트입니다.",
     },
 ]
 
@@ -76,6 +81,7 @@ app.include_router(multi_agent_stream.router, prefix=f"{api_prefix}/chat", tags=
 app.include_router(dashboard.router, prefix=f"{api_prefix}/dashboard", tags=["dashboard"])
 app.include_router(portfolio.router, prefix=f"{api_prefix}/portfolio", tags=["portfolio"])
 app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"])
+app.include_router(settings_router.router, prefix=f"{api_prefix}/settings", tags=["settings"])
 
 
 @app.on_event("startup")
