@@ -1,9 +1,10 @@
 """
 Database configuration and session management
 """
+from contextlib import contextmanager
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.engine import Engine
 from src.config.settings import settings
 
@@ -35,6 +36,16 @@ def get_db():
     Database session dependency for FastAPI
     Usage: db: Session = Depends(get_db)
     """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+@contextmanager
+def get_db_context() -> Session:
+    """동기 컨텍스트 매니저로 DB 세션 제공"""
     db = SessionLocal()
     try:
         yield db

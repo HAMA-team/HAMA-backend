@@ -56,8 +56,8 @@ async def generate_chat_stream(
 
     try:
         # 1. 사용자 프로파일 로드
-        async with get_db_context() as db:
-            user_profile = await user_profile_service.get_user_profile(user_id, db)
+        with get_db_context() as db:
+            user_profile = user_profile_service.get_user_profile(user_id, db)
 
         yield f"event: user_profile\ndata: {json.dumps({'profile': user_profile})}\n\n"
 

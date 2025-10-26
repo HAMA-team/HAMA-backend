@@ -7,14 +7,12 @@ import logging
 import uuid
 from typing import List, Optional, Dict, Any
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.services.profile_generator import generate_ai_profile
 from src.services.user_profile_service import user_profile_service
 from src.models.database import get_db_context
-from src.models.user_profile import UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -140,13 +138,13 @@ async def create_profile_from_screening(request: OnboardingRequest):
         )
 
     # 4. DB 저장
-    async with get_db_context() as db:
+    with get_db_context() as db:
         try:
             # 기존 프로파일 확인
-            existing_profile = await user_profile_service.get_user_profile(user_uuid, db)
+            existing_profile = user_profile_service.get_user_profile(user_uuid, db)
 
             # 업데이트
-            updated_profile = await user_profile_service.update_user_profile(
+            updated_profile = user_profile_service.update_user_profile(
                 user_id=user_uuid,
                 updates=generated_profile,
                 db=db
@@ -203,9 +201,9 @@ async def get_investment_profile(user_id: str):
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid user_id format")
 
-    async with get_db_context() as db:
+    with get_db_context() as db:
         try:
-            profile = await user_profile_service.get_user_profile(user_uuid, db)
+            profile = user_profile_service.get_user_profile(user_uuid, db)
         except Exception as e:
             logger.error(f"❌ [Onboarding] 프로파일 조회 실패: {e}")
             raise HTTPException(
