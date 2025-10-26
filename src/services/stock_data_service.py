@@ -1,8 +1,8 @@
-"""주가 데이터 서비스 (FinanceDataReader)"""
+"""주가 데이터 서비스 (FinanceDataReader + Realtime Cache)"""
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import FinanceDataReader as fdr
 import pandas as pd
 
@@ -15,11 +15,68 @@ class StockDataService:
     주가 데이터 서비스
 
     - FinanceDataReader를 사용한 주가 데이터 조회
+    - 실시간 데이터는 Redis 캐시 우선 조회
     - 캐싱 지원
     """
 
     def __init__(self):
         self.cache = cache_manager
+        # realtime_cache_service는 순환 import 방지를 위해 메서드 내에서 import
+
+    async def get_realtime_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """
+        실시간 주가 조회 (Redis 캐시 우선)
+
+        Args:
+            stock_code: 종목 코드 (예: "005930")
+
+        Returns:
+            {
+                "stock_code": "005930",
+                "stock_name": "삼성전자",
+                "price": 72000,
+                "change": 1000,
+                "change_rate": 1.41,
+                "volume": 15234567,
+                "timestamp": "2025-10-27T..."
+            }
+            없으면 None
+        """
+        # 순환 import 방지
+        from src.services.realtime_cache_service import realtime_cache_service
+
+        # 1. Redis 캐시 우선 조회
+        cached = await realtime_cache_service.get_cached_price(stock_code)
+
+        if cached:
+            print(f"✅ [Realtime] 캐시 히트: {stock_code}")
+            return cached
+
+        # 2. 캐시 미스 → KIS API Fallback
+        print(f"⚠️ [Realtime] 캐시 미스 → API 호출: {stock_code}")
+
+        try:
+            from src.services.kis_service import kis_service
+
+            price_data = await kis_service.get_stock_price(stock_code)
+
+            if price_data:
+                # API 응답을 캐시 형식으로 변환
+                return {
+                    "stock_code": stock_code,
+                    "stock_name": price_data.get("stock_name", ""),
+                    "price": price_data.get("current_price", 0),
+                    "change": price_data.get("change_price", 0),
+                    "change_rate": price_data.get("change_rate", 0.0),
+                    "volume": price_data.get("volume", 0),
+                    "timestamp": datetime.now().isoformat(),
+                }
+            else:
+                return None
+
+        except Exception as e:
+            print(f"❌ [Realtime] API 호출 실패: {stock_code} - {e}")
+            return None
 
     async def get_stock_price(
         self, stock_code: str, days: int = 30

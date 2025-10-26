@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     # Caching (TTL in seconds)
     CACHE_TTL_MARKET_DATA: int = 60  # 개별 종목 주가 데이터
     CACHE_TTL_MARKET_INDEX: int = 3600  # 시장 지수 (KOSPI, KOSDAQ 등) - Rate Limit 방지
+    CACHE_TTL_REALTIME_PRICE: int = 120  # 실시간 주가 (Celery Worker 갱신)
     CACHE_TTL_NEWS: int = 300
     CACHE_TTL_FINANCIAL_STATEMENTS: int = 86400
     CACHE_TTL_ANALYSIS_RESULTS: int = 3600
@@ -112,9 +113,11 @@ class Settings(BaseSettings):
     LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
     LANGCHAIN_PROJECT: str = "hama-backend"
 
-    # Celery (Phase 2)
+    # Celery (실시간 데이터 수집)
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    CELERY_REALTIME_UPDATE_INTERVAL: int = 60  # 실시간 데이터 업데이트 주기 (초)
+    CELERY_BATCH_SIZE: int = 50  # 배치당 종목 수 (Rate Limit 관리)
 
     # Monitoring (Phase 2)
     PROMETHEUS_PORT: int = 8001
