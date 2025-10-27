@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream, artifacts
+from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream, artifacts, approvals
 from src.api.routes import settings as settings_router
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.error_handlers import setup_error_handlers
@@ -40,6 +40,10 @@ tags_metadata = [
     {
         "name": "artifacts",
         "description": "AI 생성 콘텐츠 저장 및 관리 (분석 결과, 포트폴리오, 전략 등)를 위한 엔드포인트입니다.",
+    },
+    {
+        "name": "approvals",
+        "description": "승인 이력 조회 및 관리 (매매, 리밸런싱 등 HITL 승인 기록)를 위한 엔드포인트입니다.",
     },
 ]
 
@@ -87,6 +91,7 @@ app.include_router(portfolio.router, prefix=f"{api_prefix}/portfolio", tags=["po
 app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"])
 app.include_router(settings_router.router, prefix=f"{api_prefix}/settings", tags=["settings"])
 app.include_router(artifacts.router, prefix=f"{api_prefix}/artifacts", tags=["artifacts"])
+app.include_router(approvals.router, prefix=f"{api_prefix}/approvals", tags=["approvals"])
 
 
 @app.on_event("startup")
