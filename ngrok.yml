@@ -1,0 +1,15 @@
+# ngrok 설정 파일 (선택사항)
+# ngrok 계정에서 authtoken을 받아서 설정하세요
+# https://dashboard.ngrok.com/get-started/your-authtoken
+
+# authtoken: YOUR_AUTH_TOKEN_HERE
+
+version: "2"
+tunnels:
+  hama-backend:
+    addr: 8000
+    proto: http
+    # 무료 계정은 bind_tls: true만 가능
+    bind_tls: true
+    # 유료 계정일 경우 커스텀 도메인 설정 가능
+    # domain: hama.ngrok.io
