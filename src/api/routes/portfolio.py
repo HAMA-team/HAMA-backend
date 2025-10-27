@@ -19,7 +19,8 @@ from src.services import (
     portfolio_service,
 )
 from src.schemas.portfolio import PortfolioChartData, StockChartData
-from src.data.stock_sectors import get_sector
+from src.data.stock_sectors import get_sector, get_sector_color
+from src.services.stock_data_service import stock_data_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -520,3 +521,177 @@ async def rebalance_portfolio(portfolio_id: str):
         "trades": trades,
         "message": "Generated rebalancing proposal",
     }
+
+
+@router.get("/chart-data")
+async def get_portfolio_chart_data(portfolio_id: str):
+    """
+    포트폴리오 차트용 데이터 (Treemap, Pie Chart)
+
+    **Frontend 연동:**
+    - Treemap: 종목별 비중 + 수익률 색상
+    - Pie Chart: 섹터별 비중
+
+    **Response:**
+    ```json
+    {
+        "stocks": [
+            {
+                "stock_code": "005930",
+                "stock_name": "삼성전자",
+                "quantity": 10,
+                "current_price": 76300,
+                "purchase_price": 70000,
+                "weight": 0.35,
+                "return_percent": 9.0,
+                "sector": "반도체",
+                "color": "#10B981"
+            }
+        ],
+        "total_value": 10000000,
+        "total_return": 900000,
+        "total_return_percent": 9.0,
+        "cash": 1000000,
+        "cash_weight": 0.1,
+        "sectors": {
+            "반도체": {
+                "weight": 0.45,
+                "value": 4500000,
+                "color": "#8B5CF6"
+            },
+            "배터리": {
+                "weight": 0.30,
+                "value": 3000000,
+                "color": "#F59E0B"
+            },
+            "현금": {
+                "weight": 0.10,
+                "value": 1000000,
+                "color": "#6B7280"
+            }
+        }
+    }
+    ```
+    """
+    try:
+        # 1. 포트폴리오 조회
+        snapshot = await portfolio_service.get_snapshot(portfolio_id)
+
+        if not snapshot:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Portfolio {portfolio_id} not found"
+            )
+
+        portfolio_data = snapshot.portfolio_data
+        holdings = portfolio_data.get("holdings", [])
+        cash_balance = _float(portfolio_data.get("cash_balance", 0))
+
+        # 2. 실시간 주가 조회 (Redis 캐시 우선)
+        stocks_data = []
+        total_investment = 0.0
+        total_market_value = 0.0
+        sector_weights = {}
+
+        for holding in holdings:
+            stock_code = holding.get("stock_code")
+            quantity = holding.get("quantity", 0)
+            avg_price = _float(holding.get("average_price", 0))
+
+            # 실시간 주가 조회 (Realtime Cache 활용)
+            price_data = await stock_data_service.get_realtime_price(stock_code)
+
+            if price_data:
+                current_price = _float(price_data.get("price", 0))
+            else:
+                # Fallback: FinanceDataReader
+                logger.warning(f"Realtime price not found for {stock_code}, using fallback")
+                current_price = _float(holding.get("current_price", avg_price))
+
+            # 계산
+            market_value = quantity * current_price
+            investment = quantity * avg_price
+            return_percent = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0.0
+
+            total_investment += investment
+            total_market_value += market_value
+
+            # 섹터 정보
+            sector = get_sector(stock_code)
+
+            stocks_data.append({
+                "stock_code": stock_code,
+                "stock_name": holding.get("stock_name", stock_code),
+                "quantity": quantity,
+                "current_price": current_price,
+                "purchase_price": avg_price,
+                "market_value": market_value,
+                "return_percent": round(return_percent, 2),
+                "sector": sector,
+            })
+
+            # 섹터별 비중 집계
+            if sector not in sector_weights:
+                sector_weights[sector] = {"value": 0.0, "weight": 0.0}
+            sector_weights[sector]["value"] += market_value
+
+        # 3. 총 평가금액
+        total_value = total_market_value + cash_balance
+
+        # 4. 주식별 비중 및 색상 추가
+        for stock in stocks_data:
+            stock["weight"] = round(stock["market_value"] / total_value, 4) if total_value > 0 else 0.0
+            # 수익률에 따라 색상 결정
+            if stock["return_percent"] > 10:
+                stock["color"] = "#10B981"  # Green (높은 수익)
+            elif stock["return_percent"] > 0:
+                stock["color"] = "#34D399"  # Light Green (플러스)
+            elif stock["return_percent"] > -10:
+                stock["color"] = "#FBBF24"  # Yellow (작은 손실)
+            else:
+                stock["color"] = "#EF4444"  # Red (큰 손실)
+
+        # 5. 섹터별 비중 및 색상 계산
+        for sector in sector_weights:
+            sector_weights[sector]["weight"] = round(
+                sector_weights[sector]["value"] / total_value, 4
+            ) if total_value > 0 else 0.0
+            sector_weights[sector]["color"] = get_sector_color(sector)
+
+        # 현금 추가
+        cash_weight = round(cash_balance / total_value, 4) if total_value > 0 else 0.0
+        sector_weights["현금"] = {
+            "weight": cash_weight,
+            "value": cash_balance,
+            "color": get_sector_color("현금")
+        }
+
+        # 6. 총 수익률 계산
+        total_return = total_market_value - total_investment
+        total_return_percent = (
+            (total_return / total_investment) * 100
+            if total_investment > 0 else 0.0
+        )
+
+        return {
+            "stocks": stocks_data,
+            "total_value": total_value,
+            "total_return": total_return,
+            "total_return_percent": round(total_return_percent, 2),
+            "cash": cash_balance,
+            "cash_weight": cash_weight,
+            "sectors": sector_weights,
+            "updated_at": snapshot.timestamp.isoformat() if snapshot.timestamp else None
+        }
+
+    except PortfolioNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Portfolio {portfolio_id} not found"
+        )
+    except Exception as e:
+        logger.error(f"Error getting portfolio chart data: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get portfolio chart data: {str(e)}"
+        )

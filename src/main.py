@@ -49,15 +49,34 @@ tags_metadata = [
 
 # Create FastAPI app
 app = FastAPI(
-    title=f"{settings.APP_NAME} 백엔드 API",
+    title="HAMA API - Human-in-the-Loop AI 투자 시스템",
     description=(
-        "HAMA 투자 도우미의 백엔드 API 문서입니다.\n\n"
-        "채팅 기반 분석, 포트폴리오 관리, 대시보드 통계를 비롯한 핵심 기능을 "
-        "Swagger UI에서 바로 확인하고 테스트할 수 있습니다."
+        "# HAMA API Documentation\n\n"
+        "Human-in-the-Loop AI 투자 시스템 Backend API\n\n"
+        "## 주요 기능\n"
+        "- **Chat Interface**: AI 대화 및 실시간 Thinking Trace 스트리밍\n"
+        "- **HITL (Human-in-the-Loop)**: 매매 승인 시스템\n"
+        "- **Portfolio Management**: 포트폴리오 조회 및 차트 데이터\n"
+        "- **Real-time Data**: Celery 기반 실시간 주가 캐싱\n\n"
+        "## 인증\n"
+        "Phase 1에서는 인증 없이 사용 가능합니다. (Phase 2에서 JWT 인증 추가 예정)\n\n"
+        "## 에러 코드\n"
+        "| Code | Message | HTTP Status |\n"
+        "|------|---------|-------------|\n"
+        "| `VALIDATION_ERROR` | 요청 데이터가 올바르지 않습니다 | 422 |\n"
+        "| `NOT_FOUND` | 리소스를 찾을 수 없습니다 | 404 |\n"
+        "| `RATE_LIMIT_EXCEEDED` | 요청이 너무 많습니다 | 429 |\n"
+        "| `INTERNAL_SERVER_ERROR` | 서버 오류 | 500 |\n\n"
+        "## 개발 환경\n"
+        "- **Backend**: http://localhost:8000\n"
+        "- **Swagger UI**: http://localhost:8000/docs\n"
+        "- **ReDoc**: http://localhost:8000/redoc\n"
     ),
     version=settings.API_VERSION,
     debug=settings.DEBUG,
     openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # Logging middleware (요청/응답 추적)
