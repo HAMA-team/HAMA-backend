@@ -165,7 +165,8 @@ if state.next:  # Interrupt 발생
 - **DART Open API** - 금융감독원 공시 시스템
 
 ### **DevOps**
-- **Docker** (예정) - 컨테이너화
+- **Docker & Docker Compose** ✅ - 컨테이너화
+- **Railway** ✅ - 클라우드 배포 (자동 CI/CD)
 - **pytest** - 테스트 프레임워크
 - **Git** - 버전 관리
 
@@ -173,8 +174,67 @@ if state.next:  # Interrupt 발생
 
 ## 🚀 빠른 시작
 
-### **1. 사전 요구사항**
+두 가지 방법으로 실행할 수 있습니다:
+- **Option A: Docker Compose** ⭐ (추천 - 5분 설정)
+- **Option B: 로컬 설치** (개발자용)
 
+### **Option A: Docker Compose로 실행** ⭐
+
+**장점:**
+- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, Redis, FastAPI, Celery)
+- ✅ 환경 격리
+- ✅ 팀원 온보딩 간편
+
+**1. 사전 요구사항**
+- Docker Desktop 설치 (https://www.docker.com/products/docker-desktop)
+- API 키 (Anthropic, DART 등)
+
+**2. 환경 변수 설정**
+```bash
+# .env 파일 생성
+cp .env.example .env
+
+# .env 파일 편집 (API 키 입력)
+# ANTHROPIC_API_KEY=your-key
+# DART_API_KEY=your-key
+# ...
+```
+
+**3. Docker Compose 실행**
+```bash
+# 모든 서비스 시작 (백그라운드)
+docker-compose up -d
+
+# 로그 확인
+docker-compose logs -f fastapi
+
+# 서비스 상태 확인
+docker-compose ps
+```
+
+**4. 접속**
+- FastAPI: http://localhost:8000
+- Swagger 문서: http://localhost:8000/docs
+- PostgreSQL: localhost:5432
+- Redis: localhost:6379
+
+**5. 중지/재시작**
+```bash
+# 중지
+docker-compose down
+
+# 재시작
+docker-compose restart
+
+# 전체 삭제 (데이터 포함)
+docker-compose down -v
+```
+
+---
+
+### **Option B: 로컬 설치**
+
+**사전 요구사항**
 - Python 3.12+
 - PostgreSQL 13+
 - Redis 6+
@@ -360,7 +420,7 @@ curl -X DELETE http://localhost:8000/api/v1/chat/history/abc123-def456
 
 ### **자세한 문서**
 
-- 📄 [프론트엔드 통합 가이드](docs/frontend-integration-guide.md) - React 예시 포함
+- 📄 [프론트엔드 통합 가이드](docs/frontend/frontend-integration-guide.md) - React 예시 포함
 - 📄 [API 빠른 참조](docs/api-quick-reference.md)
 - 🌐 [OpenAPI Swagger](http://localhost:8000/docs)
 
@@ -460,7 +520,7 @@ python tests/test_research_data_collection.py
 |------|------|
 | [PRD.md](docs/PRD.md) | 제품 요구사항 정의 |
 | [schema.md](docs/schema.md) | 데이터베이스 스키마 (19개 테이블) |
-| [frontend-integration-guide.md](docs/frontend-integration-guide.md) | 프론트엔드 통합 가이드 ⭐ |
+| [frontend-integration-guide.md](docs/frontend/frontend-integration-guide.md) | 프론트엔드 통합 가이드 ⭐ |
 | [api-quick-reference.md](docs/api-quick-reference.md) | API 빠른 참조 |
 | [CLAUDE.md](CLAUDE.md) | 개발 가이드라인 |
 
@@ -519,9 +579,42 @@ python tests/test_research_data_collection.py
 | Documentation | 🟢 90% | 프론트엔드 가이드 완성 |
 | Testing | 🟡 70% | E2E + API 테스트 |
 | Frontend | 🔴 0% | 개발 대기 중 |
-| Deployment | 🔴 0% | Phase 2 |
+| Deployment | 🟢 90% | Docker + Railway |
 
-**전체: 80%** 🎯
+**전체: 85%** 🎯
+
+---
+
+## 🚢 배포 (Railway)
+
+### **프로덕션 배포**
+
+Railway로 손쉽게 배포할 수 있습니다 (무료 티어 제공).
+
+**1단계: Railway 회원가입**
+- https://railway.app
+- GitHub 계정으로 로그인
+
+**2단계: 프로젝트 생성**
+- "New Project" → "Deploy from GitHub repo"
+- `HAMA-backend` 저장소 선택
+
+**3단계: 서비스 추가**
+- PostgreSQL 데이터베이스 추가
+- Redis 추가
+- FastAPI, Celery Worker, Celery Beat 배포
+
+**4단계: 환경 변수 설정**
+- Railway 대시보드에서 API 키 등록
+- `${{Postgres.DATABASE_URL}}` 형식으로 자동 연결
+
+**5단계: 배포 완료!**
+- 고정 URL: `https://hama-backend-production.up.railway.app`
+- HTTPS 자동 적용
+- GitHub Push → 자동 재배포
+
+**자세한 가이드:**
+📄 [Railway 배포 가이드](docs/deployment/railway-deployment.md)
 
 ---
 
