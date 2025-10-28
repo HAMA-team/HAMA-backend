@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # LLM APIs
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_MODEL: str = "gpt-4o-mini"  # .env에서 오버라이드 가능
     ANTHROPIC_API_KEY: str | None = None
     CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"
     GEMINI_API_KEY: str | None = None

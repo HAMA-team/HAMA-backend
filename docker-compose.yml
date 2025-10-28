@@ -60,6 +60,7 @@ services:
       - KIS_APP_KEY=${KIS_APP_KEY}
       - KIS_APP_SECRET=${KIS_APP_SECRET}
       - KIS_ACCOUNT_NUMBER=${KIS_ACCOUNT_NUMBER}
+      - CORS_ORIGINS=${CORS_ORIGINS}
     depends_on:
       postgres:
         condition: service_healthy

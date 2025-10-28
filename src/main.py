@@ -94,12 +94,15 @@ app = FastAPI(
 app.add_middleware(RequestLoggingMiddleware)
 
 # CORS middleware
+# Vercel 프리뷰 도메인을 위한 정규식 패턴 추가
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    allow_origin_regex=r"https://.*\.vercel\.app$",  # 모든 Vercel 프리뷰 허용
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=600,  # Preflight 캐싱 (10분)
 )
 
 # 전역 에러 핸들러 등록
