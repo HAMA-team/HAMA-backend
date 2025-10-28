@@ -13,7 +13,6 @@ from typing import Optional, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
 
 from src.config.settings import settings
@@ -182,27 +181,32 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
         ]
     )
 
-    # Router 전용 LLM 초기화 (설정에 따라 동적 선택)
+    # Router 전용 LLM 초기화 (OpenAI → Anthropic fallback)
     router_provider = settings.ROUTER_MODEL_PROVIDER.lower()
 
-    if router_provider == "anthropic":
-        llm = ChatAnthropic(
-            model=settings.ROUTER_MODEL,
-            temperature=0,
-            api_key=settings.ANTHROPIC_API_KEY,
-        )
-    elif router_provider == "google":
-        llm = ChatGoogleGenerativeAI(
-            model=settings.ROUTER_MODEL,
-            temperature=0,
-            google_api_key=settings.GEMINI_API_KEY,
-        )
-    else:  # openai (fallback)
-        llm = ChatOpenAI(
-            model=settings.ROUTER_MODEL,
-            temperature=0,
-            api_key=settings.OPENAI_API_KEY,
-        )
+    llm = None
+    if router_provider == "openai":
+        try:
+            llm = ChatOpenAI(
+                model=settings.ROUTER_MODEL,
+                temperature=0,
+                api_key=settings.OPENAI_API_KEY,
+            )
+            logger.info("🤖 [Router] OpenAI 모델 사용")
+        except Exception as e:
+            logger.warning(f"⚠️ [Router] OpenAI 초기화 실패, Anthropic으로 fallback: {e}")
+
+    if llm is None:  # OpenAI 실패 또는 anthropic 설정
+        try:
+            llm = ChatAnthropic(
+                model=settings.ROUTER_MODEL or "claude-3-5-sonnet-20241022",
+                temperature=0,
+                api_key=settings.ANTHROPIC_API_KEY,
+            )
+            logger.info("🤖 [Router] Anthropic 모델 사용")
+        except Exception as e:
+            logger.error(f"❌ [Router] Anthropic 초기화 실패: {e}")
+            raise RuntimeError("Router LLM 초기화 실패 (OpenAI, Anthropic 모두 실패)")
 
     structured_llm = llm.with_structured_output(RoutingDecision)
 
