@@ -269,13 +269,13 @@ class StockDataService:
         return results
 
     async def get_market_index(
-        self, index_code: str = "KOSPI", days: int = 60, max_retries: int = 3
+        self, index_name: str = "KOSPI", days: int = 60, max_retries: int = 3
     ) -> Optional[pd.DataFrame]:
         """
         시장 지수 데이터 조회 (pykrx 사용)
 
         Args:
-            index_code: 지수 코드 ("KOSPI", "KOSDAQ", "KRX100")
+            index_name: 지수 이름 ("KOSPI", "KOSDAQ", "KRX100")
             days: 조회 기간 (일)
             max_retries: 최대 재시도 횟수
 
@@ -285,8 +285,19 @@ class StockDataService:
         Raises:
             Exception: 모든 재시도 실패 시
         """
+        # 지수 이름 → 티커 코드 매핑
+        index_ticker_map = {
+            "KOSPI": "1001",
+            "KOSDAQ": "2001",
+            "KRX100": "1028",
+        }
+
+        ticker = index_ticker_map.get(index_name.upper())
+        if not ticker:
+            raise ValueError(f"지원하지 않는 지수: {index_name}. 사용 가능: {list(index_ticker_map.keys())}")
+
         # 캐시 키
-        cache_key = f"market_index:{index_code}:{days}"
+        cache_key = f"market_index:{index_name}:{days}"
 
         # 캐시 확인 (1시간 TTL - Rate Limit 방지)
         cached = self.cache.get(cache_key)
@@ -303,12 +314,12 @@ class StockDataService:
 
         for attempt in range(max_retries):
             try:
-                # pykrx.stock.get_index_ohlcv() 사용
+                # pykrx.stock.get_index_ohlcv() 사용 (티커 코드 사용)
                 df = await asyncio.to_thread(
                     krx_stock.get_index_ohlcv,
                     start_str,
                     end_str,
-                    index_code
+                    ticker
                 )
 
                 if df is not None and len(df) > 0:
@@ -321,10 +332,10 @@ class StockDataService:
                         df.to_dict("records"),
                         ttl=settings.CACHE_TTL_MARKET_INDEX
                     )
-                    print(f"✅ [Index] 지수 데이터 조회 성공 (pykrx): {index_code} ({len(df)}일)")
+                    print(f"✅ [Index] 지수 데이터 조회 성공 (pykrx): {index_name} ({len(df)}일)")
                     return df
                 else:
-                    print(f"⚠️ [Index] 지수 데이터 없음: {index_code}")
+                    print(f"⚠️ [Index] 지수 데이터 없음: {index_name}")
                     return None
 
             except Exception as e:
@@ -339,13 +350,13 @@ class StockDataService:
                     continue
                 else:
                     # 최종 실패 또는 Rate Limit 아닌 에러
-                    error_detail = f"{index_code}, attempt {attempt + 1}/{max_retries}, {error_msg}"
+                    error_detail = f"{index_name}, attempt {attempt + 1}/{max_retries}, {error_msg}"
                     print(f"❌ [Index] 지수 데이터 조회 실패 (pykrx): {error_detail}")
 
                     if attempt == max_retries - 1:
                         # 모든 재시도 실패 - 에러 발생
                         raise Exception(
-                            f"시장 지수 데이터 조회 실패: {index_code}. "
+                            f"시장 지수 데이터 조회 실패: {index_name}. "
                             f"잠시 후 다시 시도해주세요."
                         )
 
