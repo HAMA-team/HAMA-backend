@@ -40,12 +40,12 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = None
     GEMINI_MODEL: str = "gemini-2.5-flash-exp"
 
-    # LLM Mode: "test" (Gemini) or "production" (Claude)
-    LLM_MODE: str = "production"  # test, production, demo 등
+    # LLM Mode: openai (기본), anthropic, google 등
+    LLM_MODE: str = "openai"  # openai (기본), anthropic, google 등
 
     # Router 전용 모델 (빠른 라우팅을 위해 경량 모델 사용)
-    ROUTER_MODEL_PROVIDER: str = "anthropic"  # anthropic, openai, google
-    ROUTER_MODEL: str = "claude-haiku-4-5-20251001"
+    ROUTER_MODEL_PROVIDER: str = "openai"  # anthropic, openai, google
+    ROUTER_MODEL: str = "gpt-4o-mini"
 
     # LLM Settings
     LLM_TIMEOUT: int = 30
@@ -54,7 +54,10 @@ class Settings(BaseSettings):
 
     @property
     def llm_provider(self) -> str:
-        """현재 LLM 모드에 따라 사용할 프로바이더 반환"""
+        """현재 LLM 모드에 따라 사용할 프로바이더 반환
+
+        기본 우선순위: OpenAI → Claude (Anthropic)
+        """
         mode = os.getenv("LLM_MODE", self.LLM_MODE).lower()
 
         # 명시적으로 provider 지정한 경우
@@ -65,11 +68,9 @@ class Settings(BaseSettings):
         elif mode in ["google", "gemini"]:
             return "google"
 
-        # 레거시 모드 매핑
-        if mode in ["production", "prod", "demo"]:
-            return "anthropic"
-        else:  # test, development 등
-            return "google"
+        # 레거시 모드 매핑 (기본값: OpenAI 우선)
+        # production, demo 등 모든 환경에서 OpenAI를 기본으로 사용
+        return "openai"
 
     @property
     def llm_model_name(self) -> str:
@@ -122,6 +123,11 @@ class Settings(BaseSettings):
     CACHE_TTL_NEWS: int = 300
     CACHE_TTL_FINANCIAL_STATEMENTS: int = 86400
     CACHE_TTL_ANALYSIS_RESULTS: int = 3600
+
+    # LLM Semantic Cache (RedisSemanticCache)
+    ENABLE_SEMANTIC_CACHE: bool = True  # SemanticCache 활성화 여부
+    SEMANTIC_CACHE_DISTANCE_THRESHOLD: float = 0.2  # 유사도 임계값 (낮을수록 엄격)
+    SEMANTIC_CACHE_TTL: int = 3600  # LLM 응답 캐시 만료 시간 (1시간)
 
     # LangSmith (Optional)
     LANGSMITH_API_KEY: str | None = None
