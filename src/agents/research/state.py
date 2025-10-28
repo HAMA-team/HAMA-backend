@@ -41,7 +41,17 @@ class ResearchState(TypedDict, total=False):
     """기업 정보 (DART)"""
 
     market_index_data: Optional[dict]
-    """시장 지수 데이터 (KOSPI, KOSDAQ)"""
+    """시장 지수 데이터 (KOSPI, KOSDAQ) - Mock 데이터 포함"""
+
+    # 펀더멘털 데이터 (신규)
+    fundamental_data: Optional[dict]
+    """펀더멘털 지표 (PER, PBR, EPS, DIV, DPS, BPS)"""
+
+    market_cap_data: Optional[dict]
+    """시가총액 및 거래 데이터 (시가총액, 거래량, 거래대금, 상장주식수)"""
+
+    investor_trading_data: Optional[dict]
+    """투자주체별 매매 동향 (외국인, 기관, 개인)"""
 
     # 기술적 지표
     technical_indicators: Optional[dict]

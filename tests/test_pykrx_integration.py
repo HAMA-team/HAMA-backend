@@ -133,10 +133,88 @@ async def test_stock_listing():
         return None
 
 
+async def test_fundamental_data():
+    """펀더멘털 데이터 조회 테스트 (신규)"""
+    print("\n=== Test 5: 펀더멘털 데이터 조회 (PER/PBR/EPS) ===")
+
+    stock_code = "005930"  # 삼성전자
+    fundamental = await stock_data_service.get_fundamental_data(stock_code)
+
+    if fundamental is None:
+        print(f"⚠️ 펀더멘털 데이터 조회 실패 - 스킵")
+        return None
+
+    # 필수 필드 확인
+    expected_keys = ["PER", "PBR", "EPS", "DIV", "DPS", "BPS"]
+    for key in expected_keys:
+        assert key in fundamental, f"펀더멘털 데이터에 {key} 필드 없음"
+
+    print(f"✅ 펀더멘털 데이터 조회 성공: {stock_code}")
+    print(f"   - PER: {fundamental['PER']}배")
+    print(f"   - PBR: {fundamental['PBR']}배")
+    print(f"   - EPS: {fundamental['EPS']:,}원")
+    print(f"   - 배당수익률: {fundamental['DIV']}%")
+    print(f"   - DPS: {fundamental['DPS']:,}원")
+    print(f"   - BPS: {fundamental['BPS']:,}원")
+
+    return fundamental
+
+
+async def test_market_cap_data():
+    """시가총액 및 거래 데이터 조회 테스트 (신규)"""
+    print("\n=== Test 6: 시가총액 및 거래 데이터 조회 ===")
+
+    stock_code = "005930"  # 삼성전자
+    market_cap = await stock_data_service.get_market_cap_data(stock_code)
+
+    if market_cap is None:
+        print(f"⚠️ 시가총액 데이터 조회 실패 - 스킵")
+        return None
+
+    # 필수 필드 확인
+    expected_keys = ["market_cap", "trading_volume", "trading_value", "shares_outstanding"]
+    for key in expected_keys:
+        assert key in market_cap, f"시가총액 데이터에 {key} 필드 없음"
+
+    market_cap_trillion = market_cap["market_cap"] / 1e12
+
+    print(f"✅ 시가총액 데이터 조회 성공: {stock_code}")
+    print(f"   - 시가총액: {market_cap_trillion:.2f}조원")
+    print(f"   - 거래량: {market_cap['trading_volume']:,}주")
+    print(f"   - 거래대금: {market_cap['trading_value'] / 1e8:,.0f}억원")
+    print(f"   - 상장주식수: {market_cap['shares_outstanding']:,}주")
+
+    return market_cap
+
+
+async def test_investor_trading():
+    """투자주체별 매매 동향 테스트 (신규)"""
+    print("\n=== Test 7: 투자주체별 매매 동향 조회 ===")
+
+    stock_code = "005930"  # 삼성전자
+    investor = await stock_data_service.get_investor_trading(stock_code, days=30)
+
+    if investor is None:
+        print(f"⚠️ 투자주체별 데이터 조회 실패 - 스킵")
+        return None
+
+    # 필수 필드 확인
+    expected_keys = ["foreign_net", "institution_net", "individual_net", "foreign_trend", "institution_trend"]
+    for key in expected_keys:
+        assert key in investor, f"투자주체별 데이터에 {key} 필드 없음"
+
+    print(f"✅ 투자주체별 매매 동향 조회 성공: {stock_code}")
+    print(f"   - 외국인 순매수: {investor['foreign_net'] / 1e8:,.0f}억원 (추세: {investor['foreign_trend']})")
+    print(f"   - 기관 순매수: {investor['institution_net'] / 1e8:,.0f}억원 (추세: {investor['institution_trend']})")
+    print(f"   - 개인 순매수: {investor['individual_net'] / 1e8:,.0f}억원")
+
+    return investor
+
+
 async def main():
     """전체 테스트 실행"""
     print("=" * 60)
-    print("pykrx 통합 및 기술적 지표 테스트")
+    print("pykrx 통합 및 펀더멘털 분석 테스트")
     print("=" * 60)
 
     try:
@@ -152,9 +230,26 @@ async def main():
         # Test 4: 종목 리스트 조회
         df_listing = await test_stock_listing()
 
+        # Test 5: 펀더멘털 데이터 조회 (신규)
+        fundamental = await test_fundamental_data()
+
+        # Test 6: 시가총액 데이터 조회 (신규)
+        market_cap = await test_market_cap_data()
+
+        # Test 7: 투자주체별 매매 동향 (신규)
+        investor = await test_investor_trading()
+
         print("\n" + "=" * 60)
         print("✅ 모든 테스트 통과!")
         print("=" * 60)
+        print("\n📊 종합 리포트:")
+        print(f"   - 주가 데이터: {'✅' if df_price is not None else '⚠️'}")
+        print(f"   - 기술적 지표: {'✅' if indicators else '⚠️'}")
+        print(f"   - 시장 지수: {'✅' if df_index is not None else '⚠️ (Mock 데이터)'}")
+        print(f"   - 종목 리스트: {'✅' if df_listing is not None else '⚠️'}")
+        print(f"   - 펀더멘털: {'✅' if fundamental else '⚠️'}")
+        print(f"   - 시가총액: {'✅' if market_cap else '⚠️'}")
+        print(f"   - 투자주체별: {'✅' if investor else '⚠️'}")
 
     except AssertionError as e:
         print(f"\n❌ 테스트 실패: {e}")

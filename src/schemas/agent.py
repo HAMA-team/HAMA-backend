@@ -29,14 +29,59 @@ class ResearchRequest(AgentInput):
     analysis_type: Optional[str] = "comprehensive"  # fundamental, technical, comprehensive
 
 
+class FundamentalSummary(BaseModel):
+    """펀더멘털 분석 요약"""
+    PER: Optional[float] = Field(None, description="주가수익비율 (Price-to-Earnings Ratio)")
+    PBR: Optional[float] = Field(None, description="주가순자산비율 (Price-to-Book Ratio)")
+    EPS: Optional[int] = Field(None, description="주당순이익 (Earnings Per Share)")
+    DIV: Optional[float] = Field(None, description="배당수익률 (%)")
+    valuation: str = Field(default="적정", description="밸류에이션 상태: 저평가/적정/고평가")
+
+
+class InvestorSummary(BaseModel):
+    """투자주체별 매매 동향 요약"""
+    foreign_trend: str = Field(default="보합", description="외국인 매매 동향: 매수/매도/보합")
+    institution_trend: str = Field(default="보합", description="기관 매매 동향: 매수/매도/보합")
+    foreign_net: Optional[int] = Field(None, description="외국인 순매수액 (원)")
+    institution_net: Optional[int] = Field(None, description="기관 순매수액 (원)")
+    sentiment: str = Field(default="중립", description="투자주체 종합 심리: 긍정/중립/부정")
+
+
+class TechnicalSummary(BaseModel):
+    """기술적 분석 요약"""
+    trend: str = Field(default="중립", description="전체 추세: 강세/중립/약세")
+    rsi: str = Field(default="중립", description="RSI 시그널: 과매수/중립/과매도")
+    signals: List[str] = Field(default_factory=list, description="기술적 시그널 목록")
+
+
 class ResearchResponse(AgentOutput):
-    """Research agent response"""
+    """
+    Research agent response (확장된 구조)
+
+    - 펀더멘털 분석 (PER/PBR/EPS/배당수익률)
+    - 투자주체별 매매 동향 (외국인/기관)
+    - 기술적 분석 (RSI/MACD/볼린저밴드)
+    - Bull/Bear 케이스
+    - 최종 추천 및 목표가
+    """
     stock_code: str
     rating: Optional[int] = None
-    recommendation: Optional[str] = None
+    recommendation: Optional[str] = Field(None, description="투자 의견: BUY/HOLD/SELL")
+    target_price: Optional[int] = Field(None, description="목표가 (원)")
+    current_price: Optional[int] = Field(None, description="현재가 (원)")
+    upside_potential: Optional[str] = Field(None, description="상승 여력 (%)")
+    confidence: Optional[int] = Field(None, description="신뢰도 (1-5)")
+
+    # 확장된 분석 정보
+    fundamental_summary: Optional[FundamentalSummary] = None
+    investor_summary: Optional[InvestorSummary] = None
+    technical_summary: Optional[TechnicalSummary] = None
+    market_cap_trillion: Optional[float] = Field(None, description="시가총액 (조원)")
+
+    # 기존 필드
     summary: Optional[str] = None
-    bull_case: Optional[str] = None
-    bear_case: Optional[str] = None
+    bull_case: Optional[List[str]] = None
+    bear_case: Optional[List[str]] = None
 
 
 class StrategyRequest(AgentInput):
