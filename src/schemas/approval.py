@@ -1,7 +1,7 @@
 """
 Approval History 관련 Pydantic 스키마
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
@@ -22,9 +22,9 @@ class ApprovalHistoryItem(BaseModel):
     action: Optional[str] = None  # buy, sell
     amount: Optional[int] = None
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "request_id": "550e8400-e29b-41d4-a716-446655440000",
                 "request_type": "trade",
@@ -38,6 +38,7 @@ class ApprovalHistoryItem(BaseModel):
                 "amount": 10000000
             }
         }
+    )
 
 
 class ApprovalHistoryListResponse(BaseModel):
@@ -47,8 +48,8 @@ class ApprovalHistoryListResponse(BaseModel):
     limit: int
     offset: int
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "items": [
                     {
@@ -69,6 +70,7 @@ class ApprovalHistoryListResponse(BaseModel):
                 "offset": 0
             }
         }
+    )
 
 
 class ApprovalDetailResponse(BaseModel):
@@ -105,9 +107,9 @@ class ApprovalDetailResponse(BaseModel):
     modifications: Optional[Dict[str, Any]] = None
     user_notes: Optional[str] = None
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "request_id": "550e8400-e29b-41d4-a716-446655440000",
                 "user_id": "660e8400-e29b-41d4-a716-446655440001",
@@ -143,3 +145,4 @@ class ApprovalDetailResponse(BaseModel):
                 "user_notes": "분석 결과가 합리적임"
             }
         }
+    )

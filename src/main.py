@@ -3,6 +3,8 @@ HAMA Backend - FastAPI Application Entry Point
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
@@ -47,6 +49,14 @@ tags_metadata = [
     },
 ]
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """FastAPI lifespan 이벤트 핸들러"""
+    kis_env = "real" if settings.ENV.lower() == "production" else "demo"
+    await init_kis_service(env=kis_env)
+    yield
+
+
 # Create FastAPI app
 app = FastAPI(
     title="HAMA API - Human-in-the-Loop AI 투자 시스템",
@@ -77,6 +87,7 @@ app = FastAPI(
     openapi_tags=tags_metadata,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Logging middleware (요청/응답 추적)
@@ -111,13 +122,6 @@ app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"]
 app.include_router(settings_router.router, prefix=f"{api_prefix}/settings", tags=["settings"])
 app.include_router(artifacts.router, prefix=f"{api_prefix}/artifacts", tags=["artifacts"])
 app.include_router(approvals.router, prefix=f"{api_prefix}/approvals", tags=["approvals"])
-
-
-@app.on_event("startup")
-async def initialize_kis_service():
-    """애플리케이션 시작 시 KIS 서비스 초기화."""
-    kis_env = "real" if settings.ENV.lower() == "production" else "demo"
-    await init_kis_service(env=kis_env)
 
 
 @app.get("/")

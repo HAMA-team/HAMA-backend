@@ -2,7 +2,7 @@
 사용자 설정 관련 API 엔드포인트
 """
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 import logging
 
@@ -25,8 +25,8 @@ class AutomationLevelResponse(BaseModel):
     description: str = Field(..., description="레벨 설명")
     interrupt_points: List[str] = Field(..., description="HITL 개입 지점")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "level": 2,
                 "level_name": "코파일럿",
@@ -34,6 +34,7 @@ class AutomationLevelResponse(BaseModel):
                 "interrupt_points": ["전략 생성", "포트폴리오 구성", "매매 실행", "리밸런싱"]
             }
         }
+    )
 
 
 class AutomationLevelUpdateRequest(BaseModel):
@@ -41,13 +42,14 @@ class AutomationLevelUpdateRequest(BaseModel):
     level: int = Field(..., ge=1, le=3, description="변경할 자동화 레벨")
     confirm: bool = Field(default=False, description="변경 확인")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "level": 3,
                 "confirm": True
             }
         }
+    )
 
 
 class AutomationLevelUpdateResponse(BaseModel):
@@ -55,13 +57,14 @@ class AutomationLevelUpdateResponse(BaseModel):
     level: int
     message: str
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "level": 3,
                 "message": "어드바이저 모드로 변경되었습니다. 향후 모든 결정에 승인이 필요합니다."
             }
         }
+    )
 
 
 # 자동화 레벨 정의

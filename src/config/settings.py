@@ -3,7 +3,7 @@ Application configuration and settings
 """
 import os
 import uuid
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List
 
 
@@ -154,10 +154,11 @@ class Settings(BaseSettings):
             return min(self.LANGGRAPH_CHECKPOINT_TTL_MINUTES, 120)
         return self.LANGGRAPH_CHECKPOINT_TTL_MINUTES
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-        extra = "ignore"  # .env의 추가 필드 무시
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",  # .env의 추가 필드 무시
+    )
 
 
 # Global settings instance

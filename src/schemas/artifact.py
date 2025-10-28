@@ -1,7 +1,7 @@
 """
 Artifact 관련 Pydantic 스키마
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from uuid import UUID
@@ -20,8 +20,8 @@ class ArtifactCreate(BaseModel):
         description="메타데이터 (stock_code, created_from_message_id 등)"
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "title": "삼성전자 분석 결과",
                 "content": "## 삼성전자 종합 분석\n\n### 재무 분석\n...",
@@ -33,6 +33,7 @@ class ArtifactCreate(BaseModel):
                 }
             }
         }
+    )
 
 
 class ArtifactUpdate(BaseModel):
@@ -41,13 +42,14 @@ class ArtifactUpdate(BaseModel):
     content: Optional[str] = Field(None, min_length=1)
     metadata: Optional[Dict[str, Any]] = None
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "title": "삼성전자 분석 결과 (수정됨)",
                 "content": "## 업데이트된 분석\n...",
             }
         }
+    )
 
 
 class ArtifactResponse(BaseModel):
@@ -57,17 +59,15 @@ class ArtifactResponse(BaseModel):
     title: str
     content: str
     artifact_type: str
-    metadata: Dict[str, Any]
+    metadata: Dict[str, Any] = Field(..., validation_alias="artifact_metadata")
     preview: Optional[str]
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        orm_mode = True
-        fields = {
-            "metadata": "artifact_metadata"  # ORM 필드 매핑
-        }
-        schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        json_schema_extra={
             "example": {
                 "artifact_id": "550e8400-e29b-41d4-a716-446655440000",
                 "user_id": "660e8400-e29b-41d4-a716-446655440001",
@@ -83,6 +83,7 @@ class ArtifactResponse(BaseModel):
                 "updated_at": "2025-10-26T10:00:00Z"
             }
         }
+    )
 
 
 class ArtifactListItem(BaseModel):
@@ -93,9 +94,9 @@ class ArtifactListItem(BaseModel):
     preview: Optional[str]
     created_at: datetime
 
-    class Config:
-        orm_mode = True
-        schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "artifact_id": "550e8400-e29b-41d4-a716-446655440000",
                 "title": "삼성전자 분석 결과",
@@ -104,6 +105,7 @@ class ArtifactListItem(BaseModel):
                 "created_at": "2025-10-26T10:00:00Z"
             }
         }
+    )
 
 
 class ArtifactListResponse(BaseModel):
@@ -113,8 +115,8 @@ class ArtifactListResponse(BaseModel):
     limit: int
     offset: int
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "items": [
                     {
@@ -130,3 +132,4 @@ class ArtifactListResponse(BaseModel):
                 "offset": 0
             }
         }
+    )

@@ -3,7 +3,7 @@ Portfolio 차트 관련 스키마
 
 Frontend 차트 컴포넌트(Treemap, Pie, Bar)용 데이터 구조
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Dict
 
 
@@ -18,8 +18,8 @@ class StockChartData(BaseModel):
     return_percent: float = Field(..., description="수익률 (%)")
     sector: str = Field(..., description="섹터")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "stock_code": "005930",
                 "stock_name": "삼성전자",
@@ -31,6 +31,7 @@ class StockChartData(BaseModel):
                 "sector": "반도체"
             }
         }
+    )
 
 
 class PortfolioChartData(BaseModel):
@@ -51,8 +52,8 @@ class PortfolioChartData(BaseModel):
         description="섹터별 비중 (0~1)"
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "stocks": [
                     {
@@ -87,3 +88,4 @@ class PortfolioChartData(BaseModel):
                 }
             }
         }
+    )

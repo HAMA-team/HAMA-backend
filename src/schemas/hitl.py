@@ -3,7 +3,7 @@ HITL (Human-in-the-Loop) 승인 관련 스키마
 
 Frontend PRD v3.0 요구사항에 맞는 데이터 구조 정의
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Literal, List
 
 
@@ -13,14 +13,15 @@ class Alternative(BaseModel):
     adjusted_quantity: int = Field(..., description="조정된 수량")
     adjusted_amount: int = Field(..., description="조정된 금액 (원)")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "suggestion": "매수 금액을 500만원으로 조정 (비중 34%)",
                 "adjusted_quantity": 65,
                 "adjusted_amount": 5000000
             }
         }
+    )
 
 
 class PortfolioPreview(BaseModel):
@@ -29,14 +30,15 @@ class PortfolioPreview(BaseModel):
     weight: float = Field(..., description="비중 (0~1)", ge=0, le=1)
     color: str = Field(..., description="Hex color code (예: #3B82F6)")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "stock_name": "삼성전자",
                 "weight": 0.43,
                 "color": "#EF4444"
             }
         }
+    )
 
 
 class ExpectedPortfolioPreview(BaseModel):
@@ -50,8 +52,8 @@ class ExpectedPortfolioPreview(BaseModel):
         description="승인 후 예상 포트폴리오 구성"
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "current": [
                     {"stock_name": "삼성전자", "weight": 0.25, "color": "#3B82F6"},
@@ -65,6 +67,7 @@ class ExpectedPortfolioPreview(BaseModel):
                 ]
             }
         }
+    )
 
 
 class ApprovalRequest(BaseModel):
@@ -110,8 +113,8 @@ class ApprovalRequest(BaseModel):
         description="예상 포트폴리오 미리보기 (원 그래프용)"
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "action": "buy",
                 "stock_code": "005930",
@@ -148,6 +151,7 @@ class ApprovalRequest(BaseModel):
                 }
             }
         }
+    )
 
 
 class ThinkingStep(BaseModel):
@@ -156,14 +160,15 @@ class ThinkingStep(BaseModel):
     description: str = Field(..., description="단계 설명")
     timestamp: str = Field(..., description="타임스탬프 (ISO 8601)")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "agent": "research",
                 "description": "데이터 수집 중...",
                 "timestamp": "2025-10-26T10:00:00Z"
             }
         }
+    )
 
 
 class ChatResponse(BaseModel):
@@ -198,8 +203,8 @@ class ChatResponse(BaseModel):
     timestamp: str = Field(..., description="응답 시각 (ISO 8601)")
     metadata: Optional[dict] = Field(None, description="추가 메타데이터")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example_normal": {
                 "message": "## 삼성전자 분석 결과\n\n...",
                 "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -247,6 +252,7 @@ class ChatResponse(BaseModel):
                 "timestamp": "2025-10-26T10:00:10Z"
             }
         }
+    )
 
 
 class ApprovalDecision(BaseModel):
@@ -271,14 +277,15 @@ class ApprovalDecision(BaseModel):
         description="사용자 메모"
     )
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "thread_id": "550e8400-e29b-41d4-a716-446655440000",
                 "decision": "approved",
                 "automation_level": 2
             }
         }
+    )
 
 
 class ApprovalResponse(BaseModel):
@@ -288,8 +295,8 @@ class ApprovalResponse(BaseModel):
     conversation_id: str = Field(..., description="대화 ID")
     result: Optional[dict] = Field(None, description="실행 결과 상세")
 
-    class Config:
-        schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "status": "approved",
                 "message": "✅ 승인 완료 - 매수 주문이 실행되었습니다",
@@ -302,3 +309,4 @@ class ApprovalResponse(BaseModel):
                 }
             }
         }
+    )
