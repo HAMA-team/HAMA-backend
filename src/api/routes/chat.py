@@ -91,129 +91,6 @@ class ChatSessionSummary(BaseModel):
     created_at: Optional[str] = None
 
 
-async def _mock_chat_response(
-    conversation_uuid: uuid.UUID,
-    request: ChatRequest,
-) -> ChatResponse:
-    conversation_id = str(conversation_uuid)
-    message_lower = request.message.lower()
-
-    is_trade_request = any(keyword in message_lower for keyword in ("매수", "매도", "sell", "buy"))
-
-    if is_trade_request:
-        approval_request = {
-            "type": "trade_approval",
-            "thread_id": conversation_id,
-            "pending_node": "mock_trading_node",
-            "interrupt_data": {"summary": "모의 투자 승인 필요"},
-            "message": "모의 매매 주문을 승인하시겠습니까?",
-        }
-        assistant_message = (
-            "🔔 현재 환경은 테스트 모드입니다.\n"
-            "모의 매매 요청이 접수되었으며 승인이 필요합니다."
-        )
-        message_metadata = {
-            "intent": "trade_execution",
-            "agents_called": ["mock_trading_agent"],
-            "hitl_required": True,
-            "automation_level": request.automation_level,
-        }
-        requires_approval = True
-    else:
-        approval_request = None
-        assistant_message = (
-            "📋 테스트 응답입니다.\n"
-            f"요청하신 메시지: {request.message}"
-        )
-        message_metadata = {
-            "intent": "general_inquiry",
-            "agents_called": ["mock_general_agent"],
-            "hitl_required": False,
-            "automation_level": request.automation_level,
-        }
-        requires_approval = False
-
-    await chat_history_service.append_message(
-        conversation_id=conversation_uuid,
-        role="assistant",
-        content=assistant_message,
-        metadata=message_metadata,
-    )
-    await chat_history_service.upsert_session(
-        conversation_id=conversation_uuid,
-        user_id=DEMO_USER_UUID,
-        automation_level=request.automation_level,
-        metadata=message_metadata,
-        summary=assistant_message.split("\n")[0],
-        last_agent=message_metadata["agents_called"][-1],
-    )
-
-    return ChatResponse(
-        message=assistant_message,
-        conversation_id=conversation_id,
-        requires_approval=requires_approval,
-        approval_request=approval_request,
-        metadata=message_metadata,
-    )
-
-
-async def _mock_approval_response(approval: "ApprovalRequest") -> "ApprovalResponse":
-    conversation_uuid = _ensure_uuid(approval.thread_id)
-    conversation_id = str(conversation_uuid)
-    decision = approval.decision
-
-    if decision == "approved":
-        summary = "모의 매매가 승인되었습니다."
-        result = {
-            "summary": summary,
-            "status": "filled",
-            "automation_level": approval.automation_level,
-        }
-        message_text = "승인 완료 - 모의 매매가 실행되었습니다."
-    elif decision == "modified":
-        summary = "모의 매매가 수정 후 승인되었습니다."
-        result = {
-            "summary": summary,
-            "status": "modified",
-            "modifications": approval.modifications,
-            "automation_level": approval.automation_level,
-        }
-        message_text = "수정 후 승인 - 모의 매매가 실행되었습니다."
-    elif decision == "rejected":
-        summary = "사용자가 모의 매매를 거부했습니다."
-        result = {"cancelled": True}
-        message_text = "승인 거부 - 모의 매매가 취소되었습니다."
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid decision: {decision}"
-        )
-
-    metadata = {"decision": decision}
-
-    await chat_history_service.append_message(
-        conversation_id=conversation_uuid,
-        role="assistant",
-        content=message_text,
-        metadata=metadata,
-    )
-    await chat_history_service.upsert_session(
-        conversation_id=conversation_uuid,
-        user_id=DEMO_USER_UUID,
-        automation_level=approval.automation_level,
-        metadata=metadata,
-        summary=summary,
-        last_agent="mock_trading_agent",
-    )
-
-    return ApprovalResponse(
-        status=decision,
-        message=message_text,
-        conversation_id=conversation_id,
-        result=result,
-    )
-
-
 @router.post("/", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
@@ -242,9 +119,6 @@ async def chat(request: ChatRequest):
             role="user",
             content=request.message,
         )
-
-        if _is_test_mode():
-            return await _mock_chat_response(conversation_uuid, request)
 
         # Build graph with automation level
         app = build_graph(automation_level=request.automation_level)
@@ -348,7 +222,7 @@ async def chat(request: ChatRequest):
                             current_weight=current_weight,
                             expected_weight=expected_weight,
                             risk_warning=risk_warning,
-                            alternatives=None,  # TODO: Risk Agent에서 생성
+                        alternatives=None,  # TODO: Risk Agent에서 생성
                             expected_portfolio_preview=portfolio_preview.dict() if portfolio_preview else None
                         ).dict()
 
@@ -632,9 +506,6 @@ async def approve_action(approval: ApprovalRequest):
             content=f"승인 결정: {approval.decision}",
             metadata=decision_metadata,
         )
-
-        if _is_test_mode():
-            return await _mock_approval_response(approval)
 
         app = build_graph(automation_level=approval.automation_level)
 

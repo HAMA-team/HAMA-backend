@@ -1,0 +1,72 @@
+{
+  "portfolio_balanced": {
+    "portfolio_id": "test-portfolio-001",
+    "user_id": "test-user-001",
+    "total_value": 10000000,
+    "cash_balance": 2000000,
+    "invested_amount": 8000000,
+    "holdings": [
+      {
+        "stock_code": "005930",
+        "stock_name": "삼성전자",
+        "quantity": 50,
+        "avg_price": 70000,
+        "current_price": 75000,
+        "market_value": 3750000,
+        "weight": 0.375,
+        "profit_loss": 250000,
+        "profit_rate": 0.0714
+      },
+      {
+        "stock_code": "000660",
+        "stock_name": "SK하이닉스",
+        "quantity": 30,
+        "avg_price": 90000,
+        "current_price": 95000,
+        "market_value": 2850000,
+        "weight": 0.285,
+        "profit_loss": 150000,
+        "profit_rate": 0.0556
+      },
+      {
+        "stock_code": "035420",
+        "stock_name": "NAVER",
+        "quantity": 10,
+        "avg_price": 140000,
+        "current_price": 140000,
+        "market_value": 1400000,
+        "weight": 0.14,
+        "profit_loss": 0,
+        "profit_rate": 0.0
+      }
+    ]
+  },
+  "portfolio_concentrated": {
+    "portfolio_id": "test-portfolio-002",
+    "user_id": "test-user-001",
+    "total_value": 5000000,
+    "cash_balance": 500000,
+    "invested_amount": 4500000,
+    "holdings": [
+      {
+        "stock_code": "005930",
+        "stock_name": "삼성전자",
+        "quantity": 60,
+        "avg_price": 75000,
+        "current_price": 75000,
+        "market_value": 4500000,
+        "weight": 0.9,
+        "profit_loss": 0,
+        "profit_rate": 0.0
+      }
+    ]
+  },
+  "portfolio_empty": {
+    "portfolio_id": "test-portfolio-003",
+    "user_id": "test-user-001",
+    "total_value": 10000000,
+    "cash_balance": 10000000,
+    "invested_amount": 0,
+    "holdings": []
+  }
+}

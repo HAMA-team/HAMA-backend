@@ -8,7 +8,7 @@ python -m src.main
 import requests
 import json
 
-BASE_URL = "http://localhost:8000/v1"
+BASE_URL = "http://localhost:8000/api/v1"
 
 
 def test_health():

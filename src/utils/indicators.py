@@ -142,10 +142,10 @@ def calculate_volume_analysis(volume: pd.Series) -> Dict[str, Any]:
     volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
     return {
-        "current_volume": int(current_volume),
-        "avg_volume": int(avg_volume),
-        "volume_ratio": round(volume_ratio, 2),
-        "is_high_volume": volume_ratio > 1.5,  # 평균 대비 1.5배 이상
+        "current_volume": int(float(current_volume)),
+        "avg_volume": int(float(avg_volume)),
+        "volume_ratio": float(round(volume_ratio, 2)),
+        "is_high_volume": bool(volume_ratio > 1.5),  # 평균 대비 1.5배 이상
     }
 
 
@@ -221,27 +221,27 @@ def calculate_all_indicators(df: pd.DataFrame) -> Dict[str, Any]:
 
     return {
         "rsi": {
-            "value": round(current_rsi, 2) if current_rsi is not None else None,
+            "value": float(round(current_rsi, 2)) if current_rsi is not None else None,
             "signal": "과매수" if current_rsi and current_rsi > 70 else "과매도" if current_rsi and current_rsi < 30 else "중립"
         },
         "macd": {
-            "macd": round(current_macd, 2) if current_macd is not None else None,
-            "signal": round(current_signal, 2) if current_signal is not None else None,
-            "histogram": round(current_histogram, 2) if current_histogram is not None else None,
+            "macd": float(round(current_macd, 2)) if current_macd is not None else None,
+            "signal": float(round(current_signal, 2)) if current_signal is not None else None,
+            "histogram": float(round(current_histogram, 2)) if current_histogram is not None else None,
             "trend": "상승" if current_histogram and current_histogram > 0 else "하락" if current_histogram else "중립"
         },
         "bollinger_bands": {
-            "upper": round(bb_upper, 2) if bb_upper is not None else None,
-            "middle": round(bb_middle, 2) if bb_middle is not None else None,
-            "lower": round(bb_lower, 2) if bb_lower is not None else None,
-            "current_price": round(current_price, 2),
+            "upper": float(round(bb_upper, 2)) if bb_upper is not None else None,
+            "middle": float(round(bb_middle, 2)) if bb_middle is not None else None,
+            "lower": float(round(bb_lower, 2)) if bb_lower is not None else None,
+            "current_price": float(round(current_price, 2)),
             "position": "상단" if bb_upper and current_price >= bb_upper else "하단" if bb_lower and current_price <= bb_lower else "중간"
         },
         "moving_averages": {
-            "MA5": round(ma_data["MA5"], 2) if ma_data["MA5"] is not None else None,
-            "MA20": round(ma_data["MA20"], 2) if ma_data["MA20"] is not None else None,
-            "MA60": round(ma_data["MA60"], 2) if ma_data["MA60"] is not None else None,
-            "MA120": round(ma_data["MA120"], 2) if ma_data["MA120"] is not None else None,
+            "MA5": float(round(ma_data["MA5"], 2)) if ma_data["MA5"] is not None else None,
+            "MA20": float(round(ma_data["MA20"], 2)) if ma_data["MA20"] is not None else None,
+            "MA60": float(round(ma_data["MA60"], 2)) if ma_data["MA60"] is not None else None,
+            "MA120": float(round(ma_data["MA120"], 2)) if ma_data["MA120"] is not None else None,
         },
         "volume": volume_data,
         "signals": signals,

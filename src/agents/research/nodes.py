@@ -214,7 +214,7 @@ async def bull_analyst_node(state: ResearchState) -> ResearchState:
 {json.dumps(technical, ensure_ascii=False, indent=2) if technical else '기술적 지표 없음'}
 
 ## 시장 환경
-- KOSPI 현재: {market.get('current', 'N/A')} ({market.get('change_rate', 0):.2f}%)
+- KOSPI 현재: {market.get('current') if market.get('current') is not None else 'N/A'} ({(market.get('change_rate') or 0):.2f}%)
 
 ## 재무 데이터
 {json.dumps(state.get('financial_data'), ensure_ascii=False, indent=2) if state.get('financial_data') else '재무제표 없음'}
@@ -301,7 +301,7 @@ async def bear_analyst_node(state: ResearchState) -> ResearchState:
 {json.dumps(technical, ensure_ascii=False, indent=2) if technical else '기술적 지표 없음'}
 
 ## 시장 환경
-- KOSPI 현재: {market.get('current', 'N/A')} ({market.get('change_rate', 0):.2f}%)
+- KOSPI 현재: {market.get('current') if market.get('current') is not None else 'N/A'} ({(market.get('change_rate') or 0):.2f}%)
 
 ## 재무 데이터
 {json.dumps(state.get('financial_data'), ensure_ascii=False, indent=2) if state.get('financial_data') else '재무제표 없음'}

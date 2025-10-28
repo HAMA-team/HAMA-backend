@@ -13,6 +13,7 @@ from typing import Optional
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
 from src.config.settings import settings
 
@@ -73,6 +74,14 @@ def _build_llm(
             google_api_key=settings.GEMINI_API_KEY,
         )
 
+    if provider == "openai":
+        return ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            api_key=settings.OPENAI_API_KEY,
+        )
+
     raise ValueError(f"지원하지 않는 LLM provider: {provider}")
 
 
@@ -95,15 +104,29 @@ def get_llm(
 
     provider = requested_provider
 
+    # Anthropic 폴백 체인: anthropic → openai → google
     if provider == "anthropic" and not settings.ANTHROPIC_API_KEY:
         logger.warning(
-            "⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. Gemini로 폴백합니다."
+            "⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. OpenAI로 폴백합니다."
+        )
+        provider = "openai"
+
+    # OpenAI 폴백: openai → google
+    if provider == "openai" and not settings.OPENAI_API_KEY:
+        logger.warning(
+            "⚠️ OPENAI_API_KEY가 설정되지 않았습니다. Gemini로 폴백합니다."
         )
         provider = "google"
 
+    # 최종 검증
     if provider == "google" and not settings.GEMINI_API_KEY:
         raise ValueError(
             "GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    if provider == "openai" and not settings.OPENAI_API_KEY:
+        raise ValueError(
+            "OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
         )
 
     if provider == "anthropic" and not settings.ANTHROPIC_API_KEY:
@@ -132,6 +155,25 @@ def get_claude_llm(
 
     loop_token = _loop_token()
     return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)
+
+
+def get_openai_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+    model: Optional[str] = None,
+) -> ChatOpenAI:
+    """강제로 OpenAI 사용 (모드 무시)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = model if model is not None else "gpt-4o-mini"
+
+    if not settings.OPENAI_API_KEY:
+        raise ValueError(
+            "OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("openai", model_name, float(temp), int(tokens), loop_token)
 
 
 def get_gemini_llm(

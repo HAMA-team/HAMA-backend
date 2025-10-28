@@ -4,7 +4,9 @@
 
 # authtoken: YOUR_AUTH_TOKEN_HERE
 
-version: "2"
+version: 3
+agent:
+  authtoken: 34e8V8vSDWzm7QZAURh4NYKuWeH_4SLrMLwZ797ttxTzmPmrH
 tunnels:
   hama-backend:
     addr: 8000
