@@ -411,13 +411,14 @@ async def consensus_node(state: ResearchState) -> ResearchState:
 
     logger.info(f"🤝 [Research/Consensus] 최종 의견 통합 시작")
 
-    bull = state.get("bull_analysis", {})
-    bear = state.get("bear_analysis", {})
-    current_price = state.get('price_data', {}).get('latest_close', 0)
-    technical = state.get('technical_indicators', {})
-    fundamental = state.get('fundamental_data', {})
-    investor = state.get('investor_trading_data', {})
-    market_cap = state.get('market_cap_data', {})
+    bull = state.get("bull_analysis") or {}
+    bear = state.get("bear_analysis") or {}
+    price_data = state.get('price_data') or {}
+    current_price = price_data.get('latest_close', 0) if price_data else 0
+    technical = state.get('technical_indicators') or {}
+    fundamental = state.get('fundamental_data') or {}
+    investor = state.get('investor_trading_data') or {}
+    market_cap = state.get('market_cap_data') or {}
 
     # 목표가 계산 (Bull/Bear 가중 평균)
     bull_target = bull.get("target_price", current_price * 1.1)

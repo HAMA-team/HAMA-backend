@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # DART API
     DART_API_KEY: str = ""
 
+    # BOK API
+    BOK_API_KEY: str = ""
+    BOK_BASE_URL: str = "https://ecos.bok.or.kr/api"
+
     # KIS API (Phase 2)
     KIS_APP_KEY: str | None = None
     KIS_APP_SECRET: str | None = None

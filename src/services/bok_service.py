@@ -11,15 +11,20 @@
 import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from src.config.settings import settings
 from src.services.cache_manager import cache_manager
 
 
 class BOKService:
     """한국은행 경제통계시스템 API 서비스"""
 
-    def __init__(self, api_key: str = "2O7RAZB6EF8Z41P5HINK"):
-        self.api_key = api_key
-        self.base_url = "http://ecos.bok.or.kr/api"
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
+        self.api_key = api_key or settings.BOK_API_KEY
+        self.base_url = base_url or settings.BOK_BASE_URL
 
     def get_base_rate(
         self,
@@ -40,6 +45,9 @@ class BOKService:
         cached = cache_manager.get(cache_key)
         if cached:
             return cached
+
+        if not self.api_key:
+            raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
 
         if not start_date:
             # 최근 1년
@@ -80,6 +88,9 @@ class BOKService:
         if cached:
             return cached
 
+        if not self.api_key:
+            raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
+
         if not start_date:
             # 최근 2년
             end_date = datetime.now().strftime("%Y%m")
@@ -118,6 +129,9 @@ class BOKService:
         cached = cache_manager.get(cache_key)
         if cached:
             return cached
+
+        if not self.api_key:
+            raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
 
         if not start_date:
             # 최근 30일

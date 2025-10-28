@@ -87,25 +87,34 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
 **중요 규칙:**
 
-1. **병렬 실행 가능**: 여러 에이전트를 동시에 호출할 수 있습니다.
-   예: 종목 분석 시 research + strategy + risk 동시 호출
+1. **병렬 실행 필수**: 관련된 여러 에이전트를 **반드시 동시에** 호출하세요.
+   - 한 번의 응답에 여러 tool을 동시에 호출할 수 있습니다.
+   - 종목 분석 시 research + strategy + risk를 **모두** 호출하세요.
 
-2. **에이전트 조합 예시:**
-   - "삼성전자 분석해줘" → research_agent + strategy_agent + risk_agent
-   - "내 포트폴리오 리밸런싱" → portfolio_agent + risk_agent
-   - "PER이 뭐야?" → general_agent
-   - "삼성전자 10주 매수" → trading_agent
+2. **에이전트 조합 가이드 (여러 tool 동시 호출):**
+   - "삼성전자 분석해줘"
+     → transfer_to_research_agent, transfer_to_strategy_agent, transfer_to_risk_agent (3개 동시)
+   - "삼성전자와 SK하이닉스 비교 분석하고 리스크도 평가해줘"
+     → transfer_to_research_agent, transfer_to_strategy_agent, transfer_to_risk_agent (3개 동시)
+   - "내 포트폴리오 리밸런싱"
+     → transfer_to_portfolio_agent, transfer_to_risk_agent (2개 동시)
+   - "PER이 뭐야?"
+     → transfer_to_general_agent (1개만)
+   - "삼성전자 10주 매수"
+     → transfer_to_trading_agent (1개만)
 
 3. **HITL (Human-in-the-Loop):**
    - 각 에이전트가 내부적으로 HITL을 처리합니다.
    - 현재 automation_level: {automation_level}
    - trading_agent는 레벨 2+ 에서 자동 승인 요청
 
-4. **필요한 에이전트만 선택:**
-   - 불필요한 에이전트는 호출하지 마세요.
-   - 사용자 요청을 정확히 분석하세요.
+4. **판단 기준:**
+   - 종목 분석 관련 → research + strategy + risk (필수 3개)
+   - 포트폴리오 관련 → portfolio + risk (필수 2개)
+   - 매매 실행 → trading (1개)
+   - 일반 질문 → general (1개)
 
-사용자 요청을 분석하고, 적절한 에이전트들을 선택하세요.
+사용자 요청을 분석하고, 적절한 에이전트들을 **동시에** 선택하세요.
 """
 
     supervisor = create_supervisor(
