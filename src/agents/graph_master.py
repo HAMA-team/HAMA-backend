@@ -260,7 +260,8 @@ async def run_graph(
         "configurable": {
             "thread_id": thread_id,
             "request_id": request_id,
-        }
+        },
+        "recursion_limit": 50,  # Supervisor 패턴을 위한 recursion_limit 증가
     }
 
     configured_app = app.with_config(config)
