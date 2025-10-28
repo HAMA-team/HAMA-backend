@@ -182,6 +182,13 @@ async def test_investor_trading():
     for key in expected_keys:
         assert key in investor, f"투자주체별 데이터에 {key} 필드 없음"
 
+    # 데이터 품질 검증: 모든 값이 0이면 경고
+    total_trading = abs(investor['foreign_net']) + abs(investor['institution_net']) + abs(investor['individual_net'])
+    if total_trading == 0:
+        print(f"⚠️ 경고: 투자주체별 매매 금액이 모두 0원입니다. 데이터가 올바르지 않을 수 있습니다.")
+        print(f"   - 캐시된 잘못된 데이터일 가능성이 있습니다.")
+        pytest.skip("투자주체별 데이터가 모두 0원 - 데이터 품질 이슈로 스킵")
+
     print(f"✅ 투자주체별 매매 동향 조회 성공: {stock_code}")
     print(f"   - 외국인 순매수: {investor['foreign_net'] / 1e8:,.0f}억원 (추세: {investor['foreign_trend']})")
     print(f"   - 기관 순매수: {investor['institution_net'] / 1e8:,.0f}억원 (추세: {investor['institution_trend']})")

@@ -478,7 +478,12 @@ class StockDataService:
                 return None
 
         except Exception as e:
-            print(f"❌ 펀더멘털 데이터 조회 실패 (pykrx): {stock_code}, {e}")
+            import traceback
+            print(f"❌ 펀더멘털 데이터 조회 실패 (pykrx): {stock_code}")
+            print(f"   에러 타입: {type(e).__name__}")
+            print(f"   에러 메시지: {str(e)}")
+            print(f"   호출 인자: date={date}, stock_code={stock_code}")
+            traceback.print_exc()
             return None
 
     async def get_market_cap_data(
@@ -539,7 +544,12 @@ class StockDataService:
                 return None
 
         except Exception as e:
-            print(f"❌ 시가총액 데이터 조회 실패 (pykrx): {stock_code}, {e}")
+            import traceback
+            print(f"❌ 시가총액 데이터 조회 실패 (pykrx): {stock_code}")
+            print(f"   에러 타입: {type(e).__name__}")
+            print(f"   에러 메시지: {str(e)}")
+            print(f"   호출 인자: date={date}, stock_code={stock_code}")
+            traceback.print_exc()
             return None
 
     async def get_investor_trading(
@@ -615,7 +625,12 @@ class StockDataService:
                 return None
 
         except Exception as e:
-            print(f"❌ 투자주체별 매매 조회 실패 (pykrx): {stock_code}, {e}")
+            import traceback
+            print(f"❌ 투자주체별 매매 조회 실패 (pykrx): {stock_code}")
+            print(f"   에러 타입: {type(e).__name__}")
+            print(f"   에러 메시지: {str(e)}")
+            print(f"   호출 인자: start={start_str}, end={end_str}, stock_code={stock_code}")
+            traceback.print_exc()
             return None
 
 
