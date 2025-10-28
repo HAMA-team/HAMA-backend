@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from src.config.settings import settings
 from src.utils.llm_factory import get_llm
 from src.utils.json_parser import safe_json_parse
+from src.utils.indicators import calculate_all_indicators
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
 
@@ -144,13 +145,31 @@ async def collect_data_node(state: ResearchState) -> ResearchState:
                 "source": "DART"
             }
 
-        logger.info(f"✅ [Research/Collect] 데이터 수집 완료")
+        # 5. 기술적 지표 계산
+        technical_indicators = calculate_all_indicators(price_df)
+
+        # 6. 시장 지수 데이터 수집 (KOSPI)
+        try:
+            market_df = await stock_data_service.get_market_index("KOSPI", days=30)
+            market_data = {
+                "index": "KOSPI",
+                "current": float(market_df.iloc[-1]["Close"]) if market_df is not None and len(market_df) > 0 else None,
+                "change": float(market_df.iloc[-1]["Close"] - market_df.iloc[-2]["Close"]) if market_df is not None and len(market_df) > 1 else None,
+                "change_rate": float((market_df.iloc[-1]["Close"] / market_df.iloc[-2]["Close"] - 1) * 100) if market_df is not None and len(market_df) > 1 else None,
+            }
+        except Exception as e:
+            logger.warning(f"⚠️ [Research/Collect] 시장 지수 데이터 수집 실패: {e}")
+            market_data = {"index": "KOSPI", "current": None, "change": None, "change_rate": None}
+
+        logger.info(f"✅ [Research/Collect] 데이터 수집 완료 (기술적 지표 포함)")
 
         return {
             "stock_code": stock_code,
             "price_data": price_data,
             "financial_data": financial_data,
             "company_data": company_data,
+            "market_index_data": market_data,
+            "technical_indicators": technical_indicators,
         }
 
     except Exception as e:
@@ -178,6 +197,9 @@ async def bull_analyst_node(state: ResearchState) -> ResearchState:
         temperature=0.3
     )
 
+    technical = state.get('technical_indicators', {})
+    market = state.get('market_index_data', {})
+
     prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 **긍정적 시나리오**를 제시하세요.
 
 ## 종목 정보
@@ -188,11 +210,17 @@ async def bull_analyst_node(state: ResearchState) -> ResearchState:
 - 현재가: {state.get('price_data', {}).get('latest_close', 0):,.0f}원
 - 최근 거래량: {state.get('price_data', {}).get('latest_volume', 0):,.0f}주
 
+## 기술적 지표
+{json.dumps(technical, ensure_ascii=False, indent=2) if technical else '기술적 지표 없음'}
+
+## 시장 환경
+- KOSPI 현재: {market.get('current', 'N/A')} ({market.get('change_rate', 0):.2f}%)
+
 ## 재무 데이터
 {json.dumps(state.get('financial_data'), ensure_ascii=False, indent=2) if state.get('financial_data') else '재무제표 없음'}
 
 **강세 관점에서 분석:**
-1. 긍정적 요인 3가지
+1. 긍정적 요인 3가지 (기술적 지표 포함)
 2. 목표가 (현재가 대비 상승 전망)
 3. 신뢰도 (1-5)
 
@@ -256,6 +284,9 @@ async def bear_analyst_node(state: ResearchState) -> ResearchState:
         temperature=0.3
     )
 
+    technical = state.get('technical_indicators', {})
+    market = state.get('market_index_data', {})
+
     prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 **부정적 시나리오**를 제시하세요.
 
 ## 종목 정보
@@ -266,11 +297,17 @@ async def bear_analyst_node(state: ResearchState) -> ResearchState:
 - 현재가: {state.get('price_data', {}).get('latest_close', 0):,.0f}원
 - 최근 거래량: {state.get('price_data', {}).get('latest_volume', 0):,.0f}주
 
+## 기술적 지표
+{json.dumps(technical, ensure_ascii=False, indent=2) if technical else '기술적 지표 없음'}
+
+## 시장 환경
+- KOSPI 현재: {market.get('current', 'N/A')} ({market.get('change_rate', 0):.2f}%)
+
 ## 재무 데이터
 {json.dumps(state.get('financial_data'), ensure_ascii=False, indent=2) if state.get('financial_data') else '재무제표 없음'}
 
 **약세 관점에서 분석:**
-1. 리스크 요인 3가지
+1. 리스크 요인 3가지 (기술적 지표 포함)
 2. 하방 목표가
 3. 신뢰도 (1-5)
 
@@ -334,6 +371,7 @@ async def consensus_node(state: ResearchState) -> ResearchState:
     bull = state.get("bull_analysis", {})
     bear = state.get("bear_analysis", {})
     current_price = state.get('price_data', {}).get('latest_close', 0)
+    technical = state.get('technical_indicators', {})
 
     # 목표가 계산 (Bull/Bear 가중 평균)
     bull_target = bull.get("target_price", current_price * 1.1)
@@ -341,15 +379,25 @@ async def consensus_node(state: ResearchState) -> ResearchState:
     bull_conf = bull.get("confidence", 3)
     bear_conf = bear.get("confidence", 3)
 
+    # 기술적 지표에 따른 가중치 조정
+    tech_trend = technical.get("overall_trend", "중립")
+    if tech_trend == "강세":
+        bull_conf = min(bull_conf + 1, 5)  # 강세 신뢰도 증가
+    elif tech_trend == "약세":
+        bear_conf = min(bear_conf + 1, 5)  # 약세 신뢰도 증가
+
     # 가중 평균 목표가
     total_conf = bull_conf + bear_conf
     target_price = int((bull_target * bull_conf + bear_target * bear_conf) / total_conf)
 
-    # 투자 의견 결정
+    # 투자 의견 결정 (기술적 지표 반영)
     upside = (target_price - current_price) / current_price
-    if upside > 0.15:
+
+    # RSI 과매수/과매도 고려
+    rsi_signal = technical.get("rsi", {}).get("signal", "중립")
+    if upside > 0.15 and rsi_signal != "과매수":
         recommendation = "BUY"
-    elif upside < -0.05:
+    elif upside < -0.05 or rsi_signal == "과매수":
         recommendation = "SELL"
     else:
         recommendation = "HOLD"
@@ -365,7 +413,12 @@ async def consensus_node(state: ResearchState) -> ResearchState:
         "confidence": confidence,
         "bull_case": bull.get("positive_factors", []),
         "bear_case": bear.get("risk_factors", []),
-        "summary": f"{state.get('company_data', {}).get('corp_name', state['stock_code'])} - {recommendation} (목표가: {target_price:,}원)"
+        "technical_summary": {
+            "trend": tech_trend,
+            "rsi": rsi_signal,
+            "signals": technical.get("signals", [])
+        },
+        "summary": f"{state.get('company_data', {}).get('corp_name', state['stock_code'])} - {recommendation} (목표가: {target_price:,}원, 기술적 추세: {tech_trend})"
     }
 
     logger.info(f"✅ [Research/Consensus] 최종 의견: {recommendation}")

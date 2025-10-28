@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     # LLM APIs
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "gpt-4o-mini"
     ANTHROPIC_API_KEY: str | None = None
     CLAUDE_MODEL: str = "claude-haiku-4-5-20251001"
     GEMINI_API_KEY: str | None = None
@@ -56,6 +56,16 @@ class Settings(BaseSettings):
     def llm_provider(self) -> str:
         """현재 LLM 모드에 따라 사용할 프로바이더 반환"""
         mode = os.getenv("LLM_MODE", self.LLM_MODE).lower()
+
+        # 명시적으로 provider 지정한 경우
+        if mode in ["openai", "gpt"]:
+            return "openai"
+        elif mode in ["anthropic", "claude"]:
+            return "anthropic"
+        elif mode in ["google", "gemini"]:
+            return "google"
+
+        # 레거시 모드 매핑
         if mode in ["production", "prod", "demo"]:
             return "anthropic"
         else:  # test, development 등
@@ -69,6 +79,8 @@ class Settings(BaseSettings):
             return self.CLAUDE_MODEL
         elif provider == "google":
             return self.GEMINI_MODEL
+        elif provider == "openai":
+            return self.OPENAI_MODEL  # OpenAI 모델 사용
         else:
             return self.CLAUDE_MODEL  # fallback
 

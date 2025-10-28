@@ -32,7 +32,7 @@ class ResearchState(TypedDict, total=False):
 
     # 데이터 수집 결과
     price_data: Optional[dict]
-    """주가 데이터 (FinanceDataReader)"""
+    """주가 데이터 (pykrx)"""
 
     financial_data: Optional[dict]
     """재무제표 데이터 (DART)"""
@@ -40,7 +40,17 @@ class ResearchState(TypedDict, total=False):
     company_data: Optional[dict]
     """기업 정보 (DART)"""
 
+    market_index_data: Optional[dict]
+    """시장 지수 데이터 (KOSPI, KOSDAQ)"""
+
+    # 기술적 지표
+    technical_indicators: Optional[dict]
+    """기술적 지표 계산 결과 (RSI, MACD, Bollinger Bands 등)"""
+
     # 분석 결과
+    technical_analysis: Optional[dict]
+    """기술적 분석 결과 (LLM이 지표를 해석)"""
+
     bull_analysis: Optional[dict]
     """강세 분석 (LLM)"""
 
