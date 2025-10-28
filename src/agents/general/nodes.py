@@ -21,7 +21,16 @@ async def answer_question_node(state: GeneralState) -> dict:
     - RAG 연동 (투자 용어 사전)
     - 벡터 DB 검색 (유사 질문)
     """
-    query = state.get("query", "")
+    query = state.get("query", "").strip()
+
+    # 빈 쿼리 검증
+    if not query:
+        logger.warning("⚠️ [General] 빈 질문 감지 - 기본 응답 반환")
+        return {
+            "answer": "질문 내용이 비어있습니다. 투자 관련 질문을 입력해주세요.",
+            "sources": [],
+            "messages": list(state.get("messages", [])),
+        }
 
     logger.info(f"💬 [General] 질문 응답 중: {query[:50]}...")
 

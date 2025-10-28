@@ -89,6 +89,22 @@ async def route_query(
     if conversation_history is None:
         conversation_history = []
 
+    # 빈 쿼리 검증
+    query = query.strip()
+    if not query:
+        logger.warning("⚠️ [Router] 빈 질문 감지 - 기본 라우팅 반환")
+        return RoutingDecision(
+            query_complexity="simple",
+            user_intent="general_inquiry",
+            agents_to_call=["general"],
+            depth_level="brief",
+            personalization={
+                "adjust_for_expertise": True,
+                "include_explanations": True,
+            },
+            reasoning="빈 질문이므로 general agent로 라우팅",
+        )
+
     # 사용자 프로파일 기본값
     user_expertise = user_profile.get("expertise_level", "intermediate")
     investment_style = user_profile.get("investment_style", "moderate")

@@ -2,7 +2,7 @@
 채팅 및 승인 관련 API 엔드포인트 모음
 """
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any
 import uuid
 import os
@@ -58,9 +58,17 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     """채팅 요청 스키마"""
-    message: str
+    message: str = Field(..., min_length=1, description="사용자 메시지 (비어있으면 안 됨)")
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3, description="자동화 레벨: 1=Pilot, 2=Copilot, 3=Advisor")
+
+    @field_validator("message")
+    @classmethod
+    def validate_message_not_whitespace(cls, v: str) -> str:
+        """메시지 검증: 공백만 있는 메시지 거부"""
+        if not v.strip():
+            raise ValueError("메시지는 공백만 포함할 수 없습니다")
+        return v
 
 
 class ChatResponse(BaseModel):
