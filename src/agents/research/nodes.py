@@ -6,7 +6,6 @@ Langgraph 서브그래프 노드 구현
 import asyncio
 import json
 import logging
-import re
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -20,46 +19,6 @@ from src.services.dart_service import dart_service
 from .state import ResearchState
 
 logger = logging.getLogger(__name__)
-
-RATE_LIMIT_DOC_URL = "https://ai.google.dev/gemini-api/docs/rate-limits?hl=ko"
-
-
-def _extract_retry_delay(exc: Exception) -> int:
-    """
-    Gemini 레이트 리밋 응답에서 재시도 지연 시간 추출
-
-    Google API 예외는 retry_delay 필드나 메시지에 seconds 값을 포함할 수 있다.
-    """
-    # direct attribute (google.api_core.exceptions.ResourceExhausted 등)
-    retry_delay = getattr(exc, "retry_delay", None)
-    if retry_delay:
-        try:
-            if hasattr(retry_delay, "total_seconds"):
-                seconds = int(retry_delay.total_seconds())
-            else:
-                seconds = int(retry_delay)
-            if seconds > 0:
-                return seconds
-        except Exception:
-            pass
-
-    message = str(exc)
-    patterns = [
-        r"retry_delay\s*\{\s*seconds:\s*(\d+)",
-        r"Retry-After'?:\s*(\d+)",
-        r"retry after (\d+)s",
-        r"Retry after (\d+)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, message, re.IGNORECASE)
-        if match:
-            try:
-                seconds = int(match.group(1))
-                if seconds > 0:
-                    return seconds
-            except Exception:
-                continue
-    return 0
 
 
 # ==================== Data Collection Node ====================
@@ -276,19 +235,11 @@ JSON 형식으로:
                 "bull_analysis": analysis,
             }
         except Exception as e:
-            retry_seconds = _extract_retry_delay(e)
             logger.error(f"❌ [Research/Bull] LLM 호출 실패 (시도 {attempt + 1}/{max_retries}): {e}")
 
             if attempt < max_retries - 1:
-                wait = retry_seconds or 2
-                if retry_seconds:
-                    logger.warning(
-                        f"   레이트 리밋 감지, {wait}초 대기 후 재시도 (참조: {RATE_LIMIT_DOC_URL})"
-                    )
-                else:
-                    logger.info("   재시도 중...")
-
-                await asyncio.sleep(wait)
+                logger.info("   2초 대기 후 재시도...")
+                await asyncio.sleep(2)
                 continue
 
             raise RuntimeError(f"강세 분석 실패: {e}") from e
@@ -377,19 +328,11 @@ JSON 형식으로:
                 "bear_analysis": analysis,
             }
         except Exception as e:
-            retry_seconds = _extract_retry_delay(e)
             logger.error(f"❌ [Research/Bear] LLM 호출 실패 (시도 {attempt + 1}/{max_retries}): {e}")
 
             if attempt < max_retries - 1:
-                wait = retry_seconds or 2
-                if retry_seconds:
-                    logger.warning(
-                        f"   레이트 리밋 감지, {wait}초 대기 후 재시도 (참조: {RATE_LIMIT_DOC_URL})"
-                    )
-                else:
-                    logger.info("   재시도 중...")
-
-                await asyncio.sleep(wait)
+                logger.info("   2초 대기 후 재시도...")
+                await asyncio.sleep(2)
                 continue
 
             raise RuntimeError(f"약세 분석 실패: {e}") from e
