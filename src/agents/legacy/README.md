@@ -2,10 +2,23 @@
 
 이 디렉토리는 LangGraph 서브그래프로 전환되지 않은 Legacy 에이전트들을 포함합니다.
 
-## 📊 현재 상태 (2025-10-06)
+## 📊 현재 상태 (2025-10-28)
 
-### ✅ 마이그레이션 완료
-- **DataCollectionAgent** - ~~삭제됨~~
+### ✅ 마이그레이션 완료 (LangGraph 서브그래프)
+- **ResearchAgent** - ~~삭제됨~~ (2025-10-28)
+  - `src/agents/research/graph.py` - LangGraph 서브그래프로 전환
+  - 노드: collect_data → [bull_analysis, bear_analysis] → consensus
+
+- **StrategyAgent** - ~~삭제됨~~ (2025-10-28)
+  - `src/agents/strategy/graph.py` - LangGraph 서브그래프로 전환
+  - 노드: market_analysis → sector_rotation → asset_allocation → blueprint
+
+- **RiskAgent** - `src/agents/risk/graph.py` ✅
+- **TradingAgent** - `src/agents/trading/graph.py` ✅
+- **PortfolioAgent** - `src/agents/portfolio/graph.py` ✅
+- **GeneralAgent** - `src/agents/general/graph.py` ✅
+
+- **DataCollectionAgent** - ~~삭제됨~~ (2025-10-06)
   - Research Agent의 `collect_data_node`로 통합
   - 서비스 직접 호출 (`stock_data_service`, `dart_service`)
 
@@ -25,6 +38,12 @@
 - `base_agent.py` - LegacyAgent 추상 클래스
 
 ## 🔄 마이그레이션 히스토리
+
+### 2025-10-28: ResearchAgent & StrategyAgent 중복 제거
+- `research_agent.py` (201줄) 삭제 - LangGraph 서브그래프만 사용
+- `strategy_agent.py` (174줄) 삭제 - LangGraph 서브그래프만 사용
+- **효과**: 375줄 중복 코드 제거, 아키텍처 단순화
+- **영향**: 없음 (모든 외부 코드가 이미 서브그래프 사용 중)
 
 ### 2025-10-06: DataCollectionAgent 제거
 - Research Agent에서 `data_collection_agent` 의존성 제거
@@ -78,5 +97,5 @@
 
 ---
 
-**최종 업데이트**: 2025-10-06
-**브랜치**: `feat/legacy-migration`
+**최종 업데이트**: 2025-10-28
+**브랜치**: `feat/frontend-integration-phase2-p2`
