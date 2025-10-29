@@ -307,6 +307,52 @@ def create_test_chat_session(
 
 # ==================== Pytest 설정 ====================
 
+@pytest.fixture(scope="function")
+def event_loop():
+    """
+    각 테스트 함수마다 새로운 event loop를 생성합니다.
+
+    pytest-asyncio가 자동으로 event loop를 관리하지만,
+    명시적으로 정의하여 cleanup을 보장합니다.
+    """
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    yield loop
+    # 모든 pending tasks를 정리
+    try:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    except Exception:
+        pass
+    finally:
+        loop.close()
+
+
+@pytest.fixture(autouse=True)
+def reset_llm_cache():
+    """
+    각 테스트 전 LLM 및 Graph 캐시를 초기화합니다.
+
+    lru_cache로 캐싱된 LLM 인스턴스와 Graph가 이전 event loop를 참조하여
+    'Event loop is closed' 에러를 발생시키는 것을 방지합니다.
+    """
+    from src.utils.llm_factory import _build_llm
+    from src.agents.graph_master import get_compiled_graph, _load_agent
+
+    _build_llm.cache_clear()
+    get_compiled_graph.cache_clear()
+    _load_agent.cache_clear()
+
+    yield
+
+    _build_llm.cache_clear()
+    get_compiled_graph.cache_clear()
+    _load_agent.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def reset_environment():
     """각 테스트 전후 환경 변수 초기화"""

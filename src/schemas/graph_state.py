@@ -6,7 +6,7 @@ Langgraph 표준 패턴을 준수하는 State 정의
 - 대화 히스토리 자동 관리
 - LangChain 도구 통합 가능
 """
-from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional, NotRequired
+from typing import TypedDict, Annotated, Sequence, List, Dict, Any, Optional
 from langgraph.graph.message import add_messages
 from langgraph.managed import RemainingSteps
 from langchain_core.messages import BaseMessage
@@ -28,7 +28,7 @@ class GraphState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], add_messages]
     """대화 메시지 리스트 (HumanMessage, AIMessage 등)"""
 
-    remaining_steps: NotRequired[RemainingSteps]
+    remaining_steps: RemainingSteps
     """ReAct 에이전트의 남은 실행 스텝 수 (Supervisor 패턴 필수)"""
 
     # ==================== 사용자 컨텍스트 ====================

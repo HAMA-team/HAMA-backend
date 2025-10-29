@@ -14,6 +14,7 @@ Master Agent의 역할 (순수 조율자):
 import asyncio
 import logging
 from functools import lru_cache
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -22,12 +23,6 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph_supervisor import create_supervisor
 
-from src.agents.general import general_agent
-from src.agents.portfolio import portfolio_agent
-from src.agents.research import research_agent
-from src.agents.risk import risk_agent
-from src.agents.strategy import strategy_agent
-from src.agents.trading import trading_agent
 from src.config.settings import settings
 from src.schemas.graph_state import GraphState
 from src.utils.llm_factory import get_llm
@@ -36,6 +31,15 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== Supervisor 구성 ====================
+
+@lru_cache
+def _load_agent(module_path: str, attribute: str):
+    """
+    에이전트 모듈을 지연 로딩하여 초기 import 순환/경로 문제를 회피한다.
+    """
+    module = import_module(module_path)
+    return getattr(module, attribute)
+
 
 def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = None):
     """
@@ -120,12 +124,12 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
     supervisor = create_supervisor(
         agents=[
-            research_agent,
-            strategy_agent,
-            risk_agent,
-            trading_agent,
-            general_agent,
-            portfolio_agent,
+            _load_agent("src.agents.research", "research_agent"),
+            _load_agent("src.agents.strategy", "strategy_agent"),
+            _load_agent("src.agents.risk", "risk_agent"),
+            _load_agent("src.agents.trading", "trading_agent"),
+            _load_agent("src.agents.general", "general_agent"),
+            _load_agent("src.agents.portfolio", "portfolio_agent"),
             # monitoring_agent,
         ],
         model=llm,
