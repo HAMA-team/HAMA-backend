@@ -117,7 +117,7 @@ async def chat(request: ChatRequest):
         )
 
         # Build graph with automation level
-        app = build_graph(automation_level=request.automation_level)
+        app = build_graph(automation_level=request.automation_level, backend_key="redis")
 
         # Config for checkpointer
         config: RunnableConfig = {
@@ -505,7 +505,7 @@ async def approve_action(approval: ApprovalRequest):
             metadata=decision_metadata,
         )
 
-        app = build_graph(automation_level=approval.automation_level)
+        app = build_graph(automation_level=approval.automation_level, backend_key="redis")
 
         config: RunnableConfig = {
             "configurable": {
