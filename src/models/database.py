@@ -16,7 +16,7 @@ def _create_engine() -> Engine:
         DATABASE_URL,
         pool_size=settings.DB_POOL_SIZE,
         max_overflow=settings.DB_MAX_OVERFLOW,
-        echo=settings.DEBUG,
+        echo=settings.DB_ECHO,  # DB 로그는 별도로 제어
     )
 
 

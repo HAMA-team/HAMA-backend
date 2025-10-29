@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""  # 환경변수 필수
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
+    DB_ECHO: bool = False  # SQLAlchemy 쿼리 로그 출력 여부 (개발 시 True로 변경 가능)
 
     @property
     def database_url(self) -> str:

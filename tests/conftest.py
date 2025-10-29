@@ -14,6 +14,7 @@ Fixtures:
         ...
 """
 import json
+import logging
 import os
 import sys
 import uuid
@@ -24,6 +25,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage
+
+# SQLAlchemy 로그를 완전히 비활성화 (ERROR만 표시)
+logging.getLogger('sqlalchemy.engine').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.pool').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.dialects').setLevel(logging.ERROR)
+logging.getLogger('sqlalchemy.orm').setLevel(logging.ERROR)
 
 # 프로젝트 루트를 Python 경로에 추가
 project_root = Path(__file__).parent.parent
@@ -98,6 +105,12 @@ def clean_db():
             # DB가 깨끗한 상태로 시작
             ...
     """
+    # SQLAlchemy 로거를 완전히 비활성화 (테스트 중)
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.pool').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.dialects').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.orm').setLevel(logging.ERROR)
+
     # 테스트 전: 모든 테이블 삭제 후 재생성
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
@@ -256,10 +269,9 @@ def create_test_portfolio(
                 position_id=uuid.uuid4(),
                 portfolio_id=uuid.UUID(portfolio_id),
                 stock_code=holding["stock_code"],
-                stock_name=holding.get("stock_name", ""),
                 quantity=holding["quantity"],
-                avg_price=Decimal(str(holding["avg_price"])),
-                current_price=Decimal(str(holding.get("current_price", holding["avg_price"]))),
+                average_price=Decimal(str(holding.get("avg_price", holding.get("average_price", 0)))),
+                current_price=Decimal(str(holding.get("current_price", holding.get("avg_price", holding.get("average_price", 0))))),
                 market_value=Decimal(str(holding.get("market_value", 0))),
                 weight=Decimal(str(holding.get("weight", 0))),
             )
@@ -374,3 +386,9 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "slow: 느린 테스트 (10초 이상)"
     )
+
+    # SQLAlchemy 로깅 완전히 비활성화 (ERROR만 표시)
+    logging.getLogger('sqlalchemy.engine').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.pool').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.dialects').setLevel(logging.ERROR)
+    logging.getLogger('sqlalchemy.orm').setLevel(logging.ERROR)
