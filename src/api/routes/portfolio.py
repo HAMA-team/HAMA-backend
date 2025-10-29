@@ -19,11 +19,24 @@ from src.services import (
     portfolio_service,
 )
 from src.schemas.portfolio import PortfolioChartData, StockChartData
-from src.data.stock_sectors import get_sector, get_sector_color
 from src.services.stock_data_service import stock_data_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+# 간단한 대체 함수 (실제로는 DART API 또는 DB에서 조회해야 함)
+def get_sector(stock_code: str) -> str:
+    """종목의 섹터 반환 (미구현)"""
+    return "기타"
+
+
+def get_sector_color(sector: str) -> str:
+    """섹터 색상 반환 (간단한 해시 기반)"""
+    # 섹터명을 해시하여 색상 생성
+    import hashlib
+    hash_val = int(hashlib.md5(sector.encode()).hexdigest()[:6], 16)
+    return f"#{hash_val % 0xFFFFFF:06X}"
 
 
 def _to_decimal(value: Optional[Any]) -> Optional[Decimal]:

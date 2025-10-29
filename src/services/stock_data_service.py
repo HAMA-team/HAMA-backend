@@ -354,67 +354,11 @@ class StockDataService:
                     print(f"❌ [Index] 지수 데이터 조회 실패 (pykrx): {error_detail}")
 
                     if attempt == max_retries - 1:
-                        # TODO: pykrx API 이슈 해결 전까지 mock 데이터 반환
-                        # Issue: pykrx의 get_index_ohlcv()가 내부적으로 get_index_ticker_name()을 호출하는데
-                        # 이 함수가 DataFrame에서 '지수명' 컬럼을 찾지 못하는 버그가 있음
-                        print(f"⚠️ [Index] pykrx API 이슈로 인해 mock 데이터 반환: {index_name}")
-
-                        # Mock 데이터 생성 (합리적인 추정치)
-                        mock_prices = self._generate_mock_index_data(index_name, days)
-                        if mock_prices:
-                            df = pd.DataFrame(mock_prices, columns=["Open", "High", "Low", "Close", "Volume"])
-                            df.index = pd.date_range(end=datetime.now(), periods=len(mock_prices), freq='D')
-
-                            # 캐싱
-                            self.cache.set(
-                                cache_key,
-                                df.to_dict("records"),
-                                ttl=settings.CACHE_TTL_MARKET_INDEX
-                            )
-                            print(f"✅ [Index] Mock 데이터 생성 완료: {index_name}")
-                            return df
-
-                        # Mock 데이터 생성도 실패하면 None 반환
+                        logger.error(f"❌ [Index] {index_name} 데이터 조회 실패 (pykrx API 이슈)")
                         return None
 
         return None
 
-    def _generate_mock_index_data(self, index_name: str, days: int) -> List[List[float]]:
-        """
-        시장 지수 mock 데이터 생성
-
-        TODO: pykrx API 수정 후 제거 예정
-        """
-        # 기준 가격 (2024년 10월 기준 합리적 추정)
-        base_prices = {
-            "KOSPI": 2600.0,
-            "KOSDAQ": 750.0,
-            "KRX100": 6500.0,
-        }
-
-        base = base_prices.get(index_name, 2600.0)
-
-        # 간단한 랜덤 워크로 mock 데이터 생성
-        import random
-        random.seed(42)  # 재현 가능성을 위해
-
-        data = []
-        current = base
-
-        for _ in range(min(days, 60)):  # 최대 60일
-            # ±1% 범위의 변동
-            change = random.uniform(-0.01, 0.01)
-            current = current * (1 + change)
-
-            open_price = current * random.uniform(0.995, 1.005)
-            high_price = current * random.uniform(1.0, 1.01)
-            low_price = current * random.uniform(0.99, 1.0)
-            close_price = current
-            volume = random.randint(300000000, 500000000)
-
-            data.append([open_price, high_price, low_price, close_price, volume])
-
-        return data
 
     async def get_fundamental_data(
         self, stock_code: str, date: str = None

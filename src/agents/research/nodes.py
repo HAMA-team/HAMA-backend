@@ -23,37 +23,6 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_WORKERS = {"data", "bull", "bear", "insight", "macro"}
 
-DEFAULT_PLAN = {
-    "plan_summary": "데이터 수집 → 거시경제 분석 → 강세·약세 분석 → 핵심 시사점 도출",
-    "tasks": [
-        {
-            "id": "task_1",
-            "worker": "data",
-            "description": "필요한 시세, 재무, 수급 데이터를 확보한다.",
-        },
-        {
-            "id": "task_2",
-            "worker": "macro",
-            "description": "거시경제 환경(금리, 물가, 환율)을 분석한다.",
-        },
-        {
-            "id": "task_3",
-            "worker": "bull",
-            "description": "강세 관점에서 투자 논리를 정리한다.",
-        },
-        {
-            "id": "task_4",
-            "worker": "bear",
-            "description": "약세 관점에서 리스크 요인을 정리한다.",
-        },
-        {
-            "id": "task_5",
-            "worker": "insight",
-            "description": "중요 인사이트와 잔여 리스크를 요약한다.",
-        },
-    ],
-}
-
 
 def _coerce_number(value: Any, fallback: float) -> float:
     try:
@@ -92,13 +61,17 @@ def _extract_stock_code(state: ResearchState) -> str:
 
 
 def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    LLM이 생성한 태스크를 검증하고 정리
+    """
     if not tasks:
-        return deepcopy(DEFAULT_PLAN["tasks"])
+        raise ValueError("태스크 리스트가 비어있습니다. LLM이 올바른 계획을 생성하지 못했습니다.")
 
     sanitized: List[Dict[str, Any]] = []
     for idx, task in enumerate(tasks, start=1):
         worker_raw = str(task.get("worker", "")).lower()
 
+        # Worker 타입 정규화
         if worker_raw not in ALLOWED_WORKERS:
             if "data" in worker_raw:
                 worker = "data"
@@ -106,6 +79,8 @@ def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 worker = "bull"
             elif "bear" in worker_raw or "risk" in worker_raw:
                 worker = "bear"
+            elif "macro" in worker_raw:
+                worker = "macro"
             else:
                 worker = "insight"
         else:
@@ -118,10 +93,6 @@ def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "description": task.get("description") or task.get("objective") or "조사 작업",
             }
         )
-
-    workers = {task["worker"] for task in sanitized}
-    if not workers.issuperset(ALLOWED_WORKERS):
-        return deepcopy(DEFAULT_PLAN["tasks"])
 
     return sanitized
 
@@ -172,23 +143,24 @@ JSON 형식으로만 답변하세요:
 worker 값은 반드시 data, bull, bear, insight 중 하나여야 합니다.
 """
 
-    plan = None
     try:
         response = await llm.ainvoke(prompt)
         content = response.content if hasattr(response, "content") else str(response)
         plan = safe_json_parse(content, "Research/Planner")
+
+        if not isinstance(plan, dict):
+            raise ValueError("LLM이 올바른 JSON 형식의 계획을 생성하지 못했습니다.")
+
+        sanitized_tasks = _sanitize_tasks(plan.get("tasks", []))
+        plan["tasks"] = sanitized_tasks
+
     except Exception as exc:
-        logger.warning("⚠️ [Research/Planner] 계획 생성 실패, 기본 계획 사용: %s", exc)
-
-    if not isinstance(plan, dict):
-        plan = deepcopy(DEFAULT_PLAN)
-
-    sanitized_tasks = _sanitize_tasks(plan.get("tasks", []))
-    plan["tasks"] = sanitized_tasks
+        logger.error("❌ [Research/Planner] 계획 생성 실패: %s", exc)
+        raise
 
     plan_message_lines = [
         "📋 조사 계획을 수립했습니다.",
-        plan.get("plan_summary") or DEFAULT_PLAN["plan_summary"],
+        plan.get("plan_summary", "종목 분석 계획"),
     ]
     for task in sanitized_tasks:
         plan_message_lines.append(f"- ({task['worker']}) {task['description']}")

@@ -60,11 +60,7 @@ def analyze_portfolio_pattern(portfolio_data: List[Dict[str, Any]]) -> str:
         )
         concentration = hhi
 
-    # 3. 섹터 분포 (현재는 Mock, 실제로는 stock_code → sector 매핑 필요)
-    # TODO: DART API로 종목별 업종 조회
-    sectors = ["반도체", "자동차", "바이오"]  # Mock
-
-    # 4. 분석 텍스트 생성
+    # 3. 분석 텍스트 생성
     concentration_desc = "집중 투자" if concentration > 0.5 else "분산 투자"
 
     analysis = f"""
@@ -72,7 +68,6 @@ def analyze_portfolio_pattern(portfolio_data: List[Dict[str, Any]]) -> str:
 - 종목 수: {stock_count}개
 - 집중도: {concentration:.2f} (0=완전분산, 1=완전집중)
 - 투자 패턴: {concentration_desc}
-- 주요 섹터: {', '.join(sectors[:3])}
 - 총 투자액: {total_value:,.0f}원
 """
 

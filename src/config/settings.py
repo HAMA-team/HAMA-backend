@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     DEMO_USER_ID: str = "3bd04ffb-350a-5fa4-bee5-6ce019fdad9c"
 
     # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/hama_db"
+    DATABASE_URL: str = ""  # 환경변수 필수
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
@@ -47,16 +47,17 @@ class Settings(BaseSettings):
     ROUTER_MODEL_PROVIDER: str = "openai"  # anthropic, openai, google
     ROUTER_MODEL: str = "gpt-4o-mini"
 
+
+    # Web Search
+    ENABLE_WEB_SEARCH: bool = True
+    WEB_SEARCH_MAX_RESULTS: int = 5
+    WEB_SEARCH_TIMEOUT: float = 8.0
+    WEB_SEARCH_REGION: str = "kr-kr"
+
     # LLM Settings
     LLM_TIMEOUT: int = 30
     MAX_TOKENS: int = 4000
     LLM_TEMPERATURE: float = 0.1
-
-    # Web Search
-    ENABLE_WEB_SEARCH: bool = False
-    WEB_SEARCH_MAX_RESULTS: int = 5
-    WEB_SEARCH_TIMEOUT: float = 8.0
-    WEB_SEARCH_REGION: str = "kr-kr"
 
     @property
     def llm_provider(self) -> str:
@@ -91,12 +92,6 @@ class Settings(BaseSettings):
         else:
             return self.CLAUDE_MODEL  # fallback
 
-    # GPT-5 nano Settings (Intent & Supervisor)
-    INTENT_MODEL: str = "gpt-5-nano"
-    SUPERVISOR_MODEL: str = "gpt-5-nano"
-    INTENT_REASONING_EFFORT: str = "minimal"
-    SUPERVISOR_REASONING_EFFORT: str = "low"
-
     # DART API
     DART_API_KEY: str = ""
 
@@ -109,17 +104,7 @@ class Settings(BaseSettings):
     KIS_APP_SECRET: str | None = None
     KIS_ACCOUNT_NUMBER: str | None = None
 
-    # JWT (Phase 2)
-    JWT_SECRET_KEY: str | None = None
-    JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-
-    # Vector DB (Phase 2)
-    PINECONE_API_KEY: str | None = None
-    PINECONE_ENVIRONMENT: str | None = None
-    QDRANT_URL: str = "http://localhost:6333"
-
-    # Redis (Phase 2)
+    # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # Caching (TTL in seconds)
@@ -146,10 +131,6 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
     CELERY_REALTIME_UPDATE_INTERVAL: int = 60  # 실시간 데이터 업데이트 주기 (초)
     CELERY_BATCH_SIZE: int = 50  # 배치당 종목 수 (Rate Limit 관리)
-
-    # Monitoring (Phase 2)
-    PROMETHEUS_PORT: int = 8001
-    GRAFANA_URL: str = "http://localhost:3000"
 
     # Logging
     LOG_LEVEL: str = "INFO"

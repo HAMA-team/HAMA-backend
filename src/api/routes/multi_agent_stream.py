@@ -120,22 +120,30 @@ async def stream_multi_agent_execution(
         if not agents_to_call:
             agents_to_call = ["general"]
 
+        resolved_stock_code: Optional[str] = None
+        clarification_message: Optional[str] = None
+
+        if "research" in agents_to_call:
+            resolved_stock_code = await resolve_stock_code(message)
+            if not resolved_stock_code:
+                clarification_message = (
+                    "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
+                    "종목명이나 티커(예: 128940)를 알려주시면 분석을 도와드릴게요."
+                )
+                agents_to_call = ["general"]
+
         yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level}, ensure_ascii=False)}\n\n"
 
         # 4. 각 에이전트 실행
         agent_results = {}
-        resolved_stock_code: Optional[str] = None
 
         for agent_name in agents_to_call:
             yield f"event: agent_start\ndata: {json.dumps({'agent': agent_name, 'message': f'{agent_name.upper()} Agent 실행 중...'}, ensure_ascii=False)}\n\n"
 
-            # Research Agent 예시
             if agent_name == "research":
                 from src.agents.research.graph import build_research_subgraph
 
                 agent = build_research_subgraph()
-                if resolved_stock_code is None:
-                    resolved_stock_code = await resolve_stock_code(message)
                 if not resolved_stock_code:
                     raise ValueError("질문에서 종목 코드를 추출하지 못했습니다.")
 
@@ -146,51 +154,46 @@ async def stream_multi_agent_execution(
                     "request_id": conversation_id,
                 }
 
-                # 스트리밍 실행
                 node_count = 0
                 async for event in agent.astream_events(input_state, version="v2"):
                     event_type = event["event"]
 
-                    # 노드 실행
                     if event_type == "on_chain_start":
                         node_name = event.get("name", "")
                         if node_name and node_name != "LangGraph":
                             node_count += 1
                             yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'running', 'message': f'{node_name} 노드 실행 중...'}, ensure_ascii=False)}\n\n"
-
-                    # 노드 완료
                     elif event_type == "on_chain_end":
                         node_name = event.get("name", "")
                         if node_name and node_name != "LangGraph":
                             yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'complete', 'message': f'{node_name} 완료'}, ensure_ascii=False)}\n\n"
-
-                    # LLM 호출 시작
                     elif event_type == "on_chat_model_start":
                         model = event.get("name", "LLM")
                         yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
-
-                    # LLM 스트리밍 (선택적, 너무 많으면 생략)
                     # elif event_type == "on_chat_model_stream":
-                    #     chunk = event.get("data", {}).get("chunk", {})
-                    #     if hasattr(chunk, "content") and chunk.content:
-                    #         yield f"event: agent_llm_stream\ndata: {json.dumps({'agent': agent_name, 'content': chunk.content}, ensure_ascii=False)}\n\n"
-
-                    # LLM 완료
+                    #     ...
                     elif event_type == "on_chat_model_end":
                         yield f"event: agent_llm_end\ndata: {json.dumps({'agent': agent_name, 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
-                # 최종 결과 가져오기
                 final_result = await agent.ainvoke(input_state)
                 agent_results[agent_name] = final_result
 
-                # 에이전트 완료
                 consensus = final_result.get("consensus", {})
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'recommendation': consensus.get('recommendation'), 'target_price': consensus.get('target_price'), 'confidence': consensus.get('confidence')}}, ensure_ascii=False)}\n\n"
+
             elif agent_name == "general":
                 from src.agents.general.graph import build_general_subgraph
 
-                agent = build_general_subgraph()
+                if clarification_message:
+                    answer = clarification_message
+                    agent_results[agent_name] = {
+                        "answer": answer,
+                        "sources": [],
+                    }
+                    yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': answer}}, ensure_ascii=False)}\n\n"
+                    continue
 
+                agent = build_general_subgraph()
                 input_state = {
                     "messages": [HumanMessage(content=message)],
                     "query": message,
@@ -205,18 +208,24 @@ async def stream_multi_agent_execution(
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': result.get('answer')}}, ensure_ascii=False)}\n\n"
 
             elif agent_name == "strategy":
-                # Strategy Agent (간단한 mock)
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'analyze_market', 'status': 'running'}, ensure_ascii=False)}\n\n"
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'generate_strategy', 'status': 'running'}, ensure_ascii=False)}\n\n"
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'strategy': 'MOMENTUM', 'allocation': 0.3}}, ensure_ascii=False)}\n\n"
 
             elif agent_name == "risk":
-                # Risk Agent (간단한 mock)
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'calculate_risk', 'status': 'running'}, ensure_ascii=False)}\n\n"
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'risk_level': 'MEDIUM', 'max_loss': 0.15}}, ensure_ascii=False)}\n\n"
+
             else:
                 logger.warning("⚠️ [MultiAgentStream] 지원되지 않는 에이전트 요청: %s", agent_name)
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'warning': '지원되지 않는 에이전트입니다.'}}, ensure_ascii=False)}\n\n"
+
+        if clarification_message:
+            final_response = clarification_message
+            yield f"event: master_complete\ndata: {json.dumps({'message': final_response, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+            logger.info("✅ [MultiAgentStream] 종목명 요청으로 응답 종료")
+            return
 
         # 5. Master가 결과 집계
         yield f"event: master_aggregating\ndata: {json.dumps({'message': '분석 결과를 종합하고 있습니다...'}, ensure_ascii=False)}\n\n"

@@ -11,7 +11,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 from src.agents.graph_master import build_graph
-from langgraph.types import Command
+from src.utils.langgraph_compat import Command
 from langchain_core.messages import HumanMessage, AIMessage
 from src.services import chat_history_service, portfolio_service
 from src.services.portfolio_preview_service import (

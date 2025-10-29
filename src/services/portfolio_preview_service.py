@@ -7,9 +7,21 @@ from typing import Dict, List, Optional
 import logging
 
 from src.schemas.hitl import PortfolioPreview, ExpectedPortfolioPreview
-from src.data.stock_sectors import get_sector_color
 
 logger = logging.getLogger(__name__)
+
+
+# 간단한 대체 함수
+def get_sector(stock_code: str) -> str:
+    """종목의 섹터 반환 (미구현)"""
+    return "기타"
+
+
+def get_sector_color(sector: str) -> str:
+    """섹터 색상 반환 (간단한 해시 기반)"""
+    import hashlib
+    hash_val = int(hashlib.md5(sector.encode()).hexdigest()[:6], 16)
+    return f"#{hash_val % 0xFFFFFF:06X}"
 
 
 async def calculate_portfolio_preview(
@@ -54,7 +66,6 @@ async def calculate_portfolio_preview(
                 weight = market_value / total_value if total_value > 0 else 0.0
 
                 # 섹터별 색상
-                from src.data.stock_sectors import get_sector, get_sector_color
                 sector = get_sector(stock_code)
                 color = get_sector_color(sector)
 
@@ -128,7 +139,6 @@ async def calculate_portfolio_preview(
             weight = market_value / new_total_value if new_total_value > 0 else 0.0
 
             # 섹터별 색상
-            from src.data.stock_sectors import get_sector, get_sector_color
             sector = get_sector(stock_code)
 
             # 변경된 종목은 강조 색상

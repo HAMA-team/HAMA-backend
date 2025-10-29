@@ -25,9 +25,15 @@ class WebSearchService:
     def __init__(self, *, timeout: Optional[float] = None):
         self.timeout = timeout or settings.WEB_SEARCH_TIMEOUT
 
-    async def search(self, query: str, *, max_results: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def search(
+        self,
+        query: str,
+        *,
+        max_results: Optional[int] = None,
+        force: bool = False,
+    ) -> List[Dict[str, Any]]:
         """DuckDuckGo HTML 페이지를 파싱하여 검색 결과를 반환."""
-        if not settings.ENABLE_WEB_SEARCH:
+        if not settings.ENABLE_WEB_SEARCH and not force:
             logger.info("🌐 [WebSearch] 검색 비활성화 설정 - 빈 결과 반환")
             return []
 

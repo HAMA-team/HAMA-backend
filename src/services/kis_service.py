@@ -25,6 +25,7 @@ import requests
 from requests.exceptions import RequestException
 
 from src.config.settings import settings
+from src.constants.kis_constants import KIS_BASE_URLS, KIS_ENDPOINTS, KIS_TR_IDS
 from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
@@ -94,16 +95,6 @@ class KISAuthError(Exception):
 class KISService:
     """한국투자증권 Open Trading API 서비스"""
 
-    # API 엔드포인트
-    PROD_BASE_URL = "https://openapi.koreainvestment.com:9443"
-    DEMO_BASE_URL = "https://openapivts.koreainvestment.com:29443"
-
-    # API URL
-    AUTH_TOKEN_URL = "/oauth2/tokenP"
-    BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-balance"
-    ACCOUNT_BALANCE_URL = "/uapi/domestic-stock/v1/trading/inquire-account-balance"
-    STOCK_PRICE_URL = "/uapi/domestic-stock/v1/quotations/inquire-price"
-
     def __init__(
         self,
         app_key: Optional[str] = None,
@@ -139,7 +130,7 @@ class KISService:
             self.acnt_prdt_cd = ""
 
         # Base URL 설정
-        self.base_url = self.PROD_BASE_URL if env == "real" else self.DEMO_BASE_URL
+        self.base_url = KIS_BASE_URLS["prod"] if env == "real" else KIS_BASE_URLS["demo"]
 
         # 토큰 관리
         self._access_token: Optional[str] = None
@@ -182,7 +173,7 @@ class KISService:
         if not self.app_key or not self.app_secret:
             raise KISAuthError("KIS_APP_KEY and KIS_APP_SECRET must be configured in .env")
 
-        url = f"{self.base_url}{self.AUTH_TOKEN_URL}"
+        url = f"{self.base_url}{KIS_ENDPOINTS['auth']}"
         headers = {
             "Content-Type": "application/json",
             "Accept": "text/plain",
@@ -333,7 +324,7 @@ class KISService:
         logger.info(f"📊 Fetching account balance: {self.cano}-{self.acnt_prdt_cd}")
 
         # TR ID: 실전/모의 구분
-        tr_id = "TTTC8434R" if self.env == "real" else "VTTC8434R"
+        tr_id = KIS_TR_IDS["balance"]["real"] if self.env == "real" else KIS_TR_IDS["balance"]["demo"]
 
         params = {
             "CANO": self.cano,
@@ -349,7 +340,7 @@ class KISService:
             "CTX_AREA_NK100": "",
         }
 
-        result = await self._api_call(self.BALANCE_URL, tr_id, params, method="GET")
+        result = await self._api_call(KIS_ENDPOINTS["balance"], tr_id, params, method="GET")
 
         # output1: 보유 종목 리스트
         stocks_data = result.get("output1", [])
@@ -427,14 +418,14 @@ class KISService:
             logger.debug(f"✅ Using cached price for {stock_code}")
             return cached
 
-        tr_id = "FHKST01010100"  # 주식현재가 시세
+        tr_id = KIS_TR_IDS["stock_price"]
 
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",  # 시장 분류 코드 (J: 주식)
             "FID_INPUT_ISCD": stock_code,  # 종목코드
         }
 
-        result = await self._api_call(self.STOCK_PRICE_URL, tr_id, params, method="GET")
+        result = await self._api_call(KIS_ENDPOINTS["stock_price"], tr_id, params, method="GET")
 
         output = result.get("output", {})
 
@@ -503,10 +494,10 @@ class KISService:
         logger.info(f"💰 [KIS] 주문 실행: {order_type} {stock_code} {quantity}주 @ {price or '시장가'}")
 
         # TR ID 설정 (실전/모의, 매수/매도)
-        if self.env == "real":
-            tr_id = "TTTC0012U" if order_type == "BUY" else "TTTC0011U"
-        else:  # demo
-            tr_id = "VTTC0012U" if order_type == "BUY" else "VTTC0011U"
+        if order_type == "BUY":
+            tr_id = KIS_TR_IDS["order_buy"]["real"] if self.env == "real" else KIS_TR_IDS["order_buy"]["demo"]
+        else:  # SELL
+            tr_id = KIS_TR_IDS["order_sell"]["real"] if self.env == "real" else KIS_TR_IDS["order_sell"]["demo"]
 
         # 주문구분 설정
         if price is None:

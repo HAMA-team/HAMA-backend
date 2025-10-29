@@ -19,30 +19,11 @@ class RiskStanceAnalyzer:
     """
     리스크 스탠스 분석기
 
-    Week 13 Mock 구현:
-    - 규칙 기반 자산 배분
-
-    Week 14 실제 구현:
-    - 변동성 지표 분석 (VIX 등)
+    실제 구현:
+    - 변동성 지표 분석 (KOSPI 표준편차)
     - 시장 심리 지표 통합
     - 동적 리스크 조정
     """
-
-    # 시장 사이클별 기본 주식 비중 (공격적 기준)
-    CYCLE_EQUITY_WEIGHT = {
-        "early_bull_market": Decimal("0.90"),
-        "mid_bull_market": Decimal("0.85"),
-        "late_bull_market": Decimal("0.70"),
-        "bear_market": Decimal("0.40"),
-        "consolidation": Decimal("0.65"),
-    }
-
-    # 리스크 허용도별 조정 배수
-    RISK_TOLERANCE_MULTIPLIER = {
-        "conservative": Decimal("0.67"),   # 2/3 수준
-        "moderate": Decimal("0.88"),       # 88% 수준
-        "aggressive": Decimal("1.00"),     # 100% 수준
-    }
 
     def __init__(self):
         pass
@@ -54,7 +35,7 @@ class RiskStanceAnalyzer:
         volatility_index: float = None
     ) -> AssetAllocation:
         """
-        자산 배분 결정
+        자산 배분 결정 (LLM 기반)
 
         Args:
             market_cycle: 시장 사이클
@@ -64,45 +45,58 @@ class RiskStanceAnalyzer:
         Returns:
             AssetAllocation: 자산 배분 전략
         """
-        # 1. 기본 주식 비중 결정
-        base_equity = self.CYCLE_EQUITY_WEIGHT.get(
-            market_cycle,
-            Decimal("0.75")  # 기본값
-        )
+        from src.utils.llm_factory import get_llm
+        from src.utils.json_parser import safe_json_parse
 
-        # 2. 리스크 허용도 반영
-        multiplier = self.RISK_TOLERANCE_MULTIPLIER.get(
-            risk_tolerance,
-            Decimal("0.88")  # 기본값: moderate
-        )
-        equity_weight = base_equity * multiplier
-
-        # 3. 변동성 조정 (실제 데이터)
+        # 변동성 계산
         if volatility_index is None:
-            # 변동성 지수 자동 계산
             volatility_index = await self._calculate_market_volatility()
 
-        if volatility_index is not None:
-            equity_weight = self._adjust_for_volatility(equity_weight, volatility_index)
-            logger.info(f"📊 [Risk Stance] 변동성 {volatility_index:.2f}% 반영 완료")
+        llm = get_llm(max_tokens=1000, temperature=0.1)
 
-        # 4. 범위 제한 (20% ~ 95%)
-        equity_weight = max(Decimal("0.20"), min(Decimal("0.95"), equity_weight))
-        cash_weight = Decimal("1.00") - equity_weight
+        prompt = f"""당신은 자산 배분 전문가입니다. 다음 정보를 바탕으로 주식/현금 비율을 결정하세요.
 
-        # 5. 근거 생성
-        rationale = self._generate_rationale(
-            market_cycle,
-            risk_tolerance,
-            equity_weight,
-            volatility_index
-        )
+## 상황
+- 시장 사이클: {market_cycle}
+- 리스크 허용도: {risk_tolerance}
+- KOSPI 변동성: {volatility_index:.2f}% (연환산)
 
-        return AssetAllocation(
-            stocks=equity_weight,
-            cash=cash_weight,
-            rationale=rationale
-        )
+## 요구사항
+1. 주식 비중 20% ~ 95% 범위
+2. 변동성 높을수록 현금 비중 증가
+3. 리스크 허용도 반영
+   - conservative: 보수적 배분
+   - moderate: 균형 배분
+   - aggressive: 공격적 배분
+
+다음 JSON 형식으로 답변:
+{{
+  "stocks": 0.75,
+  "cash": 0.25,
+  "rationale": "배분 근거 (50자 이내)"
+}}
+
+**중요**: stocks + cash = 1.0"""
+
+        try:
+            response = await llm.ainvoke(prompt)
+            result = safe_json_parse(response.content, "Risk Stance")
+
+            equity_weight = Decimal(str(result["stocks"]))
+            cash_weight = Decimal(str(result["cash"]))
+
+            # 범위 검증
+            equity_weight = max(Decimal("0.20"), min(Decimal("0.95"), equity_weight))
+            cash_weight = Decimal("1.00") - equity_weight
+
+            return AssetAllocation(
+                stocks=equity_weight,
+                cash=cash_weight,
+                rationale=result["rationale"]
+            )
+        except Exception as e:
+            logger.error(f"❌ [Risk Stance] LLM 실패: {e}")
+            raise
 
     async def _calculate_market_volatility(self) -> float | None:
         """
@@ -134,70 +128,6 @@ class RiskStanceAnalyzer:
         logger.info(f"📊 [Risk Stance] KOSPI 변동성: {volatility_pct:.2f}%")
         return float(volatility_pct)
 
-    def _adjust_for_volatility(
-        self,
-        equity_weight: Decimal,
-        volatility_index: float
-    ) -> Decimal:
-        """
-        변동성 지표에 따른 자산 배분 조정
-
-        조정 규칙:
-        - 변동성 > 30%: 주식 비중 -10%p
-        - 변동성 20-30%: 주식 비중 -5%p
-        - 변동성 < 20%: 조정 없음
-        """
-        adjustment = Decimal("0.00")
-
-        if volatility_index > 30:
-            adjustment = Decimal("-0.10")
-            logger.info(f"⚠️ [Risk Stance] 고변동성 감지 ({volatility_index:.1f}%), 주식 비중 -10%p")
-        elif volatility_index > 20:
-            adjustment = Decimal("-0.05")
-            logger.info(f"⚠️ [Risk Stance] 중변동성 ({volatility_index:.1f}%), 주식 비중 -5%p")
-        else:
-            logger.info(f"✅ [Risk Stance] 저변동성 ({volatility_index:.1f}%), 조정 없음")
-
-        return equity_weight + adjustment
-
-    def _generate_rationale(
-        self,
-        market_cycle: str,
-        risk_tolerance: str,
-        equity_weight: Decimal,
-        volatility_index: float = None
-    ) -> str:
-        """자산 배분 근거 생성"""
-        cycle_desc = {
-            "early_bull_market": "초기 강세장",
-            "mid_bull_market": "중기 강세장",
-            "late_bull_market": "후기 강세장",
-            "bear_market": "약세장",
-            "consolidation": "횡보장",
-        }
-
-        tolerance_desc = {
-            "conservative": "보수적",
-            "moderate": "중립적",
-            "aggressive": "공격적",
-        }
-
-        cycle_name = cycle_desc.get(market_cycle, market_cycle)
-        tolerance_name = tolerance_desc.get(risk_tolerance, risk_tolerance)
-
-        base_rationale = (
-            f"{cycle_name} 기조에서 {tolerance_name} 리스크 허용도에 맞춘 자산 배분. "
-            f"주식 {equity_weight:.0%} 비중 권장"
-        )
-
-        # 변동성 정보 추가
-        if volatility_index is not None:
-            if volatility_index > 30:
-                base_rationale += f". 고변동성({volatility_index:.1f}%)으로 방어적 조정"
-            elif volatility_index > 20:
-                base_rationale += f". 중간 변동성({volatility_index:.1f}%)으로 일부 조정"
-
-        return base_rationale
 
 
 # Global instance

@@ -5,7 +5,8 @@ import logging
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage
-from langgraph.types import interrupt
+
+from src.utils.langgraph_compat import make_interrupt
 
 from src.agents.trading.state import TradingState
 from src.services import OrderNotFoundError, PortfolioNotFoundError, trading_service
@@ -67,7 +68,7 @@ def approval_trade_node(state: TradingState) -> dict:
     logger.info("🔔 [Trade] 사용자 승인을 요청합니다")
 
     summary = state.get("trade_summary") or {}
-    approval = interrupt(
+    approval = make_interrupt(
         {
             "type": "trade_approval",
             "order_id": state.get("trade_order_id", "UNKNOWN"),
@@ -145,4 +146,3 @@ def _format_trade_summary(result: Dict[str, Any]) -> str:
     price = float(result.get("price") or 0)
     total = float(result.get("total") or price * quantity)
     return f"{order_type} {quantity}주 @ {price:,.0f}원 (총 {total:,.0f}원)"
-
