@@ -13,11 +13,42 @@ from typing import Optional, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+
+class PersonalizationSettings(BaseModel):
+    """Router가 생성하는 개인화 설정."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    adjust_for_expertise: Optional[bool] = Field(
+        default=None, description="사용자 전문성에 맞춰 난이도를 조정할지 여부"
+    )
+    include_explanations: Optional[bool] = Field(
+        default=None, description="추가 설명을 포함할지 여부"
+    )
+    use_analogies: Optional[bool] = Field(
+        default=None, description="비유를 활용할지 여부"
+    )
+    focus_on_metrics: Optional[list[str]] = Field(
+        default=None, description="강조해야 할 핵심 지표 리스트"
+    )
+    sector_comparison: Optional[bool] = Field(
+        default=None, description="동일 섹터 비교를 포함할지 여부"
+    )
+    show_formulas: Optional[bool] = Field(
+        default=None, description="계산식을 노출할지 여부"
+    )
+    include_sensitivity: Optional[bool] = Field(
+        default=None, description="민감도 분석을 포함할지 여부"
+    )
+    technical_level: Optional[str] = Field(
+        default=None, description="설명을 제공할 기술적 난이도 (basic/intermediate/advanced)"
+    )
 
 
 class RoutingDecision(BaseModel):
@@ -42,7 +73,7 @@ class RoutingDecision(BaseModel):
     )
 
     # 4. 개인화 설정
-    personalization: dict = Field(
+    personalization: PersonalizationSettings = Field(
         description="개인화 설정 (adjust_for_expertise, include_explanations, use_analogies 등)"
     )
 
@@ -97,10 +128,12 @@ async def route_query(
             user_intent="general_inquiry",
             agents_to_call=["general"],
             depth_level="brief",
-            personalization={
-                "adjust_for_expertise": True,
-                "include_explanations": True,
-            },
+            personalization=PersonalizationSettings(
+                adjust_for_expertise=True,
+                include_explanations=True,
+                use_analogies=True,
+                technical_level="basic",
+            ),
             reasoning="빈 질문이므로 general agent로 라우팅",
         )
 
@@ -248,16 +281,4 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
 
     except Exception as e:
         logger.error(f"❌ [Router] 에러: {e}")
-
-        # Fallback: 기본 라우팅
-        return RoutingDecision(
-            query_complexity="moderate",
-            user_intent="general_inquiry",
-            agents_to_call=["general"],
-            depth_level="detailed",
-            personalization={
-                "adjust_for_expertise": True,
-                "include_explanations": user_expertise == "beginner",
-            },
-            reasoning=f"에러 발생으로 기본 라우팅 적용: {str(e)}",
-        )
+        raise

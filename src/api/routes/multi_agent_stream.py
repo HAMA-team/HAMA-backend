@@ -4,6 +4,7 @@ Master Agent → 서브 에이전트들의 협업 과정을 시각화
 """
 import json
 import logging
+import re
 import uuid
 from typing import AsyncGenerator, Optional
 
@@ -14,12 +15,57 @@ from langchain_core.messages import HumanMessage
 
 from src.agents.aggregator import personalize_response
 from src.agents.router import route_query
+from src.services.stock_data_service import stock_data_service
 from src.services.user_profile_service import user_profile_service
 from src.models.database import get_db_context
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_STOCK_NAME_STOPWORDS = {
+    "현재",
+    "지금",
+    "주식",
+    "주가",
+    "가격",
+    "얼마",
+    "얼마지",
+    "분석",
+    "어때",
+    "상황",
+    "정보",
+    "알려줘",
+    "문의",
+    "질문",
+    "요청",
+}
+
+
+async def resolve_stock_code(message: str) -> Optional[str]:
+    """
+    사용자 질의에서 종목 코드를 추출하거나 종목명으로 매핑한다.
+    """
+    digit_match = re.search(r"\b(\d{6})\b", message)
+    if digit_match:
+        return digit_match.group(1)
+
+    candidates = re.findall(r"[가-힣A-Za-z]{2,}", message)
+    tried = set()
+    for candidate in candidates:
+        token = candidate.strip()
+        if not token or token in _STOCK_NAME_STOPWORDS:
+            continue
+        if token in tried:
+            continue
+        tried.add(token)
+
+        for market in ("KOSPI", "KOSDAQ", "KONEX"):
+            code = await stock_data_service.get_stock_by_name(token, market=market)
+            if code:
+                return code
+
+    return None
 
 
 class MultiAgentStreamRequest(BaseModel):
@@ -70,21 +116,15 @@ async def stream_multi_agent_execution(
             conversation_history=[]
         )
 
-        agents_to_call = []
-        if "종목" in message or "분석" in message:
-            agents_to_call.append("research")
-        if "전략" in message or "투자" in message:
-            agents_to_call.append("strategy")
-        if "리스크" in message or "위험" in message:
-            agents_to_call.append("risk")
-
+        agents_to_call = list(dict.fromkeys(routing_decision.agents_to_call))
         if not agents_to_call:
-            agents_to_call = ["research"]  # 기본값
+            agents_to_call = ["general"]
 
         yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level}, ensure_ascii=False)}\n\n"
 
         # 4. 각 에이전트 실행
         agent_results = {}
+        resolved_stock_code: Optional[str] = None
 
         for agent_name in agents_to_call:
             yield f"event: agent_start\ndata: {json.dumps({'agent': agent_name, 'message': f'{agent_name.upper()} Agent 실행 중...'}, ensure_ascii=False)}\n\n"
@@ -94,17 +134,16 @@ async def stream_multi_agent_execution(
                 from src.agents.research.graph import build_research_subgraph
 
                 agent = build_research_subgraph()
-
-                # 종목 코드 추출 (간단히 하드코딩, 실제로는 NER 사용)
-                stock_code = "005930"  # 삼성전자
-                if "카카오" in message:
-                    stock_code = "035720"
-                elif "네이버" in message:
-                    stock_code = "035420"
+                if resolved_stock_code is None:
+                    resolved_stock_code = await resolve_stock_code(message)
+                if not resolved_stock_code:
+                    raise ValueError("질문에서 종목 코드를 추출하지 못했습니다.")
 
                 input_state = {
                     "messages": [HumanMessage(content=message)],
-                    "stock_code": stock_code
+                    "stock_code": resolved_stock_code,
+                    "query": message,
+                    "request_id": conversation_id,
                 }
 
                 # 스트리밍 실행
@@ -147,6 +186,23 @@ async def stream_multi_agent_execution(
                 # 에이전트 완료
                 consensus = final_result.get("consensus", {})
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'recommendation': consensus.get('recommendation'), 'target_price': consensus.get('target_price'), 'confidence': consensus.get('confidence')}}, ensure_ascii=False)}\n\n"
+            elif agent_name == "general":
+                from src.agents.general.graph import build_general_subgraph
+
+                agent = build_general_subgraph()
+
+                input_state = {
+                    "messages": [HumanMessage(content=message)],
+                    "query": message,
+                    "request_id": conversation_id,
+                    "answer": None,
+                    "sources": [],
+                }
+
+                result = await agent.ainvoke(input_state)
+                agent_results[agent_name] = result
+
+                yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': result.get('answer')}}, ensure_ascii=False)}\n\n"
 
             elif agent_name == "strategy":
                 # Strategy Agent (간단한 mock)
@@ -158,6 +214,9 @@ async def stream_multi_agent_execution(
                 # Risk Agent (간단한 mock)
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'calculate_risk', 'status': 'running'}, ensure_ascii=False)}\n\n"
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'risk_level': 'MEDIUM', 'max_loss': 0.15}}, ensure_ascii=False)}\n\n"
+            else:
+                logger.warning("⚠️ [MultiAgentStream] 지원되지 않는 에이전트 요청: %s", agent_name)
+                yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'warning': '지원되지 않는 에이전트입니다.'}}, ensure_ascii=False)}\n\n"
 
         # 5. Master가 결과 집계
         yield f"event: master_aggregating\ndata: {json.dumps({'message': '분석 결과를 종합하고 있습니다...'}, ensure_ascii=False)}\n\n"
@@ -166,7 +225,7 @@ async def stream_multi_agent_execution(
         personalized = await personalize_response(
             agent_results=agent_results,
             user_profile=user_profile,
-            routing_decision=routing_decision.dict()
+            routing_decision=routing_decision.model_dump()
         )
 
         final_response = personalized.get("response", "분석이 완료되었습니다.")
@@ -262,10 +321,12 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
     ```
     [Master Agent]
     ├─ 📊 Research Agent ✅
-    │   ├─ collect_data ✅
-    │   ├─ bull_analysis ✅
-    │   ├─ bear_analysis ✅
-    │   └─ consensus ✅
+    │   ├─ planner ✅
+    │   ├─ data_worker ✅
+    │   ├─ bull_worker ✅
+    │   ├─ bear_worker ✅
+    │   ├─ insight_worker ✅
+    │   └─ synthesis ✅
     │   결과: SELL, 목표가 90,000원
     │
     ├─ 🎯 Strategy Agent ✅

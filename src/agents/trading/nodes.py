@@ -127,10 +127,14 @@ async def execute_trade_node(state: TradingState) -> dict:
     summary = _format_trade_summary(result)
     messages.append(AIMessage(content=summary))
 
+    # MasterState(GraphState)로 결과 전달
     return {
         "trade_executed": True,
-        "trade_result": result,
+        "trade_result": result,  # TradingState 내부용
         "portfolio_snapshot": result.get("portfolio_snapshot"),
+        "agent_results": {  # MasterState 공유용
+            "trading": result
+        },
         "messages": messages,
     }
 

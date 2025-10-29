@@ -1,5 +1,5 @@
 """Research Agent State 정의."""
-from typing import TypedDict, Optional, List, Annotated
+from typing import TypedDict, Optional, List, Annotated, Dict, Any
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -10,9 +10,9 @@ class ResearchState(TypedDict, total=False):
     Research Agent 서브그래프 State
 
     Flow:
-    1. collect_data: 데이터 수집 (주가, 재무, 기업정보)
-    2. bull_analysis + bear_analysis: 병렬 분석
-    3. consensus: 최종 의견 통합
+    1. planner: 조사 계획 수립
+    2. worker loop: data → bull → bear → insight
+    3. synthesis: 최종 의견 통합
 
     Note: total=False로 설정하여 partial update 지원 (Langgraph 패턴)
     """
@@ -29,6 +29,22 @@ class ResearchState(TypedDict, total=False):
 
     request_id: Optional[str]
     """요청 ID (Supervisor 호출 시 없을 수 있음)"""
+
+    # Deep Agent 루프 제어
+    plan: Optional[Dict[str, Any]]
+    """LLM이 생성한 조사 계획"""
+
+    pending_tasks: Optional[List[Dict[str, Any]]]
+    """남은 작업 목록"""
+
+    completed_tasks: Optional[List[Dict[str, Any]]]
+    """완료된 작업 및 산출물"""
+
+    current_task: Optional[Dict[str, Any]]
+    """현재 수행 중인 작업"""
+
+    task_notes: Optional[List[str]]
+    """작업 중 생성된 요약/메모"""
 
     # 데이터 수집 결과
     price_data: Optional[dict]
@@ -66,6 +82,9 @@ class ResearchState(TypedDict, total=False):
 
     bear_analysis: Optional[dict]
     """약세 분석 (LLM)"""
+
+    macro_analysis: Optional[dict]
+    """거시경제 분석 (BOK API + LLM)"""
 
     consensus: Optional[dict]
     """최종 합의 의견"""

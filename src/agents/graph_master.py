@@ -29,6 +29,7 @@ from src.agents.risk import risk_agent
 from src.agents.strategy import strategy_agent
 from src.agents.trading import trading_agent
 from src.config.settings import settings
+from src.schemas.graph_state import GraphState
 from src.utils.llm_factory import get_llm
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
         model=llm,
         parallel_tool_calls=True,
         prompt=supervisor_prompt,
+        state_schema=GraphState,  # MasterState로 에이전트 간 데이터 공유
     )
 
     logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s)", automation_level)

@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     MAX_TOKENS: int = 4000
     LLM_TEMPERATURE: float = 0.1
 
+    # Web Search
+    ENABLE_WEB_SEARCH: bool = False
+    WEB_SEARCH_MAX_RESULTS: int = 5
+    WEB_SEARCH_TIMEOUT: float = 8.0
+    WEB_SEARCH_REGION: str = "kr-kr"
+
     @property
     def llm_provider(self) -> str:
         """현재 LLM 모드에 따라 사용할 프로바이더 반환

@@ -10,7 +10,13 @@ import threading
 from functools import lru_cache
 from typing import Optional
 
+try:
+    from redis.exceptions import ResponseError as RedisResponseError
+except Exception:  # redis가 선택적 의존성인 환경 지원
+    RedisResponseError = None
+
 from langchain_anthropic import ChatAnthropic
+from langchain_core.caches import InMemoryCache
 from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
@@ -18,6 +24,9 @@ from langchain_openai import ChatOpenAI
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# 캐시 초기화 상태 플래그
+_cache_initialized = False
 
 
 def _loop_token() -> str:
@@ -93,9 +102,9 @@ def get_llm(
     """
     LLM 모드에 따라 적절한 LLM 인스턴스 반환
 
-    환경 변수 LLM_MODE에 따라:
-    - "production", "prod", "demo" → Claude (Anthropic)
-    - 그 외 (test, development) → Gemini (Google)
+    기본 우선순위: OpenAI → Claude (Anthropic) → Gemini (Google)
+    - 환경 변수 LLM_MODE로 provider를 명시할 수 있음
+    - API 키가 없으면 자동으로 폴백
     """
     requested_provider = settings.llm_provider
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
@@ -104,26 +113,20 @@ def get_llm(
 
     provider = requested_provider
 
-    # Anthropic 폴백 체인: anthropic → openai → google
-    if provider == "anthropic" and not settings.ANTHROPIC_API_KEY:
-        logger.warning(
-            "⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. OpenAI로 폴백합니다."
-        )
-        provider = "openai"
-
-    # OpenAI 폴백: openai → google
+    # 폴백 체인: OpenAI → Claude → Gemini
     if provider == "openai" and not settings.OPENAI_API_KEY:
         logger.warning(
-            "⚠️ OPENAI_API_KEY가 설정되지 않았습니다. Gemini로 폴백합니다."
+            "⚠️ OPENAI_API_KEY가 설정되지 않았습니다. Claude로 폴백합니다."
+        )
+        provider = "anthropic"
+
+    if provider == "anthropic" and not settings.ANTHROPIC_API_KEY:
+        logger.warning(
+            "⚠️ ANTHROPIC_API_KEY가 설정되지 않았습니다. Gemini로 폴백합니다."
         )
         provider = "google"
 
     # 최종 검증
-    if provider == "google" and not settings.GEMINI_API_KEY:
-        raise ValueError(
-            "GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
-        )
-
     if provider == "openai" and not settings.OPENAI_API_KEY:
         raise ValueError(
             "OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
@@ -132,6 +135,11 @@ def get_llm(
     if provider == "anthropic" and not settings.ANTHROPIC_API_KEY:
         raise ValueError(
             "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    if provider == "google" and not settings.GEMINI_API_KEY:
+        raise ValueError(
+            "GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
         )
 
     loop_token = _loop_token()
@@ -193,3 +201,107 @@ def get_gemini_llm(
 
     loop_token = _loop_token()
     return _build_llm("google", model_name, float(temp), int(tokens), loop_token)
+
+
+def initialize_semantic_cache():
+    """
+    RedisSemanticCache를 초기화하여 LLM 응답 캐싱을 활성화합니다.
+
+    이 함수는 애플리케이션 시작 시 한 번만 호출되어야 합니다.
+    의미적으로 유사한 질문에 대해 캐시된 응답을 재사용하여 LLM 호출을 줄입니다.
+
+    설정:
+    - ENABLE_SEMANTIC_CACHE: 캐시 활성화 여부
+    - REDIS_URL: Redis 서버 주소
+    - SEMANTIC_CACHE_DISTANCE_THRESHOLD: 유사도 임계값 (0.1~0.3 권장)
+    - SEMANTIC_CACHE_TTL: 캐시 만료 시간(초)
+    """
+    global _cache_initialized
+
+    if _cache_initialized:
+        logger.info("✅ [Cache] RedisSemanticCache가 이미 초기화되었습니다.")
+        return
+
+    if not settings.ENABLE_SEMANTIC_CACHE:
+        logger.info("⏭️ [Cache] SemanticCache가 비활성화되어 있습니다.")
+        return
+
+    try:
+        from langchain_core.globals import set_llm_cache
+        from langchain_openai import OpenAIEmbeddings
+        from langchain_redis import RedisSemanticCache
+
+        # OpenAI 임베딩 초기화 (의미 유사도 계산용)
+        embeddings = OpenAIEmbeddings(
+            api_key=settings.OPENAI_API_KEY,
+            model="text-embedding-ada-002"
+        )
+
+        # RedisSemanticCache 초기화
+        semantic_cache = RedisSemanticCache(
+            redis_url=settings.REDIS_URL,
+            embeddings=embeddings,
+            distance_threshold=settings.SEMANTIC_CACHE_DISTANCE_THRESHOLD,
+            ttl=settings.SEMANTIC_CACHE_TTL,
+        )
+
+        # 전역 LLM 캐시 설정
+        set_llm_cache(semantic_cache)
+
+        _cache_initialized = True
+
+        logger.info(
+            "✅ [Cache] RedisSemanticCache 초기화 완료 "
+            "(threshold=%.2f, ttl=%ds)",
+            settings.SEMANTIC_CACHE_DISTANCE_THRESHOLD,
+            settings.SEMANTIC_CACHE_TTL,
+        )
+
+    except ImportError as e:
+        logger.error(
+            "❌ [Cache] RedisSemanticCache 초기화 실패: 필요한 패키지가 없습니다. "
+            "langchain-redis를 설치하세요. (%s)",
+            e,
+        )
+    except Exception as e:
+        message = str(e)
+        if (
+            RedisResponseError is not None
+            and isinstance(e, RedisResponseError)
+            and "FT._LIST" in message
+        ):
+            logger.info(
+                "ℹ️ [Cache] RediSearch 모듈을 찾을 수 없습니다. "
+                "벡터 인덱스를 사용하지 않는 RedisCache로 폴백합니다. (redis_url=%s)",
+                settings.REDIS_URL,
+            )
+            try:
+                import redis
+                from langchain_community.cache import RedisCache
+
+                redis_client = redis.from_url(settings.REDIS_URL)
+                basic_cache = RedisCache(
+                    redis_=redis_client,
+                    ttl=settings.SEMANTIC_CACHE_TTL or None,
+                )
+                set_llm_cache(basic_cache)
+                logger.info(
+                    "✅ [Cache] RedisCache 초기화 완료 (key-value fallback, ttl=%s)",
+                    settings.SEMANTIC_CACHE_TTL or "∞",
+                )
+            except Exception as fallback_error:
+                logger.warning(
+                    "⚠️ [Cache] RedisCache 폴백에도 실패했습니다. InMemoryCache로 전환합니다. (%s)",
+                    fallback_error,
+                )
+                set_llm_cache(InMemoryCache())
+                logger.info("✅ [Cache] InMemoryCache 초기화 완료 (semantic cache fallback)")
+
+            _cache_initialized = True
+            return
+
+        logger.error(
+            "❌ [Cache] RedisSemanticCache 초기화 실패: %s",
+            message,
+            exc_info=True,
+        )

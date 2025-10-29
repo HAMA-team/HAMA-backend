@@ -224,8 +224,12 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
         messages = list(state.get("messages", []))
         messages.append(AIMessage(content=summary))
 
+        # MasterState(GraphState)로 결과 전달
         return {
-            "blueprint": blueprint,
+            "blueprint": blueprint,  # StrategyState 내부용
+            "agent_results": {  # MasterState 공유용
+                "strategy": blueprint
+            },
             "messages": messages,
         }
 
@@ -239,5 +243,8 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
 
         return {
             "error": error_msg,
+            "agent_results": {  # 에러도 MasterState에 전달
+                "strategy": {"error": error_msg}
+            },
             "messages": messages,
         }

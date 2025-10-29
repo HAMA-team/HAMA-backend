@@ -46,7 +46,11 @@ async def personalize_response(
     personalization_settings = {}
     if routing_decision:
         depth_level = routing_decision.get("depth_level", "detailed")
-        personalization_settings = routing_decision.get("personalization", {})
+        personalization = routing_decision.get("personalization")
+        if hasattr(personalization, "model_dump"):
+            personalization_settings = personalization.model_dump()
+        elif isinstance(personalization, dict):
+            personalization_settings = personalization
 
     # 개인화 프롬프트 구성
     personalization_prompt = ChatPromptTemplate.from_messages([

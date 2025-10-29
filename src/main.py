@@ -17,6 +17,7 @@ from src.api.error_handlers import setup_error_handlers
 from src.config.settings import settings
 from src.models.database import SessionLocal, init_db
 from src.services import init_kis_service
+from src.utils.llm_factory import initialize_semantic_cache
 
 tags_metadata = [
     {
@@ -52,6 +53,10 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """FastAPI lifespan 이벤트 핸들러"""
+    # RedisSemanticCache 초기화 (LLM 응답 캐싱)
+    initialize_semantic_cache()
+
+    # KIS 서비스 초기화
     kis_env = "real" if settings.ENV.lower() == "production" else "demo"
     await init_kis_service(env=kis_env)
     yield

@@ -260,7 +260,11 @@ async def final_assessment_node(state: RiskState) -> dict:
     messages = list(state.get("messages", []))
     messages.append(AIMessage(content=summary))
 
+    # MasterState(GraphState)로 결과 전달
     return {
-        "risk_assessment": risk_assessment,
+        "risk_assessment": risk_assessment,  # RiskState 내부용
+        "agent_results": {  # MasterState 공유용
+            "risk": risk_assessment
+        },
         "messages": messages,
     }

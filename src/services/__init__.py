@@ -17,6 +17,7 @@ from .dart_service import dart_service
 from .stock_data_service import stock_data_service
 from .portfolio_optimizer import portfolio_optimizer
 from .chat_history_service import chat_history_service
+from .search_service import web_search_service, WebSearchService
 
 __all__ = [
     "portfolio_service",
@@ -27,6 +28,8 @@ __all__ = [
     "stock_data_service",
     "portfolio_optimizer",
     "chat_history_service",
+    "web_search_service",
+    "WebSearchService",
     "PortfolioNotFoundError",
     "InsufficientHoldingsError",
     "OrderNotFoundError",

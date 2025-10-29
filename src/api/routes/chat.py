@@ -26,11 +26,6 @@ router = APIRouter()
 DEMO_USER_UUID = settings.demo_user_uuid
 
 
-def _is_test_mode() -> bool:
-    env_value = os.getenv("ENV", settings.ENV or "").lower()
-    return env_value == "test" or not settings.ANTHROPIC_API_KEY
-
-
 def _ensure_uuid(value: Optional[str]) -> uuid.UUID:
     """Validate or generate a conversation UUID."""
     if value:

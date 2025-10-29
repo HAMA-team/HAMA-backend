@@ -248,9 +248,13 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     messages = list(state.get("messages", []))
     messages.append(AIMessage(content=summary))
 
+    # MasterState(GraphState)로 결과 전달
     return {
         **state,
         "summary": summary,
-        "portfolio_report": portfolio_report,
+        "portfolio_report": portfolio_report,  # PortfolioState 내부용
+        "agent_results": {  # MasterState 공유용
+            "portfolio": portfolio_report
+        },
         "messages": messages,
     }

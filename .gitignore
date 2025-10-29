@@ -27,6 +27,9 @@ wheels/
 .env
 .env.local
 
+# MCP Configuration (contains API keys)
+.claude/.mcp.json
+
 # IDE
 .vscode/
 .idea/

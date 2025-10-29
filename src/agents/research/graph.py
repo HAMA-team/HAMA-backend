@@ -1,19 +1,34 @@
 """
-Research Agent 서브그래프
-
-Langgraph 네이티브 구현
+Research Agent 서브그래프 (Deep Agent 플로우)
 """
-from langgraph.graph import StateGraph, END
+import logging
+from typing import Literal
+
+from langgraph.graph import END, StateGraph
+
 from .state import ResearchState
 from .nodes import (
-    collect_data_node,
-    bull_analyst_node,
-    bear_analyst_node,
-    consensus_node
+    planner_node,
+    task_router_node,
+    data_worker_node,
+    macro_worker_node,
+    bull_worker_node,
+    bear_worker_node,
+    insight_worker_node,
+    synthesis_node,
 )
-import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _route_task(state: ResearchState) -> Literal["data", "macro", "bull", "bear", "insight", "done"]:
+    task = state.get("current_task")
+    if not task:
+        return "done"
+    worker = str(task.get("worker", "")).lower()
+    if worker not in {"data", "macro", "bull", "bear", "insight"}:
+        return "insight"
+    return worker  # type: ignore[return-value]
 
 
 def build_research_subgraph():
@@ -21,38 +36,45 @@ def build_research_subgraph():
     Research Agent 서브그래프 생성
 
     Flow:
-    collect_data → [bull_analysis, bear_analysis] → consensus → END
-                        (병렬 실행)
+    planner → task_router → (worker loop) → synthesis → END
     """
     workflow = StateGraph(ResearchState)
 
-    # 노드 추가
-    workflow.add_node("collect_data", collect_data_node)
-    workflow.add_node("bull_analysis", bull_analyst_node)
-    workflow.add_node("bear_analysis", bear_analyst_node)
-    workflow.add_node("consensus", consensus_node)
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("task_router", task_router_node)
+    workflow.add_node("data_worker", data_worker_node)
+    workflow.add_node("macro_worker", macro_worker_node)
+    workflow.add_node("bull_worker", bull_worker_node)
+    workflow.add_node("bear_worker", bear_worker_node)
+    workflow.add_node("insight_worker", insight_worker_node)
+    workflow.add_node("synthesis", synthesis_node)
 
-    # 엣지 정의
-    workflow.set_entry_point("collect_data")
+    workflow.set_entry_point("planner")
+    workflow.add_edge("planner", "task_router")
 
-    # 데이터 수집 후 병렬 분석
-    workflow.add_edge("collect_data", "bull_analysis")
-    workflow.add_edge("collect_data", "bear_analysis")
+    workflow.add_conditional_edges(
+        "task_router",
+        _route_task,
+        {
+            "data": "data_worker",
+            "macro": "macro_worker",
+            "bull": "bull_worker",
+            "bear": "bear_worker",
+            "insight": "insight_worker",
+            "done": "synthesis",
+        },
+    )
 
-    # 병렬 분석 완료 후 합의
-    workflow.add_edge("bull_analysis", "consensus")
-    workflow.add_edge("bear_analysis", "consensus")
+    for worker in ("data_worker", "macro_worker", "bull_worker", "bear_worker", "insight_worker"):
+        workflow.add_edge(worker, "task_router")
 
-    # 종료
-    workflow.add_edge("consensus", END)
+    workflow.add_edge("synthesis", END)
 
-    # 컴파일
     app = workflow.compile(name="research_agent")
 
-    logger.info("✅ [Research] 서브그래프 빌드 완료")
+    logger.info("✅ [Research] 서브그래프 빌드 완료 (Deep Agent 플로우)")
 
     return app
 
 
-# Global compiled subgraph
 research_subgraph = build_research_subgraph()
