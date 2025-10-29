@@ -18,7 +18,7 @@ async def collect_thinking_trace(
     에이전트 실행 중 사고 과정을 스트리밍으로 수집
 
     Args:
-        agent: LangGraph ReAct agent
+        agent: LangGraph agent (서브그래프 또는 create_react_agent)
         input_state: 에이전트 입력 상태
         config: 실행 설정
 
@@ -116,7 +116,7 @@ async def collect_thinking_trace_list(
     사고 과정을 리스트로 수집 (non-streaming)
 
     Args:
-        agent: LangGraph ReAct agent
+        agent: LangGraph agent (서브그래프 또는 create_react_agent)
         input_state: 에이전트 입력 상태
         config: 실행 설정
 
