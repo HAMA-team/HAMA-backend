@@ -564,6 +564,26 @@ class PortfolioService:
                     continue
 
                 seen_codes.add(code)
+
+                # Stock 테이블 upsert (KIS API에서 받은 종목명 저장)
+                stock_name = stock.get("stock_name", "")
+                if stock_name:
+                    stock_record = session.query(Stock).filter(Stock.stock_code == code).first()
+                    if not stock_record:
+                        # 신규 종목 등록
+                        stock_record = Stock(
+                            stock_code=code,
+                            stock_name=stock_name,
+                            market="KOSPI"  # 기본값, 추후 KIS API에서 시장 정보 추가 가능
+                        )
+                        session.add(stock_record)
+                        logger.debug(f"📝 [Portfolio] Stock 테이블에 종목 추가: {code} - {stock_name}")
+                    else:
+                        # 기존 종목명 업데이트 (변경된 경우만)
+                        if stock_record.stock_name != stock_name:
+                            stock_record.stock_name = stock_name
+                            logger.debug(f"🔄 [Portfolio] Stock 종목명 업데이트: {code} - {stock_name}")
+
                 avg_price = self._decimal(stock.get("avg_price"), Decimal("0"))
                 current_price = self._decimal(stock.get("current_price"), avg_price)
                 market_value = self._decimal(

@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, cast
 import uuid
 import os
 import logging
@@ -11,8 +11,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 from src.agents.graph_master import build_graph
-from src.utils.langgraph_compat import Command
 from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.runnables import RunnableConfig
+from langgraph_sdk.schema import Command
 from src.services import chat_history_service, portfolio_service
 from src.services.portfolio_preview_service import (
     calculate_portfolio_preview,
@@ -119,11 +120,13 @@ async def chat(request: ChatRequest):
         app = build_graph(automation_level=request.automation_level)
 
         # Config for checkpointer
-        config = {
+        config: RunnableConfig = {
             "configurable": {
                 "thread_id": conversation_id,
             }
         }
+
+        configured_app = app.with_config(config)
 
         # Initial state - Langgraph 표준: messages 사용
         initial_state = {
@@ -148,10 +151,10 @@ async def chat(request: ChatRequest):
         }
 
         # Run Langgraph
-        result = await app.ainvoke(initial_state, config=config)
+        result = await configured_app.ainvoke(initial_state)
 
         # Check for interrupt
-        state = await app.aget_state(config)
+        state = await configured_app.aget_state()
 
         if state.next:  # Interrupt 발생 (다음 노드가 있음)
             interrupts = state.tasks
@@ -504,11 +507,13 @@ async def approve_action(approval: ApprovalRequest):
 
         app = build_graph(automation_level=approval.automation_level)
 
-        config = {
+        config: RunnableConfig = {
             "configurable": {
                 "thread_id": conversation_id,
             }
         }
+
+        configured_app = app.with_config(config)
 
         def _trade_summary(payload: Dict[str, Any]) -> str:
             summary_text = payload.get("summary")
@@ -528,7 +533,8 @@ async def approve_action(approval: ApprovalRequest):
                 "notes": approval.user_notes,
             }
 
-            result = await app.ainvoke(Command(resume=resume_value), config=config)
+            resume_command: Command = cast(Command, {"resume": resume_value})
+            result = await configured_app.ainvoke(resume_command)
             final_response = result.get("final_response", {})
             message_text = _trade_summary(final_response)
 
@@ -554,15 +560,14 @@ async def approve_action(approval: ApprovalRequest):
             )
 
         if approval.decision == "rejected":
-            await app.aupdate_state(
-                config,
+            await configured_app.aupdate_state(
                 {
                     "final_response": {
                         "summary": "사용자가 거부함",
                         "cancelled": True,
                         "reason": approval.user_notes or "User rejected",
                     }
-                },
+                }
             )
 
             message_text = "승인 거부 - 매매가 취소되었습니다."
@@ -595,7 +600,8 @@ async def approve_action(approval: ApprovalRequest):
                 "notes": approval.user_notes,
             }
 
-            result = await app.ainvoke(Command(resume=resume_value), config=config)
+            resume_command: Command = cast(Command, {"resume": resume_value})
+            result = await configured_app.ainvoke(resume_command)
             final_response = result.get("final_response", {})
             message_text = _trade_summary(final_response)
 

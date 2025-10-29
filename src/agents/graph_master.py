@@ -21,6 +21,10 @@ from typing import Any, Dict, Optional
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
+try:  # Redis saver is optional
+    from langgraph.checkpoints.redis import RedisSaver  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    RedisSaver = None  # type: ignore[assignment]
 from langgraph_supervisor import create_supervisor
 
 from src.config.settings import settings
@@ -182,17 +186,30 @@ def _create_checkpointer(backend_key: str):
         return MemorySaver()
 
     if key == "redis":
-        try:
-            from langgraph.checkpoint.redis import RedisSaver
-        except ImportError as exc:  # pragma: no cover - 환경에 따라 optional dependency
-            raise ImportError(
-                "langgraph-checkpoint-redis 패키지가 필요합니다."
-            ) from exc
+        if RedisSaver is None:  # pragma: no cover - 선택적 의존성 누락
+            raise ImportError("langgraph-checkpoint-redis 패키지가 필요합니다.")
 
-        # Context manager를 열어서 실제 RedisSaver 인스턴스 반환
-        # 연결은 애플리케이션 생명주기 동안 유지됨
         conn_manager = RedisSaver.from_conn_string(settings.REDIS_URL)
-        return conn_manager.__enter__()
+
+        if hasattr(conn_manager, "__enter__"):
+            return conn_manager.__enter__()
+
+        if hasattr(conn_manager, "__aenter__"):
+            async def _enter_async():
+                async with RedisSaver.from_conn_string(settings.REDIS_URL) as saver:
+                    return saver
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return asyncio.run(_enter_async())
+
+            raise RuntimeError(
+                "비동기 RedisSaver 초기화가 필요합니다. 애플리케이션 시작 시 "
+                "별도의 부트스트랩 단계에서 체크포인터를 준비하세요."
+            )
+
+        raise RuntimeError("RedisSaver 컨텍스트 매니저를 초기화할 수 없습니다.")
 
     # 기본값: 인메모리 Saver
     return MemorySaver()

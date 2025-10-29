@@ -8,6 +8,7 @@ import logging
 from typing import Optional, List, Dict, Any
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -27,7 +28,8 @@ class ProfileUpdate(BaseModel):
 async def detect_profile_updates(
     user_message: str,
     current_profile: Dict[str, Any],
-    conversation_history: Optional[List[Dict[str, str]]] = None
+    conversation_history: Optional[List[Dict[str, str]]] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> Optional[ProfileUpdate]:
     """
     대화에서 프로파일 업데이트 신호 감지
@@ -108,12 +110,13 @@ JSON으로 다음을 반환:
     ])
 
     llm = ChatOpenAI(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         temperature=0,
         api_key=settings.OPENAI_API_KEY
     )
 
     structured_llm = llm.with_structured_output(ProfileUpdate)
+    detector_chain = detector_prompt | structured_llm
 
     try:
         # 대화 히스토리 포맷팅
@@ -125,13 +128,16 @@ JSON으로 다음을 반환:
         if not history_text:
             history_text = "(없음)"
 
-        result = await structured_llm.ainvoke(
-            detector_prompt.format_messages(
-                user_message=user_message,
-                current_profile=json.dumps(current_profile, ensure_ascii=False, indent=2),
-                conversation_history=history_text
-            )
-        )
+        prompt_inputs = {
+            "user_message": user_message,
+            "current_profile": json.dumps(current_profile, ensure_ascii=False, indent=2),
+            "conversation_history": history_text,
+        }
+
+        if config is not None:
+            result = await detector_chain.ainvoke(prompt_inputs, config=config)
+        else:
+            result = await detector_chain.ainvoke(prompt_inputs)
 
         if result.update_needed:
             logger.info(f"✅ [MemoryDetector] 업데이트 신호 감지:")

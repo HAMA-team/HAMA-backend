@@ -31,8 +31,11 @@ def create_general_react_agent(temperature: float = 0.2):
 2. 뉴스, 시장 상황, 용어 정의가 필요한 경우에는 `web_search`를 활용하여 출처를 확보하세요.
 3. 도구 호출 결과는 반드시 답변에 반영하고, 출처가 있는 경우 마지막에 `title - url` 형식으로 나열하세요.
 
-## 최종 응답 형식
-최종 응답은 반드시 JSON 문자열 형태로 출력하세요:
+## 최종 응답 형식 (매우 중요!)
+답변을 완료했으면, 반드시 아래와 같은 JSON 형식으로만 출력하세요.
+다른 텍스트나 설명 없이 오직 JSON만 출력해야 합니다:
+
+```json
 {
   "answer": "사용자에게 전달할 한국어 답변 (마크다운 허용)",
   "sources": [
@@ -40,7 +43,13 @@ def create_general_react_agent(temperature: float = 0.2):
   ],
   "confidence": "high|medium|low"
 }
-confidence는 도구 활용 여부와 답변 근거의 명확성에 따라 판단하세요.
+```
+
+주의사항:
+- 반드시 ```json 코드 블록으로 감싸세요
+- answer 필드는 필수입니다
+- sources는 도구를 사용했을 때만 포함
+- confidence는 도구 활용 여부와 답변 근거의 명확성에 따라 판단
 """
 
     tools = [

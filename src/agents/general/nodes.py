@@ -20,12 +20,19 @@ def _extract_final_response(messages: List[BaseMessage]) -> tuple[str, list, str
     """
     for message in reversed(messages):
         if isinstance(message, AIMessage):
-            parsed = safe_json_parse(message.content, "General/Final")
-            if isinstance(parsed, dict) and parsed.get("answer"):
-                answer = str(parsed.get("answer", "")).strip()
-                sources = parsed.get("sources") or []
-                confidence = parsed.get("confidence")
-                return answer, sources, confidence
+            # LLM이 JSON 형식을 반환하지 않을 수 있으므로 예외 처리
+            try:
+                parsed = safe_json_parse(message.content, "General/Final")
+                if isinstance(parsed, dict) and parsed.get("answer"):
+                    answer = str(parsed.get("answer", "")).strip()
+                    sources = parsed.get("sources") or []
+                    confidence = parsed.get("confidence")
+                    return answer, sources, confidence
+            except ValueError:
+                # JSON 파싱 실패 시 일반 텍스트로 처리
+                pass
+
+            # JSON이 아니거나 파싱 실패한 경우 원본 텍스트 반환
             return message.content.strip(), [], None
     return "", [], None
 

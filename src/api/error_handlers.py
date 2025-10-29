@@ -129,6 +129,18 @@ def setup_error_handlers(app: FastAPI):
     @app.exception_handler(500)
     async def internal_server_error_handler(request: Request, exc: Exception):
         """500 Internal Server Error"""
+        import traceback
+
+        # 콘솔에 상세 에러 출력 (디버깅용)
+        print(f"\n{'='*80}")
+        print(f"❌ 500 Internal Server Error")
+        print(f"📍 Path: {request.method} {request.url.path}")
+        print(f"🔥 Exception Type: {type(exc).__name__}")
+        print(f"💬 Message: {str(exc)}")
+        print(f"\n📜 Full Traceback:")
+        print(traceback.format_exc())
+        print(f"{'='*80}\n")
+
         logger.exception(
             f"Internal Server Error: {exc}",
             extra={

@@ -8,8 +8,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from langchain_core.messages import BaseMessage
-
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from src.config.settings import settings
 from src.utils.llm_factory import get_llm
 
@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 async def personalize_response(
     agent_results: Dict[str, Any],
     user_profile: Dict[str, Any],
-    routing_decision: Optional[Dict[str, Any]] = None
+    routing_decision: Optional[Dict[str, Any]] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> Dict[str, Any]:
     """
     에이전트 결과를 사용자 프로파일에 맞게 개인화
@@ -153,20 +154,28 @@ async def personalize_response(
         temperature=0.3,
         model=settings.llm_model_name,
     )
+    personalization_chain = personalization_prompt | llm
+
+    prompt_inputs = {
+        "expertise_level": expertise_level,
+        "technical_level": technical_level,
+        "wants_explanations": "예" if wants_explanations else "아니오",
+        "wants_analogies": "예" if wants_analogies else "아니오",
+        "depth_level": depth_level,
+        "agent_results": json.dumps(serializable_results, ensure_ascii=False, indent=2),
+    }
 
     try:
-        response = await llm.ainvoke(
-            personalization_prompt.format_messages(
-                expertise_level=expertise_level,
-                technical_level=technical_level,
-                wants_explanations="예" if wants_explanations else "아니오",
-                wants_analogies="예" if wants_analogies else "아니오",
-                depth_level=depth_level,
-                agent_results=json.dumps(serializable_results, ensure_ascii=False, indent=2)
-            )
-        )
+        if config is not None:
+            response_message = await personalization_chain.ainvoke(prompt_inputs, config=config)
+        else:
+            response_message = await personalization_chain.ainvoke(prompt_inputs)
 
-        personalized_response = response.content
+        personalized_response = (
+            response_message.content
+            if hasattr(response_message, "content")
+            else str(response_message)
+        )
 
         logger.info("✅ [Aggregator] 개인화 완료")
 

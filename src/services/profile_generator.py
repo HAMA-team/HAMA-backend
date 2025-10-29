@@ -8,6 +8,7 @@ import logging
 from typing import Optional, List, Dict, Any
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -76,7 +77,8 @@ def analyze_portfolio_pattern(portfolio_data: List[Dict[str, Any]]) -> str:
 
 async def generate_ai_profile(
     screening_answers: Dict[str, Any],
-    portfolio_data: Optional[List[Dict[str, Any]]] = None
+    portfolio_data: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> Dict[str, Any]:
     """
     스크리닝 응답 + 포트폴리오 데이터를 LLM으로 분석하여 프로파일 생성
@@ -187,14 +189,20 @@ JSON으로 다음 필드를 반환하세요:
     )
 
     structured_llm = llm.with_structured_output(GeneratedProfile)
+    profile_chain = profile_prompt | structured_llm
 
     try:
-        result = await structured_llm.ainvoke(
-            profile_prompt.format_messages(
-                screening_answers=json.dumps(screening_answers, ensure_ascii=False, indent=2),
-                portfolio_analysis=portfolio_analysis or "(포트폴리오 데이터 없음)"
-            )
-        )
+        prompt_inputs = {
+            "screening_answers": json.dumps(
+                screening_answers, ensure_ascii=False, indent=2
+            ),
+            "portfolio_analysis": portfolio_analysis or "(포트폴리오 데이터 없음)",
+        }
+
+        if config is not None:
+            result = await profile_chain.ainvoke(prompt_inputs, config=config)
+        else:
+            result = await profile_chain.ainvoke(prompt_inputs)
 
         profile_dict = result.dict()
 

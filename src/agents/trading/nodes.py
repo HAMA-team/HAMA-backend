@@ -5,8 +5,7 @@ import logging
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage
-
-from src.utils.langgraph_compat import make_interrupt
+from langgraph_sdk.schema import Interrupt
 
 from src.agents.trading.state import TradingState
 from src.services import OrderNotFoundError, PortfolioNotFoundError, trading_service
@@ -68,19 +67,21 @@ def approval_trade_node(state: TradingState) -> dict:
     logger.info("🔔 [Trade] 사용자 승인을 요청합니다")
 
     summary = state.get("trade_summary") or {}
-    approval = make_interrupt(
-        {
-            "type": "trade_approval",
-            "order_id": state.get("trade_order_id", "UNKNOWN"),
-            "query": state.get("query", ""),
-            "stock_code": summary.get("stock_code") or state.get("stock_code"),
-            "quantity": summary.get("order_quantity") or state.get("quantity"),
-            "order_type": summary.get("order_type") or state.get("order_type"),
-            "order_price": summary.get("order_price") or state.get("order_price"),
-            "automation_level": state.get("automation_level", 2),
-            "message": "매매 주문을 승인하시겠습니까?",
-        }
-    )
+    interrupt_payload = {
+        "type": "trade_approval",
+        "order_id": state.get("trade_order_id", "UNKNOWN"),
+        "query": state.get("query", ""),
+        "stock_code": summary.get("stock_code") or state.get("stock_code"),
+        "quantity": summary.get("order_quantity") or state.get("quantity"),
+        "order_type": summary.get("order_type") or state.get("order_type"),
+        "order_price": summary.get("order_price") or state.get("order_price"),
+        "automation_level": state.get("automation_level", 2),
+        "message": "매매 주문을 승인하시겠습니까?",
+    }
+    approval: Interrupt = {
+        "id": f"trade-{interrupt_payload['order_id']}",
+        "value": interrupt_payload,
+    }
 
     logger.info("✅ [Trade] 승인 수락: %s", approval)
 

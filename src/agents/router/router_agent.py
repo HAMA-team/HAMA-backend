@@ -11,6 +11,7 @@ import logging
 from typing import Optional, Any
 
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field, ConfigDict
@@ -104,6 +105,7 @@ async def route_query(
     query: str,
     user_profile: dict,
     conversation_history: Optional[list] = None,
+    config: Optional[RunnableConfig] = None,
 ) -> RoutingDecision:
     """
     Router Agent: 질문을 분석하고 실행 계획 수립
@@ -112,6 +114,8 @@ async def route_query(
         query: 사용자 질문
         user_profile: 사용자 프로파일 (투자 성향, 경험 수준)
         conversation_history: 대화 히스토리 (최근 3턴)
+
+        config: LangChain RunnableConfig (선택적)
 
     Returns:
         RoutingDecision: 라우팅 결정
@@ -242,6 +246,7 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
             raise RuntimeError("Router LLM 초기화 실패 (OpenAI, Anthropic 모두 실패)")
 
     structured_llm = llm.with_structured_output(RoutingDecision)
+    router_chain = router_prompt | structured_llm
 
     # 대화 히스토리 포맷팅
     history_text = "\n".join(
@@ -255,20 +260,21 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
 
     logger.info(f"🧭 [Router] 질문 분석 시작: {query[:50]}...")
 
+    prompt_inputs = {
+        "query": query,
+        "user_expertise": user_expertise,
+        "investment_style": investment_style,
+        "preferred_sectors": ", ".join(preferred_sectors) if preferred_sectors else "없음",
+        "avg_trades_per_day": avg_trades_per_day,
+        "technical_level": technical_level,
+        "conversation_history": history_text,
+    }
+
     try:
-        result = await structured_llm.ainvoke(
-            router_prompt.format_messages(
-                query=query,
-                user_expertise=user_expertise,
-                investment_style=investment_style,
-                preferred_sectors=", ".join(preferred_sectors)
-                if preferred_sectors
-                else "없음",
-                avg_trades_per_day=avg_trades_per_day,
-                technical_level=technical_level,
-                conversation_history=history_text,
-            )
-        )
+        if config is not None:
+            result = await router_chain.ainvoke(prompt_inputs, config=config)
+        else:
+            result = await router_chain.ainvoke(prompt_inputs)
 
         logger.info(f"✅ [Router] 판단 완료:")
         logger.info(f"  - 복잡도: {result.query_complexity}")
