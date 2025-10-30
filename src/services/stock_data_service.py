@@ -6,6 +6,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 from pykrx import stock as krx_stock
+import FinanceDataReader as fdr
 
 from src.config.settings import settings
 from src.repositories import (
@@ -21,7 +22,8 @@ class StockDataService:
     """
     주가 데이터 서비스
 
-    - FinanceDataReader를 사용한 주가 데이터 조회
+    - pykrx 기반 시세/종목 데이터 조회
+    - FinanceDataReader를 fallback으로 활용하여 안정성 확보
     - 실시간 데이터는 Redis 캐시 우선 조회
     - 캐싱 지원
     """
@@ -60,6 +62,50 @@ class StockDataService:
             return None
         df = df.sort_values("Name")
         return df
+
+    async def _listing_from_fdr(self, market: str) -> Optional[pd.DataFrame]:
+        def _fetch() -> Optional[pd.DataFrame]:
+            target = market.upper()
+            if target == "ALL":
+                target = "KRX"
+
+            try:
+                listing = fdr.StockListing(target)
+            except Exception:
+                return None
+
+            if listing is None or listing.empty:
+                return None
+
+            df = listing.copy()
+            if "Symbol" in df.columns:
+                df = df.rename(columns={"Symbol": "Code"})
+            if "Sector" in df.columns and "Industry" not in df.columns:
+                df["Industry"] = df["Sector"]
+            if "Market" not in df.columns or df["Market"].isna().all():
+                df["Market"] = "KRX" if market.upper() == "ALL" else market.upper()
+
+            available = [col for col in ("Code", "Name", "Market", "Industry") if col in df.columns]
+            df = df[available].copy()
+
+            if "Market" not in df.columns:
+                df["Market"] = "KRX" if market.upper() == "ALL" else market.upper()
+            if "Industry" not in df.columns:
+                df["Industry"] = None
+
+            df["Code"] = df["Code"].astype(str).str.zfill(6)
+            drop_cols = ["Code"]
+            if "Name" in df.columns:
+                drop_cols.append("Name")
+            df = df.dropna(subset=drop_cols)
+            if market.upper() != "ALL":
+                df["Market"] = market.upper()
+
+            df = df.drop_duplicates(subset=["Code"])
+            df = df.sort_values("Name")
+            return df
+
+        return await asyncio.to_thread(_fetch)
 
     async def _save_listing_to_db(self, market: str, df: pd.DataFrame) -> None:
         records: List[Dict[str, Any]] = []
@@ -336,7 +382,7 @@ class StockDataService:
 
     async def get_stock_listing(self, market: str = "KOSPI") -> Optional[pd.DataFrame]:
         """
-        종목 리스트 조회 (pykrx 사용)
+        종목 리스트 조회 (pykrx 기본, FinanceDataReader fallback)
 
         Args:
             market: 시장 (KOSPI, KOSDAQ, KONEX)
@@ -364,56 +410,76 @@ class StockDataService:
             )
             return db_listing
 
+        pykrx_error: Optional[Exception] = None
+        pykrx_df: Optional[pd.DataFrame] = None
+
         # pykrx 호출
         try:
             today_str = datetime.now().strftime("%Y%m%d")
 
-            # pykrx.stock.get_market_ticker_list() 사용
             ticker_list = await asyncio.to_thread(
                 krx_stock.get_market_ticker_list,
                 today_str,
                 market=market
             )
 
-            if ticker_list is not None and len(ticker_list) > 0:
-                # 종목명 조회 (병렬 처리는 비효율적이므로 순차 처리)
+            if ticker_list:
                 data = []
                 for ticker in ticker_list:
                     name = await asyncio.to_thread(
                         krx_stock.get_market_ticker_name,
                         ticker
                     )
-                    data.append({
-                        "Code": ticker,
-                        "Name": name,
-                        "Market": market
-                    })
+                    data.append(
+                        {
+                            "Code": ticker,
+                            "Name": name,
+                            "Market": market,
+                        }
+                    )
 
-                df = pd.DataFrame(data)
-
-                # 캐싱 (1일 TTL)
-                self.cache.set(
-                    cache_key,
-                    self._cache_listing_payload(df),
-                    ttl=86400,
-                )
-                await self._save_listing_to_db(market, df)
-                print(f"✅ 종목 리스트 조회 성공 (pykrx): {market}, {len(df)}개")
-                return df
+                pykrx_df = pd.DataFrame(data)
             else:
-                print(f"⚠️ 종목 리스트 없음: {market}")
-                return None
+                print(f"⚠️ pykrx 종목 리스트 없음: {market}")
 
         except Exception as e:
+            pykrx_error = e
             print(f"❌ 종목 리스트 조회 실패 (pykrx): {market}, {e}")
-            return None
+
+        if pykrx_df is not None and not pykrx_df.empty:
+            self.cache.set(
+                cache_key,
+                self._cache_listing_payload(pykrx_df),
+                ttl=86400,
+            )
+            await self._save_listing_to_db(market, pykrx_df)
+            print(f"✅ 종목 리스트 조회 성공 (pykrx): {market}, {len(pykrx_df)}개")
+            return pykrx_df
+
+        # pykrx가 실패하거나 빈 결과일 때 FinanceDataReader로 대체
+        fdr_df = await self._listing_from_fdr(market)
+        if fdr_df is not None and not fdr_df.empty:
+            self.cache.set(
+                cache_key,
+                self._cache_listing_payload(fdr_df),
+                ttl=86400,
+            )
+            await self._save_listing_to_db(market, fdr_df)
+
+            fallback_reason = "pykrx 결과 없음"
+            if pykrx_error:
+                fallback_reason = f"pykrx 오류: {pykrx_error}"
+            print(f"✅ 종목 리스트 조회 성공 (FinanceDataReader 대체, {fallback_reason}): {market}, {len(fdr_df)}개")
+            return fdr_df
+
+        return None
 
     async def get_stock_by_name(self, name: str, market: str = "KOSPI") -> Optional[str]:
         """
-        종목명으로 종목 코드 찾기
+        종목명으로 종목 코드 찾기 (퍼지 매칭 지원)
 
         Args:
-            name: 종목명 (예: "삼성전자")
+            name: 종목명 (예: "삼성전자", "sk 하이닉스")
             market: 시장 (KOSPI, KOSDAQ, KONEX)
 
         Returns:
@@ -424,17 +490,41 @@ class StockDataService:
         if df is None:
             return None
 
-        # 종목명으로 검색
-        result = df[df["Name"].str.contains(name, na=False)]
+        # 검색어 정규화 (띄어쓰기 제거, 소문자 변환)
+        search_term = name.strip().replace(" ", "").lower()
 
-        if len(result) == 0:
-            print(f"⚠️ 종목을 찾을 수 없음: {name}")
-            return None
+        # 1차 시도: 정확히 일치하는 종목 찾기
+        exact_match = df[df["Name"].str.lower() == search_term]
+        if len(exact_match) > 0:
+            stock_code = exact_match.iloc[0]["Code"]
+            print(f"✅ 종목 코드 찾기 성공 (정확 일치): {name} -> {stock_code}")
+            return stock_code
 
-        # 첫 번째 결과 반환
-        stock_code = result.iloc[0]["Code"]
-        print(f"✅ 종목 코드 찾기 성공: {name} -> {stock_code}")
-        return stock_code
+        # 2차 시도: 띄어쓰기 제거 후 매칭
+        df_copy = df.copy()
+        df_copy["Name_Normalized"] = df_copy["Name"].str.replace(" ", "").str.lower()
+        normalized_match = df_copy[df_copy["Name_Normalized"] == search_term]
+        if len(normalized_match) > 0:
+            stock_code = normalized_match.iloc[0]["Code"]
+            print(f"✅ 종목 코드 찾기 성공 (정규화 매칭): {name} -> {stock_code}")
+            return stock_code
+
+        # 3차 시도: 부분 포함 검색 (원본)
+        contains_match = df[df["Name"].str.contains(name, na=False, case=False)]
+        if len(contains_match) > 0:
+            stock_code = contains_match.iloc[0]["Code"]
+            print(f"✅ 종목 코드 찾기 성공 (부분 매칭): {name} -> {stock_code}")
+            return stock_code
+
+        # 4차 시도: 정규화된 이름으로 부분 포함 검색
+        normalized_contains = df_copy[df_copy["Name_Normalized"].str.contains(search_term, na=False)]
+        if len(normalized_contains) > 0:
+            stock_code = normalized_contains.iloc[0]["Code"]
+            print(f"✅ 종목 코드 찾기 성공 (정규화 부분 매칭): {name} -> {stock_code}")
+            return stock_code
+
+        print(f"⚠️ 종목을 찾을 수 없음: {name} (시장: {market})")
+        return None
 
     async def calculate_returns(
         self, stock_code: str, days: int = 30

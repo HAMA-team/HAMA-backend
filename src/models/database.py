@@ -24,7 +24,12 @@ def _create_engine() -> Engine:
 engine = _create_engine()
 
 # Create session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+    bind=engine,
+)
 
 # Base class for models
 Base = declarative_base()
