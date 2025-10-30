@@ -8,8 +8,13 @@ import pandas as pd
 from pykrx import stock as krx_stock
 
 from src.config.settings import settings
-from src.repositories import stock_price_repository, stock_repository
+from src.repositories import (
+    stock_price_repository,
+    stock_repository,
+    stock_indicator_repository,
+)
 from src.services.cache_manager import cache_manager
+from src.utils.indicators import calculate_all_indicators
 
 
 class StockDataService:
@@ -138,6 +143,51 @@ class StockDataService:
         if records:
             await asyncio.to_thread(stock_price_repository.upsert_many, stock_code, records)
 
+    async def _save_latest_indicators(self, stock_code: str, df: pd.DataFrame) -> None:
+        if df.empty:
+            return
+
+        indicators = calculate_all_indicators(df)
+        if not indicators:
+            return
+
+        latest_idx = df.index[-1]
+        if isinstance(latest_idx, datetime):
+            ref_date = latest_idx.date()
+        else:
+            ref_date = latest_idx
+
+        ma = indicators.get("moving_averages", {})
+        bb = indicators.get("bollinger_bands", {})
+        macd = indicators.get("macd", {})
+        volume = indicators.get("volume", {})
+        rsi = indicators.get("rsi", {})
+
+        payload = {
+            "ma5": ma.get("MA5"),
+            "ma20": ma.get("MA20"),
+            "ma60": ma.get("MA60"),
+            "ma120": ma.get("MA120"),
+            "rsi14": rsi.get("value"),
+            "macd": macd.get("macd"),
+            "macd_signal": macd.get("signal"),
+            "macd_histogram": macd.get("histogram"),
+            "bollinger_upper": bb.get("upper"),
+            "bollinger_middle": bb.get("middle"),
+            "bollinger_lower": bb.get("lower"),
+            "current_volume": volume.get("current_volume"),
+            "average_volume": volume.get("avg_volume"),
+            "volume_ratio": volume.get("volume_ratio"),
+            "is_high_volume": "Y" if volume.get("is_high_volume") else "N",
+        }
+
+        await asyncio.to_thread(
+            stock_indicator_repository.upsert,
+            stock_code,
+            ref_date,
+            payload,
+        )
+
     @staticmethod
     def _cache_prices_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
         reset = df.reset_index()
@@ -243,6 +293,7 @@ class StockDataService:
                 self._cache_prices_payload(db_df),
                 ttl=settings.CACHE_TTL_MARKET_DATA,
             )
+            await self._save_latest_indicators(stock_code, db_df)
             return db_df
 
         # pykrx 호출 - 날짜 형식 변환 ("YYYYMMDD")
@@ -272,6 +323,7 @@ class StockDataService:
                     ttl=settings.CACHE_TTL_MARKET_DATA,
                 )
                 await self._save_prices_to_db(stock_code, df)
+                await self._save_latest_indicators(stock_code, df)
                 print(f"✅ 주가 데이터 조회 성공 (pykrx): {stock_code}")
                 return df
             else:
@@ -789,3 +841,36 @@ async def seed_market_data(
         "failed": len(failures),
         "failed_codes": failures,
     }
+
+
+async def update_recent_prices_for_market(
+    market: str = "ALL",
+    days: int = 5,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """지정한 시장의 종목들에 대해 최근 주가/지표를 갱신"""
+
+    listing = await stock_data_service.get_stock_listing(market)
+    if listing is None or listing.empty:
+        raise RuntimeError(f"{market} 시장의 종목 목록을 조회할 수 없습니다.")
+
+    codes = listing["Code"].dropna().astype(str).tolist()
+    if limit is not None:
+        codes = codes[:limit]
+
+    summary = {
+        "market": market,
+        "processed": 0,
+        "success": 0,
+        "failed": [],
+    }
+
+    for idx, code in enumerate(codes, start=1):
+        df = await stock_data_service.get_stock_price(code, days=days)
+        if df is None or df.empty:
+            summary["failed"].append(code)
+        else:
+            summary["success"] += 1
+        summary["processed"] = idx
+
+    return summary

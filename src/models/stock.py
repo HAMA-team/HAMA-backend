@@ -274,3 +274,44 @@ class RealtimePrice(Base):
     best_bid_price = Column(DECIMAL(15, 2))
 
     created_at = Column(TIMESTAMP, server_default=func.now())
+
+
+class StockIndicator(Base):
+    """일별 기술적 지표 스냅샷"""
+    __tablename__ = "stock_indicators"
+
+    indicator_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stock_code = Column(String(20), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+
+    # 이동평균
+    ma5 = Column(DECIMAL(15, 4))
+    ma20 = Column(DECIMAL(15, 4))
+    ma60 = Column(DECIMAL(15, 4))
+    ma120 = Column(DECIMAL(15, 4))
+
+    # RSI
+    rsi14 = Column(DECIMAL(10, 4))
+
+    # MACD
+    macd = Column(DECIMAL(15, 4))
+    macd_signal = Column(DECIMAL(15, 4))
+    macd_histogram = Column(DECIMAL(15, 4))
+
+    # Bollinger Bands
+    bollinger_upper = Column(DECIMAL(15, 4))
+    bollinger_middle = Column(DECIMAL(15, 4))
+    bollinger_lower = Column(DECIMAL(15, 4))
+
+    # 거래량 분석
+    current_volume = Column(BigInteger)
+    average_volume = Column(BigInteger)
+    volume_ratio = Column(DECIMAL(10, 4))
+    is_high_volume = Column(String(1), default="N")
+
+    created_at = Column(TIMESTAMP, server_default=func.now())
+    updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )

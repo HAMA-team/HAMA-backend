@@ -60,5 +60,6 @@ def init_db():
     import src.models.user  # noqa: F401
     import src.models.agent  # noqa: F401
     import src.models.chat  # noqa: F401
+    import src.models.macro  # noqa: F401
 
     Base.metadata.create_all(bind=engine)

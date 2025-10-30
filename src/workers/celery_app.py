@@ -47,6 +47,17 @@ app.conf.beat_schedule = {
             "expires": 55,  # 55초 후 만료 (다음 실행 전)
         },
     },
+    # 장 마감 후 주가 히스토리 갱신 (평일 16:20)
+    "refresh-price-history-daily": {
+        "task": "src.workers.tasks.refresh_price_history_daily",
+        "schedule": crontab(hour=16, minute=20, day_of_week="mon-fri"),
+        "args": ("ALL", 5, None),
+    },
+    # 매일 아침 거시 지표 갱신 (06:30)
+    "refresh-macro-indicators": {
+        "task": "src.workers.tasks.refresh_macro_indicators",
+        "schedule": crontab(hour=6, minute=30),
+    },
 }
 
 

@@ -10,6 +10,8 @@ from datetime import datetime
 
 from src.workers.celery_app import app
 from src.services.realtime_cache_service import realtime_cache_service
+from src.services.stock_data_service import update_recent_prices_for_market
+from src.services.macro_data_service import macro_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +148,30 @@ def cache_single_stock(stock_code: str):
     except Exception as e:
         logger.error(f"❌ [Task] 캐싱 에러: {stock_code} - {e}")
         raise
+
+
+@app.task(
+    name="src.workers.tasks.refresh_price_history_daily",
+    max_retries=2,
+)
+def refresh_price_history_daily(market: str = "ALL", days: int = 5, limit: int | None = None):
+    """장 마감 후 최근 주가/지표를 갱신"""
+
+    result = asyncio.run(update_recent_prices_for_market(market=market, days=days, limit=limit))
+    logger.info(
+        "✅ [Task] 주가 히스토리 갱신: market=%s processed=%s success=%s failed=%s",
+        result.get("market"),
+        result.get("processed"),
+        result.get("success"),
+        len(result.get("failed", [])),
+    )
+    return result
+
+
+@app.task(name="src.workers.tasks.refresh_macro_indicators", max_retries=2)
+def refresh_macro_indicators():
+    """BOK 거시 지표 갱신"""
+
+    result = asyncio.run(macro_data_service.refresh_all())
+    logger.info("✅ [Task] 거시 지표 갱신: %s", result)
+    return result

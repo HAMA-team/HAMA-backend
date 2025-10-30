@@ -746,9 +746,12 @@ async def macro_worker_node(state: ResearchState) -> ResearchState:
 
     try:
         # 1. BOK API로 거시경제 데이터 수집
-        from src.services.bok_service import bok_service
+        from src.services.macro_data_service import macro_data_service
 
-        macro_data = bok_service.get_macro_indicators()
+        macro_data = macro_data_service.macro_summary()
+        if not macro_data.get("base_rate"):
+            await macro_data_service.refresh_all()
+            macro_data = macro_data_service.macro_summary()
 
         # 2. 종목 정보 추출 (기업명, 업종 등)
         company_data = state.get("company_data") or {}

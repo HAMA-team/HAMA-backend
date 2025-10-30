@@ -9,7 +9,7 @@ Market Analyzer - 시장 사이클 분석 서브모듈
 
 from typing import Dict, Any
 from src.schemas.strategy import MarketCycle
-from src.services.bok_service import bok_service
+from src.services.macro_data_service import macro_data_service
 from src.services.sector_data_service import sector_data_service
 from src.utils.llm_factory import get_llm
 from src.utils.json_parser import safe_json_parse
@@ -44,7 +44,10 @@ class MarketAnalyzer:
         """
         # 1. 거시경제 데이터 수집
         if not macro_data:
-            macro_data = bok_service.get_macro_indicators()
+            macro_data = macro_data_service.macro_summary()
+            if not macro_data.get("base_rate"):
+                await macro_data_service.refresh_all()
+                macro_data = macro_data_service.macro_summary()
 
         # 2. 섹터 성과 데이터 수집
         sector_ranking = sector_data_service.get_sector_ranking(days=30)
