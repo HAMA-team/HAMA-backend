@@ -75,7 +75,13 @@ class ResearchState(TypedDict, total=False):
 
     # 분석 결과
     technical_analysis: Optional[dict]
-    """기술적 분석 결과 (LLM이 지표를 해석)"""
+    """기술적 분석 결과 (Technical Analyst - 이평선, 지지/저항선, 기술적 지표 해석)"""
+
+    trading_flow_analysis: Optional[dict]
+    """거래 동향 분석 결과 (Trading Flow Analyst - 기관/외국인/개인 순매수 분석)"""
+
+    information_analysis: Optional[dict]
+    """정보 분석 결과 (Information Analyst - 뉴스, 호재/악재, 시장 센티먼트)"""
 
     bull_analysis: Optional[dict]
     """강세 분석 (LLM)"""

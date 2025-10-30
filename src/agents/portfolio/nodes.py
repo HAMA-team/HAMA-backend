@@ -204,6 +204,191 @@ async def rebalance_plan_node(state: PortfolioState) -> PortfolioState:
     }
 
 
+async def validate_constraints_node(state: PortfolioState) -> PortfolioState:
+    """
+    포트폴리오 제약 조건 검증
+
+    검증 항목:
+    1. 최대 슬롯 수 (기본 10개)
+    2. 섹터 집중도 (동일 섹터 최대 30%)
+    3. 동일 산업군 종목 수 (최대 3개)
+    """
+    if state.get("error"):
+        return state
+
+    proposed = state.get("proposed_allocation") or []
+    max_slots = state.get("max_slots", 10)
+    max_sector_concentration = state.get("max_sector_concentration", 0.30)
+    max_same_industry = state.get("max_same_industry_count", 3)
+
+    logger.info("🔍 [Portfolio] 제약 조건 검증 시작")
+
+    violations = []
+
+    # 1. 최대 슬롯 수 검증
+    non_cash_holdings = [h for h in proposed if h.get("stock_code") != "CASH"]
+    if len(non_cash_holdings) > max_slots:
+        violations.append({
+            "type": "max_slots",
+            "message": f"최대 보유 종목 수({max_slots}개) 초과: {len(non_cash_holdings)}개",
+            "severity": "high",
+            "current": len(non_cash_holdings),
+            "limit": max_slots,
+        })
+        logger.warning(f"⚠️ [Portfolio] 최대 슬롯 수 초과: {len(non_cash_holdings)}/{max_slots}")
+
+    # 2. 섹터 집중도 검증
+    # 실제로는 종목별 섹터 정보가 필요하지만, 여기서는 stock_name에서 추론하거나
+    # 나중에 서비스에서 섹터 정보를 받아와야 함
+    # 임시로 간단한 로직으로 구현
+    sector_weights = {}
+    for holding in non_cash_holdings:
+        # TODO: 실제 섹터 정보를 DB나 서비스에서 가져와야 함
+        # 현재는 stock_code 기반으로 임시 섹터 할당
+        sector = _infer_sector(holding.get("stock_code", ""))
+        weight = holding.get("weight", 0.0)
+        sector_weights[sector] = sector_weights.get(sector, 0.0) + weight
+
+    for sector, weight in sector_weights.items():
+        if weight > max_sector_concentration:
+            violations.append({
+                "type": "sector_concentration",
+                "message": f"섹터 '{sector}' 집중도 초과: {weight:.1%} (제한: {max_sector_concentration:.0%})",
+                "severity": "medium",
+                "sector": sector,
+                "current": weight,
+                "limit": max_sector_concentration,
+            })
+            logger.warning(f"⚠️ [Portfolio] 섹터 집중도 초과: {sector} {weight:.1%}")
+
+    # 3. 동일 산업군 종목 수 검증
+    # TODO: 실제 산업군 정보 필요
+    industry_counts = {}
+    for holding in non_cash_holdings:
+        industry = _infer_industry(holding.get("stock_code", ""))
+        industry_counts[industry] = industry_counts.get(industry, 0) + 1
+
+    for industry, count in industry_counts.items():
+        if count > max_same_industry:
+            violations.append({
+                "type": "industry_count",
+                "message": f"산업군 '{industry}' 종목 수 초과: {count}개 (제한: {max_same_industry}개)",
+                "severity": "low",
+                "industry": industry,
+                "current": count,
+                "limit": max_same_industry,
+            })
+            logger.warning(f"⚠️ [Portfolio] 산업군 종목 수 초과: {industry} {count}개")
+
+    if violations:
+        logger.warning(f"⚠️ [Portfolio] 제약 조건 위반 {len(violations)}건 발견")
+    else:
+        logger.info("✅ [Portfolio] 모든 제약 조건 충족")
+
+    return {
+        **state,
+        "constraint_violations": violations,
+    }
+
+
+def _infer_sector(stock_code: str) -> str:
+    """종목 코드에서 섹터 추론 (임시)"""
+    # TODO: 실제 섹터 정보를 DB에서 조회해야 함
+    # 임시로 종목 코드 범위로 추정
+    if not stock_code or stock_code == "CASH":
+        return "CASH"
+
+    code_num = int(stock_code) if stock_code.isdigit() else 0
+
+    if 0 <= code_num < 100000:
+        return "제조업"
+    elif 100000 <= code_num < 200000:
+        return "IT"
+    elif 200000 <= code_num < 300000:
+        return "금융"
+    else:
+        return "기타"
+
+
+def _infer_industry(stock_code: str) -> str:
+    """종목 코드에서 산업군 추론 (임시)"""
+    # TODO: 실제 산업군 정보를 DB에서 조회해야 함
+    if not stock_code or stock_code == "CASH":
+        return "CASH"
+
+    code_num = int(stock_code) if stock_code.isdigit() else 0
+
+    if 0 <= code_num < 50000:
+        return "전자/전기"
+    elif 50000 <= code_num < 100000:
+        return "화학/소재"
+    elif 100000 <= code_num < 150000:
+        return "소프트웨어"
+    elif 150000 <= code_num < 200000:
+        return "반도체"
+    elif 200000 <= code_num < 250000:
+        return "은행"
+    elif 250000 <= code_num < 300000:
+        return "증권"
+    else:
+        return "기타"
+
+
+async def market_condition_node(state: PortfolioState) -> PortfolioState:
+    """
+    시장 상황 분석 및 최대 슬롯 조정
+
+    시장 상황에 따라 최대 보유 종목 수 조정:
+    - 강세장: 10개
+    - 중립장: 7개
+    - 약세장: 5개
+    """
+    if state.get("error"):
+        return state
+
+    logger.info("📈 [Portfolio] 시장 상황 분석 시작")
+
+    # 시장 데이터 추출
+    portfolio_snapshot = state.get("portfolio_snapshot") or {}
+    market_data = portfolio_snapshot.get("market_data") or {}
+
+    # KOSPI 인덱스 변화율로 시장 상황 판단
+    kospi_change = market_data.get("kospi_change_rate", 0.0)
+
+    # 시장 상황 분류
+    if kospi_change > 0.05:  # 5% 이상 상승
+        market_condition = "강세장"
+        recommended_max_slots = 10
+    elif kospi_change < -0.05:  # 5% 이상 하락
+        market_condition = "약세장"
+        recommended_max_slots = 5
+    else:
+        market_condition = "중립장"
+        recommended_max_slots = 7
+
+    logger.info(
+        f"📊 [Portfolio] 시장 상황: {market_condition} (KOSPI {kospi_change:+.1%}), "
+        f"권장 최대 슬롯: {recommended_max_slots}개"
+    )
+
+    messages = list(state.get("messages", []))
+    messages.append(
+        AIMessage(
+            content=(
+                f"시장 상황: {market_condition} (KOSPI {kospi_change:+.1%})\n"
+                f"권장 최대 보유 종목: {recommended_max_slots}개"
+            )
+        )
+    )
+
+    return {
+        **state,
+        "market_condition": market_condition,
+        "max_slots": recommended_max_slots,
+        "messages": messages,
+    }
+
+
 async def summary_node(state: PortfolioState) -> PortfolioState:
     """최종 요약 및 리포트 구성"""
     if state.get("error"):
@@ -213,6 +398,9 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     trades = state.get("trades_required") or []
     current = state.get("current_holdings") or []
     risk_profile = state.get("risk_profile", "moderate")
+    violations = state.get("constraint_violations") or []
+    market_condition = state.get("market_condition", "중립장")
+    max_slots = state.get("max_slots", 10)
 
     equity_weight = sum(item["weight"] for item in proposed if item["stock_code"] != "CASH")
     cash_weight = next((item["weight"] for item in proposed if item["stock_code"] == "CASH"), 0.0)
@@ -221,6 +409,17 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
         f"예상 수익률 {state.get('expected_return', 0):.0%} / 변동성 {state.get('expected_volatility', 0):.0%}.",
         f"주식 비중 {equity_weight:.0%}, 현금 {cash_weight:.0%}.",
     ]
+
+    # 시장 상황 정보 추가
+    summary_parts.append(f"시장 상황: {market_condition} (최대 {max_slots}개 종목).")
+
+    # 제약 조건 위반 정보 추가
+    if violations:
+        high_severity = [v for v in violations if v.get("severity") == "high"]
+        if high_severity:
+            summary_parts.append(f"⚠️ 중요: {len(high_severity)}건의 제약 조건 위반.")
+        else:
+            summary_parts.append(f"주의: {len(violations)}건의 제약 조건 위반.")
 
     if trades:
         summary_parts.append(f"주요 조정: {len(trades)}건 리밸런싱 예정.")
@@ -241,6 +440,10 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
         "trades_required": trades,
         "rationale": state.get("rationale"),
         "hitl_required": state.get("hitl_required", False),
+        # 포트폴리오 제약 조건 관련
+        "market_condition": market_condition,
+        "max_slots": max_slots,
+        "constraint_violations": violations,
     }
 
     logger.info("📝 [Portfolio] 리포트 생성 완료")

@@ -21,7 +21,7 @@ from .state import ResearchState
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_WORKERS = {"data", "bull", "bear", "insight", "macro"}
+ALLOWED_WORKERS = {"data", "bull", "bear", "insight", "macro", "technical", "trading_flow", "information"}
 
 
 def _coerce_number(value: Any, fallback: float) -> float:
@@ -75,6 +75,12 @@ def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if worker_raw not in ALLOWED_WORKERS:
             if "data" in worker_raw:
                 worker = "data"
+            elif "technical" in worker_raw or "기술적" in worker_raw:
+                worker = "technical"
+            elif "trading" in worker_raw or "거래" in worker_raw or "flow" in worker_raw:
+                worker = "trading_flow"
+            elif "information" in worker_raw or "news" in worker_raw or "정보" in worker_raw:
+                worker = "information"
             elif "bull" in worker_raw or "positive" in worker_raw:
                 worker = "bull"
             elif "bear" in worker_raw or "risk" in worker_raw:
@@ -688,20 +694,465 @@ JSON 형식으로 답변하세요:
         }
 
 
-async def synthesis_node(state: ResearchState) -> ResearchState:
+async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
+    """
+    기술적 분석 전문가 (Technical Analyst)
+
+    PRISM-INSIGHT의 Technical Analyst 역할:
+    - 주가 및 거래량 기술적 분석
+    - 이동평균선 분석 (골든크로스/데드크로스)
+    - 지지선/저항선 식별
+    - 거래량 패턴 분석
+    - RSI, MACD, 볼린저밴드 등 기술적 지표 해석
+    """
     if state.get("error"):
         return state
 
-    logger.info("🤝 [Research/Synthesis] 최종 의견 통합 시작")
+    task = state.get("current_task")
+    stock_code = state.get("stock_code") or _extract_stock_code(state)
 
+    logger.info("📊 [Research/TechnicalAnalyst] 기술적 분석 시작: %s", stock_code)
+
+    # 데이터 추출
+    price_data = state.get("price_data") or {}
+    technical = state.get("technical_indicators") or {}
+
+    if not price_data or not technical:
+        logger.warning("⚠️ [Research/TechnicalAnalyst] 기술적 데이터 부족")
+        return _task_complete(
+            state,
+            task,
+            "기술적 데이터 부족으로 분석 생략",
+            {
+                "technical_analysis": None,
+                "messages": [AIMessage(content="기술적 데이터가 부족하여 분석을 생략합니다.")],
+            },
+        )
+
+    llm = get_llm(max_tokens=2500, temperature=0.2)
+
+    current_price = price_data.get("latest_close", 0)
+    volume = price_data.get("latest_volume", 0)
+
+    prompt = f"""당신은 기술적 분석 전문가입니다. 다음 데이터를 기반으로 상세한 기술적 분석을 제공하세요.
+
+## 종목 정보
+- 종목코드: {stock_code}
+- 현재가: {current_price:,}원
+- 거래량: {volume:,}주
+
+## 기술적 지표
+{json.dumps(technical, ensure_ascii=False, indent=2)}
+
+## 분석 항목
+1. **주가 추세 분석**: 상승추세/하락추세/횡보 판단 (이동평균선 기반)
+2. **이동평균선 분석**:
+   - 단기(5일)/중기(20일)/장기(60일) 이평선 배열 상태
+   - 골든크로스/데드크로스 발생 여부
+   - 현재가와 이평선의 위치 관계
+3. **지지선/저항선**:
+   - 주요 지지선 가격대
+   - 주요 저항선 가격대
+4. **거래량 패턴**:
+   - 최근 거래량 변화 추세
+   - 가격 변동과 거래량의 관계
+5. **기술적 지표 해석**:
+   - RSI: 과매수/과매도 여부
+   - MACD: 매수/매도 신호
+   - 볼린저밴드: 밴드폭과 현재가 위치
+6. **단기 방향성**: 향후 1~2주 기술적 전망
+
+JSON 형식으로 답변하세요:
+{{
+  "trend": "상승추세" | "하락추세" | "횡보",
+  "trend_strength": 1-5,
+  "moving_average_analysis": {{
+    "arrangement": "정배열" | "역배열" | "혼재",
+    "golden_cross": true | false,
+    "death_cross": true | false,
+    "ma5": 0,
+    "ma20": 0,
+    "ma60": 0
+  }},
+  "support_resistance": {{
+    "support_levels": [가격1, 가격2, 가격3],
+    "resistance_levels": [가격1, 가격2, 가격3]
+  }},
+  "volume_pattern": {{
+    "trend": "증가" | "감소" | "보합",
+    "price_volume_relationship": "설명"
+  }},
+  "technical_signals": {{
+    "rsi_signal": "과매수" | "과매도" | "중립",
+    "macd_signal": "매수" | "매도" | "중립",
+    "bollinger_signal": "상단돌파" | "하단돌파" | "중립"
+  }},
+  "short_term_outlook": "1-2주 전망",
+  "trading_strategy": "기술적 관점 매매 전략",
+  "confidence": 1-5
+}}
+"""
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            analysis = safe_json_parse(response.content, "Research/TechnicalAnalyst")
+
+            if not isinstance(analysis, dict):
+                analysis = {}
+
+            # 기본값 설정
+            trend = analysis.get("trend", "횡보")
+            confidence = int(_coerce_number(analysis.get("confidence"), 3))
+            confidence = max(1, min(confidence, 5))
+
+            summary = f"기술적 분석 완료: {trend}, 신뢰도 {confidence}/5"
+
+            # 주요 신호 추출
+            signals = []
+            tech_signals = analysis.get("technical_signals", {})
+            if tech_signals.get("rsi_signal") in ["과매수", "과매도"]:
+                signals.append(f"RSI {tech_signals['rsi_signal']}")
+            if tech_signals.get("macd_signal") in ["매수", "매도"]:
+                signals.append(f"MACD {tech_signals['macd_signal']}")
+
+            ma_analysis = analysis.get("moving_average_analysis", {})
+            if ma_analysis.get("golden_cross"):
+                signals.append("골든크로스 발생")
+            elif ma_analysis.get("death_cross"):
+                signals.append("데드크로스 발생")
+
+            message = AIMessage(
+                content=(
+                    f"기술적 분석 결과:\n"
+                    f"- 추세: {trend}\n"
+                    f"- 신호: {', '.join(signals) if signals else '특이사항 없음'}\n"
+                    f"- 단기 전망: {analysis.get('short_term_outlook', 'N/A')}"
+                )
+            )
+
+            payload: ResearchState = {
+                "technical_analysis": analysis,
+                "messages": [message],
+            }
+            return _task_complete(state, task, summary, payload)
+
+        except Exception as exc:
+            logger.error(
+                "❌ [Research/TechnicalAnalyst] 실패 (시도 %s/%s): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+            raise RuntimeError(f"기술적 분석 실패: {exc}") from exc
+
+
+async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchState:
+    """
+    거래 동향 분석 전문가 (Trading Flow Analyst)
+
+    PRISM-INSIGHT의 Trading Flow Analyst 역할:
+    - 투자자별(기관/외국인/개인) 거래 동향 분석
+    - 순매수/순매도 추이 분석
+    - 주가와의 상관관계 분석
+    - 수급 전망
+    """
+    if state.get("error"):
+        return state
+
+    task = state.get("current_task")
+    stock_code = state.get("stock_code") or _extract_stock_code(state)
+
+    logger.info("💹 [Research/TradingFlowAnalyst] 거래 동향 분석 시작: %s", stock_code)
+
+    # 데이터 추출
+    investor_data = state.get("investor_trading_data") or {}
+    price_data = state.get("price_data") or {}
+
+    if not investor_data:
+        logger.warning("⚠️ [Research/TradingFlowAnalyst] 투자자 거래 데이터 부족")
+        return _task_complete(
+            state,
+            task,
+            "투자자 거래 데이터 부족으로 분석 생략",
+            {
+                "trading_flow_analysis": None,
+                "messages": [AIMessage(content="투자자 거래 데이터가 부족하여 분석을 생략합니다.")],
+            },
+        )
+
+    llm = get_llm(max_tokens=2000, temperature=0.2)
+
+    current_price = price_data.get("latest_close", 0)
+
+    prompt = f"""당신은 거래 동향 분석 전문가입니다. 투자 주체별 거래 동향을 분석하고 수급 전망을 제시하세요.
+
+## 종목 정보
+- 종목코드: {stock_code}
+- 현재가: {current_price:,}원
+
+## 투자자별 거래 동향
+{json.dumps(investor_data, ensure_ascii=False, indent=2)}
+
+## 분석 항목
+1. **외국인 투자자**:
+   - 최근 30일 순매수/순매도 추이
+   - 주가와의 상관관계
+   - 외국인 보유 비중 변화 (가능한 경우)
+2. **기관 투자자**:
+   - 최근 30일 순매수/순매도 추이
+   - 주가와의 상관관계
+   - 특이 동향 (대규모 매수/매도 등)
+3. **개인 투자자**:
+   - 순매수/순매도 추이
+   - 외국인/기관과의 반대 매매 여부
+4. **종합 수급 분석**:
+   - 누가 주도하고 있는가?
+   - 수급 강도 (강함/약함)
+   - 향후 수급 전망
+
+JSON 형식으로 답변하세요:
+{{
+  "foreign_investor": {{
+    "trend": "순매수" | "순매도" | "보합",
+    "strength": 1-5,
+    "correlation_with_price": "양의 상관관계" | "음의 상관관계" | "무관",
+    "net_amount": 0,
+    "analysis": "상세 설명"
+  }},
+  "institutional_investor": {{
+    "trend": "순매수" | "순매도" | "보합",
+    "strength": 1-5,
+    "correlation_with_price": "양의 상관관계" | "음의 상관관계" | "무관",
+    "net_amount": 0,
+    "analysis": "상세 설명"
+  }},
+  "individual_investor": {{
+    "trend": "순매수" | "순매도" | "보합",
+    "opposite_trading": true | false,
+    "analysis": "상세 설명"
+  }},
+  "supply_demand_analysis": {{
+    "leading_investor": "외국인" | "기관" | "개인" | "혼재",
+    "supply_strength": "강함" | "약함" | "보통",
+    "outlook": "긍정적" | "부정적" | "중립",
+    "forecast": "향후 수급 전망"
+  }},
+  "confidence": 1-5
+}}
+"""
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            analysis = safe_json_parse(response.content, "Research/TradingFlowAnalyst")
+
+            if not isinstance(analysis, dict):
+                analysis = {}
+
+            confidence = int(_coerce_number(analysis.get("confidence"), 3))
+            confidence = max(1, min(confidence, 5))
+
+            supply_demand = analysis.get("supply_demand_analysis", {})
+            outlook = supply_demand.get("outlook", "중립")
+            leading = supply_demand.get("leading_investor", "혼재")
+
+            summary = f"거래 동향 분석 완료: {leading} 주도, 수급 {outlook}"
+
+            foreign = analysis.get("foreign_investor", {})
+            institutional = analysis.get("institutional_investor", {})
+
+            message = AIMessage(
+                content=(
+                    f"거래 동향 분석 결과:\n"
+                    f"- 외국인: {foreign.get('trend', 'N/A')}\n"
+                    f"- 기관: {institutional.get('trend', 'N/A')}\n"
+                    f"- 주도 세력: {leading}\n"
+                    f"- 수급 전망: {outlook}"
+                )
+            )
+
+            payload: ResearchState = {
+                "trading_flow_analysis": analysis,
+                "messages": [message],
+            }
+            return _task_complete(state, task, summary, payload)
+
+        except Exception as exc:
+            logger.error(
+                "❌ [Research/TradingFlowAnalyst] 실패 (시도 %s/%s): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+            raise RuntimeError(f"거래 동향 분석 실패: {exc}") from exc
+
+
+async def information_analyst_worker_node(state: ResearchState) -> ResearchState:
+    """
+    정보 분석 전문가 (Information Analyst)
+
+    PRISM-INSIGHT의 Information Analyst 역할:
+    - 뉴스 및 이슈 트렌드 분석
+    - 호재/악재 식별
+    - 시장 센티먼트 분석
+
+    Note: 현재는 기존 데이터를 기반으로 분석하며,
+    향후 뉴스 API 연동 시 실제 뉴스 크롤링 추가 예정
+    """
+    if state.get("error"):
+        return state
+
+    task = state.get("current_task")
+    stock_code = state.get("stock_code") or _extract_stock_code(state)
+
+    logger.info("📰 [Research/InformationAnalyst] 정보 분석 시작: %s", stock_code)
+
+    # 기업 정보 추출
+    company_data = state.get("company_data") or {}
+    company_info = company_data.get("info", {})
+    company_name = company_info.get("corp_name", f"종목코드 {stock_code}")
+
+    # 컨텍스트 구성
+    context = {
+        "stock_code": stock_code,
+        "company_name": company_name,
+        "market_index": state.get("market_index_data"),
+        "market_cap": state.get("market_cap_data"),
+        "fundamental": state.get("fundamental_data"),
+        "price_trend": state.get("price_data", {}).get("latest_close"),
+    }
+
+    llm = get_llm(max_tokens=2000, temperature=0.3)
+
+    prompt = f"""당신은 정보 분석 전문가입니다. 기업 정보와 시장 맥락을 분석하여 투자 관련 인사이트를 제공하세요.
+
+## 기업 정보
+- 기업명: {company_name}
+- 종목코드: {stock_code}
+
+## 시장 컨텍스트
+{json.dumps(context, ensure_ascii=False, indent=2)}
+
+## 분석 항목
+1. **기업 개요 및 사업 특성**:
+   - 주요 사업 분야
+   - 시장 내 위치
+2. **최근 이슈 및 트렌드** (데이터 기반 추론):
+   - 주가 변동성에서 추론 가능한 이슈
+   - 업종 트렌드
+3. **호재/악재 요인**:
+   - 긍정적 요인
+   - 부정적 요인
+4. **시장 센티먼트**:
+   - 전반적 투자 심리
+   - 리스크 레벨
+
+Note: 뉴스 API 연동 전이므로, 기존 데이터(주가, 거래량, 시총 등)를 기반으로 추론하세요.
+
+JSON 형식으로 답변하세요:
+{{
+  "company_overview": "기업 개요",
+  "business_characteristics": "사업 특성",
+  "positive_factors": ["호재 요인 리스트"],
+  "negative_factors": ["악재 요인 리스트"],
+  "market_sentiment": "긍정적" | "부정적" | "중립",
+  "risk_level": "높음" | "중간" | "낮음",
+  "key_themes": ["주요 테마/트렌드"],
+  "investment_implications": "투자 시사점",
+  "confidence": 1-5
+}}
+"""
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            analysis = safe_json_parse(response.content, "Research/InformationAnalyst")
+
+            if not isinstance(analysis, dict):
+                analysis = {}
+
+            confidence = int(_coerce_number(analysis.get("confidence"), 3))
+            confidence = max(1, min(confidence, 5))
+
+            sentiment = analysis.get("market_sentiment", "중립")
+            risk_level = analysis.get("risk_level", "중간")
+
+            summary = f"정보 분석 완료: 센티먼트 {sentiment}, 리스크 {risk_level}"
+
+            positive = analysis.get("positive_factors", [])
+            negative = analysis.get("negative_factors", [])
+
+            message = AIMessage(
+                content=(
+                    f"정보 분석 결과:\n"
+                    f"- 시장 센티먼트: {sentiment}\n"
+                    f"- 리스크 레벨: {risk_level}\n"
+                    f"- 주요 호재: {', '.join(positive[:2]) if positive else '없음'}\n"
+                    f"- 주요 악재: {', '.join(negative[:2]) if negative else '없음'}"
+                )
+            )
+
+            payload: ResearchState = {
+                "information_analysis": analysis,
+                "messages": [message],
+            }
+            return _task_complete(state, task, summary, payload)
+
+        except Exception as exc:
+            logger.error(
+                "❌ [Research/InformationAnalyst] 실패 (시도 %s/%s): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+            raise RuntimeError(f"정보 분석 실패: {exc}") from exc
+
+
+async def synthesis_node(state: ResearchState) -> ResearchState:
+    """
+    최종 의견 통합 (Research Synthesizer)
+
+    PRISM-INSIGHT 패턴 적용:
+    - Technical Analyst 결과
+    - Trading Flow Analyst 결과
+    - Information Analyst 결과
+    - Bull/Bear 분석 결과
+    - Macro 분석 결과
+    를 종합하여 최종 투자 의견 생성
+    """
+    if state.get("error"):
+        return state
+
+    logger.info("🤝 [Research/Synthesis] 최종 의견 통합 시작 (PRISM-INSIGHT 패턴)")
+
+    # 기존 분석 결과
     bull = state.get("bull_analysis") or {}
     bear = state.get("bear_analysis") or {}
     price_data = state.get("price_data") or {}
-    technical = state.get("technical_indicators") or {}
+    technical_indicators = state.get("technical_indicators") or {}
     fundamental = state.get("fundamental_data") or {}
     investor = state.get("investor_trading_data") or {}
     market_cap = state.get("market_cap_data") or {}
     stock_code = state.get("stock_code") or "N/A"
+
+    # 새로운 전문가 분석 결과
+    technical_analysis = state.get("technical_analysis") or {}
+    trading_flow_analysis = state.get("trading_flow_analysis") or {}
+    information_analysis = state.get("information_analysis") or {}
+    macro_analysis = state.get("macro_analysis") or {}
 
     current_price = price_data.get("latest_close") or 0
     bull_target = _coerce_number(bull.get("target_price"), current_price * 1.1)
@@ -711,11 +1162,73 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     bull_conf = max(1, min(bull_conf, 5))
     bear_conf = max(1, min(bear_conf, 5))
 
-    tech_trend = technical.get("overall_trend", "중립")
-    if tech_trend == "강세":
+    # 1. Technical Analyst 결과 반영
+    tech_trend = technical_analysis.get("trend", technical_indicators.get("overall_trend", "중립"))
+    tech_trend_strength = technical_analysis.get("trend_strength", 3)
+
+    if tech_trend in ["상승추세", "강세"]:
+        bull_conf = min(bull_conf + int(tech_trend_strength / 2), 5)
+    elif tech_trend in ["하락추세", "약세"]:
+        bear_conf = min(bear_conf + int(tech_trend_strength / 2), 5)
+
+    # 기술적 신호 반영
+    tech_signals = technical_analysis.get("technical_signals", {})
+    if tech_signals.get("rsi_signal") == "과매도":
         bull_conf = min(bull_conf + 1, 5)
-    elif tech_trend == "약세":
+    elif tech_signals.get("rsi_signal") == "과매수":
         bear_conf = min(bear_conf + 1, 5)
+
+    if tech_signals.get("macd_signal") == "매수":
+        bull_conf = min(bull_conf + 1, 5)
+    elif tech_signals.get("macd_signal") == "매도":
+        bear_conf = min(bear_conf + 1, 5)
+
+    # 이동평균선 분석 반영
+    ma_analysis = technical_analysis.get("moving_average_analysis", {})
+    if ma_analysis.get("golden_cross"):
+        bull_conf = min(bull_conf + 1, 5)
+    elif ma_analysis.get("death_cross"):
+        bear_conf = min(bear_conf + 1, 5)
+
+    # 2. Trading Flow Analyst 결과 반영
+    supply_demand = trading_flow_analysis.get("supply_demand_analysis", {})
+    supply_outlook = supply_demand.get("outlook", "중립")
+
+    if supply_outlook == "긍정적":
+        bull_conf = min(bull_conf + 1, 5)
+    elif supply_outlook == "부정적":
+        bear_conf = min(bear_conf + 1, 5)
+
+    # 외국인/기관 동향 반영
+    foreign_investor = trading_flow_analysis.get("foreign_investor", {})
+    institutional_investor = trading_flow_analysis.get("institutional_investor", {})
+
+    if foreign_investor.get("trend") == "순매수" and institutional_investor.get("trend") == "순매수":
+        bull_conf = min(bull_conf + 1, 5)
+    elif foreign_investor.get("trend") == "순매도" and institutional_investor.get("trend") == "순매도":
+        bear_conf = min(bear_conf + 1, 5)
+
+    # 3. Information Analyst 결과 반영
+    market_sentiment = information_analysis.get("market_sentiment", "중립")
+    risk_level = information_analysis.get("risk_level", "중간")
+
+    if market_sentiment == "긍정적":
+        bull_conf = min(bull_conf + 1, 5)
+    elif market_sentiment == "부정적":
+        bear_conf = min(bear_conf + 1, 5)
+
+    if risk_level == "높음":
+        bear_conf = min(bear_conf + 1, 5)
+    elif risk_level == "낮음":
+        bull_conf = min(bull_conf + 1, 5)
+
+    # 4. Macro 분석 결과 반영
+    if macro_analysis:
+        macro_sentiment = macro_analysis.get("analysis", {}).get("overall_macro_sentiment", "중립")
+        if macro_sentiment == "긍정적":
+            bull_conf = min(bull_conf + 1, 5)
+        elif macro_sentiment == "부정적":
+            bear_conf = min(bear_conf + 1, 5)
 
     per = fundamental.get("PER")
     pbr = fundamental.get("PBR")
@@ -780,6 +1293,45 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         market_cap.get("market_cap", 0) / 1e12 if market_cap.get("market_cap") else None
     )
 
+    # Technical Analyst 요약
+    technical_summary = {
+        "trend": tech_trend,
+        "trend_strength": tech_trend_strength,
+        "signals": tech_signals,
+        "moving_average": ma_analysis,
+        "short_term_outlook": technical_analysis.get("short_term_outlook"),
+        "support_resistance": technical_analysis.get("support_resistance"),
+    }
+
+    # Trading Flow Analyst 요약
+    trading_flow_summary = {
+        "foreign": foreign_investor.get("trend", "N/A"),
+        "institutional": institutional_investor.get("trend", "N/A"),
+        "leading_investor": supply_demand.get("leading_investor", "혼재"),
+        "outlook": supply_outlook,
+    }
+
+    # Information Analyst 요약
+    information_summary = {
+        "sentiment": market_sentiment,
+        "risk_level": risk_level,
+        "positive_factors": information_analysis.get("positive_factors", []),
+        "negative_factors": information_analysis.get("negative_factors", []),
+        "key_themes": information_analysis.get("key_themes", []),
+    }
+
+    # Macro Analyst 요약
+    macro_summary = {}
+    if macro_analysis:
+        macro_data = macro_analysis.get("raw_data", {})
+        macro_result = macro_analysis.get("analysis", {})
+        macro_summary = {
+            "base_rate": macro_data.get("base_rate"),
+            "base_rate_trend": macro_data.get("base_rate_trend"),
+            "overall_sentiment": macro_result.get("overall_macro_sentiment"),
+            "summary": macro_result.get("summary"),
+        }
+
     consensus = {
         "recommendation": recommendation,
         "target_price": target_price,
@@ -788,18 +1340,19 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         "confidence": confidence,
         "bull_case": bull.get("positive_factors", []),
         "bear_case": bear.get("risk_factors", []),
-        "technical_summary": {
-            "trend": tech_trend,
-            "rsi": rsi_signal,
-            "signals": technical.get("signals", []),
-        },
+        # 전문가 분석 요약 (PRISM-INSIGHT 패턴)
+        "technical_summary": technical_summary,
+        "trading_flow_summary": trading_flow_summary,
+        "information_summary": information_summary,
+        "macro_summary": macro_summary,
+        # 기존 요약
         "fundamental_summary": fundamental_summary,
         "investor_summary": investor_summary,
         "market_cap_trillion": market_cap_trillion,
         "summary": (
             f"{stock_code} - {recommendation} (목표가: {target_price:,}원, "
-            f"펀더멘털: {valuation_status}, 투자주체: {investor_sentiment}, "
-            f"기술적 추세: {tech_trend})"
+            f"펀더멘털: {valuation_status}, 기술적 추세: {tech_trend}, "
+            f"수급: {supply_outlook}, 센티먼트: {market_sentiment})"
         ),
     }
 

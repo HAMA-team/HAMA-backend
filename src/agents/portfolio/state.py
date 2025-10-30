@@ -59,6 +59,22 @@ class PortfolioState(TypedDict, total=False):
     trades_required: Optional[List[RebalanceInstruction]]
     hitl_required: bool
 
+    # 포트폴리오 제약 조건
+    max_slots: Optional[int]
+    """최대 보유 종목 수 (기본 10개)"""
+
+    max_sector_concentration: Optional[float]
+    """섹터 집중도 제한 (기본 30%)"""
+
+    max_same_industry_count: Optional[int]
+    """동일 산업군 최대 종목 수 (기본 3개)"""
+
+    market_condition: Optional[str]
+    """시장 상황 (강세장/중립장/약세장)"""
+
+    constraint_violations: Optional[List[dict]]
+    """제약 조건 위반 내역"""
+
     # 최종 리포트
     summary: Optional[str]
     portfolio_report: Optional[dict]

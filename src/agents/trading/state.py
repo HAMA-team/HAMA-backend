@@ -39,6 +39,10 @@ class TradingState(TypedDict):
     automation_level: int
     """자동화 레벨 (1-3)"""
 
+    # Research 결과 (Buy/Sell Specialist가 참조)
+    research_result: Optional[dict]
+    """Research Agent의 consensus 결과"""
+
     # 매매 정보 (LLM이 추출해야 할 정보)
     stock_code: Optional[str]
     """종목 코드"""
@@ -54,6 +58,28 @@ class TradingState(TypedDict):
 
     trade_summary: Optional[dict]
     """주문 생성 요약 데이터"""
+
+    # PRISM-INSIGHT 패턴: Buy/Sell Specialist 결과
+    buy_score: Optional[int]
+    """매수 점수 (1-10점, 8점 이상 강력 매수)"""
+
+    buy_rationale: Optional[str]
+    """매수 근거 및 전략"""
+
+    sell_rationale: Optional[str]
+    """매도 근거 및 전략"""
+
+    target_price: Optional[float]
+    """목표가 (원)"""
+
+    stop_loss: Optional[float]
+    """손절가 (원)"""
+
+    risk_reward_ratio: Optional[float]
+    """Risk/Reward 비율 (예: 2.0이면 1 리스크당 2 리워드)"""
+
+    investment_period: Optional[str]
+    """투자 기간 (단기/중기/장기)"""
 
     # 실행 플래그
     trade_prepared: bool
