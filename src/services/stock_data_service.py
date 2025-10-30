@@ -1,13 +1,15 @@
-"""주가 데이터 서비스 (pykrx + Realtime Cache)"""
+"""주가 데이터 서비스 (DB Repository + 외부 API + Realtime Cache)"""
 
 import asyncio
-from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, Iterable, List, Optional
+
 import pandas as pd
 from pykrx import stock as krx_stock
 
-from src.services.cache_manager import cache_manager
 from src.config.settings import settings
+from src.repositories import stock_price_repository, stock_repository
+from src.services.cache_manager import cache_manager
 
 
 class StockDataService:
@@ -22,6 +24,135 @@ class StockDataService:
     def __init__(self):
         self.cache = cache_manager
         # realtime_cache_service는 순환 import 방지를 위해 메서드 내에서 import
+
+    async def _listing_from_db(self, market: Optional[str]) -> Optional[pd.DataFrame]:
+        def _fetch():
+            target = None
+            if market:
+                if market.upper() == "ALL":
+                    target = None
+                else:
+                    target = market
+            return stock_repository.list_by_market(target)
+
+        rows = await asyncio.to_thread(_fetch)
+        if not rows:
+            return None
+
+        records: List[Dict[str, Any]] = []
+        for row in rows:
+            records.append(
+                {
+                    "Code": row.stock_code,
+                    "Name": row.stock_name,
+                    "Market": row.market,
+                    "Industry": row.industry or row.sector,
+                }
+            )
+
+        df = pd.DataFrame(records)
+        if df.empty:
+            return None
+        df = df.sort_values("Name")
+        return df
+
+    async def _save_listing_to_db(self, market: str, df: pd.DataFrame) -> None:
+        records: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            records.append(
+                {
+                    "stock_code": row["Code"],
+                    "stock_name": row["Name"],
+                    "market": row.get("Market", market),
+                    "sector": row.get("Industry"),
+                    "industry": row.get("Industry"),
+                }
+            )
+        if records:
+            await asyncio.to_thread(stock_repository.upsert_many, records)
+
+    @staticmethod
+    def _cache_listing_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
+        return df.to_dict("records")
+
+    async def _prices_from_db(self, stock_code: str, days: int) -> Optional[pd.DataFrame]:
+        start = (datetime.now() - timedelta(days=days + 5)).date()
+
+        rows = await asyncio.to_thread(
+            stock_price_repository.get_prices_since,
+            stock_code,
+            start,
+        )
+        if not rows:
+            return None
+
+        records: List[Dict[str, Any]] = []
+        for row in rows:
+            if row.date is None:
+                continue
+            records.append(
+                {
+                    "Date": row.date,
+                    "Open": float(row.open_price) if row.open_price is not None else None,
+                    "High": float(row.high_price) if row.high_price is not None else None,
+                    "Low": float(row.low_price) if row.low_price is not None else None,
+                    "Close": float(row.close_price) if row.close_price is not None else None,
+                    "Volume": int(row.volume) if row.volume is not None else 0,
+                    "Change": float(row.change_amount) if row.change_amount is not None else None,
+                }
+            )
+
+        if not records:
+            return None
+
+        df = pd.DataFrame(records)
+        df = df.dropna(subset=["Close"])
+        if df.empty:
+            return None
+
+        df = df.sort_values("Date")
+        df = df.set_index("Date")
+        return df
+
+    async def _save_prices_to_db(self, stock_code: str, df: pd.DataFrame) -> None:
+        if df.empty:
+            return
+
+        records: List[Dict[str, Any]] = []
+        for idx, row in df.iterrows():
+            price_date = idx.date() if isinstance(idx, datetime) else idx
+            if isinstance(price_date, datetime):
+                price_date = price_date.date()
+            records.append(
+                {
+                    "date": price_date,
+                    "open_price": float(row.get("Open")) if not pd.isna(row.get("Open")) else None,
+                    "high_price": float(row.get("High")) if not pd.isna(row.get("High")) else None,
+                    "low_price": float(row.get("Low")) if not pd.isna(row.get("Low")) else None,
+                    "close_price": float(row.get("Close")) if not pd.isna(row.get("Close")) else None,
+                    "volume": int(row.get("Volume")) if not pd.isna(row.get("Volume")) else None,
+                    "change_amount": float(row.get("Change")) if not pd.isna(row.get("Change")) else None,
+                }
+            )
+
+        if records:
+            await asyncio.to_thread(stock_price_repository.upsert_many, stock_code, records)
+
+    @staticmethod
+    def _cache_prices_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
+        reset = df.reset_index()
+        if "Date" not in reset.columns:
+            reset = reset.rename(columns={"index": "Date"})
+
+        def _serialize(value: Any) -> Any:
+            if isinstance(value, (datetime, date)):
+                return value.isoformat()
+            return value
+
+        for column in reset.columns:
+            reset[column] = reset[column].apply(_serialize)
+
+        return reset.to_dict("records")
 
     async def get_realtime_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -98,7 +229,21 @@ class StockDataService:
         cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
-            return pd.DataFrame(cached)
+            cached_df = pd.DataFrame(cached)
+            if "Date" in cached_df.columns:
+                cached_df["Date"] = pd.to_datetime(cached_df["Date"])
+                cached_df = cached_df.set_index("Date")
+            return cached_df
+
+        # DB 조회
+        db_df = await self._prices_from_db(stock_code, days)
+        if db_df is not None and not db_df.empty:
+            self.cache.set(
+                cache_key,
+                self._cache_prices_payload(db_df),
+                ttl=settings.CACHE_TTL_MARKET_DATA,
+            )
+            return db_df
 
         # pykrx 호출 - 날짜 형식 변환 ("YYYYMMDD")
         end_date = datetime.now()
@@ -122,8 +267,11 @@ class StockDataService:
 
                 # 캐싱 (60초 TTL)
                 self.cache.set(
-                    cache_key, df.to_dict("records"), ttl=settings.CACHE_TTL_MARKET_DATA
+                    cache_key,
+                    self._cache_prices_payload(df),
+                    ttl=settings.CACHE_TTL_MARKET_DATA,
                 )
+                await self._save_prices_to_db(stock_code, df)
                 print(f"✅ 주가 데이터 조회 성공 (pykrx): {stock_code}")
                 return df
             else:
@@ -151,7 +299,18 @@ class StockDataService:
         cached = self.cache.get(cache_key)
         if cached is not None:
             print(f"✅ 캐시 히트: {cache_key}")
-            return pd.DataFrame(cached)
+            cached_df = pd.DataFrame(cached)
+            return cached_df
+
+        # DB 조회
+        db_listing = await self._listing_from_db(market)
+        if db_listing is not None and not db_listing.empty:
+            self.cache.set(
+                cache_key,
+                self._cache_listing_payload(db_listing),
+                ttl=86400,
+            )
+            return db_listing
 
         # pykrx 호출
         try:
@@ -181,7 +340,12 @@ class StockDataService:
                 df = pd.DataFrame(data)
 
                 # 캐싱 (1일 TTL)
-                self.cache.set(cache_key, df.to_dict("records"), ttl=86400)
+                self.cache.set(
+                    cache_key,
+                    self._cache_listing_payload(df),
+                    ttl=86400,
+                )
+                await self._save_listing_to_db(market, df)
                 print(f"✅ 종목 리스트 조회 성공 (pykrx): {market}, {len(df)}개")
                 return df
             else:
@@ -580,3 +744,48 @@ class StockDataService:
 
 # 싱글톤 인스턴스
 stock_data_service = StockDataService()
+
+
+async def seed_market_data(
+    market: str = "KOSPI",
+    days: int = 30,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    종목 목록과 과거 주가 데이터를 DB에 선적재합니다.
+
+    Args:
+        market: 대상 시장 (KOSPI, KOSDAQ, KONEX, ALL)
+        days: 저장할 과거 일수
+        limit: 상위 N개 종목만 처리 (테스트용)
+        enrich_from_dart: DART 고유번호를 함께 저장할지 여부
+    """
+    df = await stock_data_service.get_stock_listing(market)
+    if df is None or df.empty:
+        raise RuntimeError(f"{market} 시장의 종목 목록을 가져오지 못했습니다.")
+
+    codes = df["Code"].dropna().astype(str).tolist()
+    if limit is not None:
+        codes = codes[:limit]
+
+    total = len(codes)
+    success = 0
+    failures: List[str] = []
+
+    for idx, code in enumerate(codes, start=1):
+        price_df = await stock_data_service.get_stock_price(code, days=days)
+        if price_df is None or price_df.empty:
+            failures.append(code)
+            continue
+
+        success += 1
+        if idx % 20 == 0 or idx == total:
+            print(f"📦 시드 진행 상황: {idx}/{total} (성공 {success}, 실패 {len(failures)})")
+
+    return {
+        "market": market,
+        "total": total,
+        "success": success,
+        "failed": len(failures),
+        "failed_codes": failures,
+    }
