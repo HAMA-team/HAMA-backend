@@ -16,6 +16,12 @@ from src.utils.json_parser import safe_json_parse
 from src.utils.indicators import calculate_all_indicators
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
+from src.constants.analysis_depth import (
+    ANALYSIS_DEPTH_LEVELS,
+    classify_depth_by_keywords,
+    extract_focus_areas,
+    get_default_depth,
+)
 
 from .state import ResearchState
 
@@ -124,6 +130,147 @@ def _task_complete(
     }
     update.update(extra)
     return update
+
+
+async def query_intent_classifier_node(state: ResearchState) -> ResearchState:
+    """
+    Query Intent Classifier (쿼리 의도 분석기)
+
+    사용자 쿼리와 UserProfile을 분석하여 적절한 분석 깊이를 결정합니다.
+
+    분석 요소:
+    1. 쿼리 키워드: "빠르게", "간단히" → quick / "상세히", "종합" → comprehensive
+    2. UserProfile.preferred_depth: brief → quick 우선 / comprehensive → comprehensive 우선
+    3. 쿼리 복잡도: 단일 질문 → quick / 의사결정 → comprehensive
+    4. Focus Areas: 특정 영역 요청 시 해당 worker 우선
+    """
+    query = state.get("query", "")
+    user_profile = state.get("user_profile") or {}
+
+    logger.info("🎯 [Research/IntentClassifier] 쿼리 의도 분석 시작: %s", query[:50])
+
+    # 1. 간단한 규칙 기반 분류 (빠른 판단)
+    keyword_depth = classify_depth_by_keywords(query)
+    focus_workers = extract_focus_areas(query)
+
+    # 2. UserProfile 반영
+    preferred_depth = user_profile.get("preferred_depth", "detailed")
+    expertise_level = user_profile.get("expertise_level", "intermediate")
+
+    # preferred_depth 매핑
+    profile_depth_map = {
+        "brief": "quick",
+        "detailed": "standard",
+        "comprehensive": "comprehensive",
+    }
+    profile_depth = profile_depth_map.get(preferred_depth, "standard")
+
+    # 3. LLM 기반 최종 판단 (복잡한 케이스)
+    # 키워드가 명확하지 않고, 의사결정 관련 쿼리인 경우 LLM 호출
+    should_use_llm = (
+        keyword_depth == "standard"  # 명확한 키워드 없음
+        and any(keyword in query.lower() for keyword in ["할까", "해도 될까", "어떨까", "판단", "결정"])
+    )
+
+    if should_use_llm:
+        try:
+            llm = get_llm(temperature=0, max_tokens=800)
+
+            prompt = f"""당신은 쿼리 의도 분석 전문가입니다.
+
+사용자 쿼리: {query}
+사용자 성향:
+- 선호 분석 깊이: {preferred_depth}
+- 전문성: {expertise_level}
+
+다음 중 적절한 분석 깊이를 선택하세요:
+
+1. **quick** (빠른 분석, 10-20초):
+   - 현재가, 간단한 정보 확인
+   - 초보 투자자 또는 간단한 확인
+   - 예: "삼성전자 현재가?", "가격만 알려줘"
+
+2. **standard** (표준 분석, 30-45초):
+   - 일반적인 투자 판단
+   - 중급 투자자의 일상적 분석
+   - 예: "삼성전자 분석해줘", "기술적으로 어때?"
+
+3. **comprehensive** (종합 분석, 60-90초):
+   - 신중한 의사결정 필요
+   - 매수/매도 판단, 장기 투자 결정
+   - 예: "삼성전자 매수해도 될까?", "상세히 분석해줘"
+
+JSON 형식으로 답변:
+{{
+  "depth": "quick" | "standard" | "comprehensive",
+  "reason": "선택 이유 (1-2문장)",
+  "focus_areas": ["기술적 분석", "수급"] // 쿼리에서 요청한 특정 영역
+}}
+"""
+
+            response = await llm.ainvoke(prompt)
+            intent = safe_json_parse(response.content, "QueryIntentClassifier")
+
+            final_depth = intent.get("depth", "standard")
+            depth_reason = intent.get("reason", "LLM 기반 분류")
+            llm_focus_areas = intent.get("focus_areas", [])
+
+            # LLM이 제안한 focus areas를 worker 이름으로 변환
+            for area in llm_focus_areas:
+                area_lower = area.lower()
+                if "기술" in area_lower or "차트" in area_lower:
+                    focus_workers.append("technical")
+                elif "수급" in area_lower or "거래" in area_lower:
+                    focus_workers.append("trading_flow")
+                elif "뉴스" in area_lower or "정보" in area_lower:
+                    focus_workers.append("information")
+                elif "거시" in area_lower or "경제" in area_lower:
+                    focus_workers.append("macro")
+
+            focus_workers = list(set(focus_workers))  # 중복 제거
+
+        except Exception as exc:
+            logger.warning("⚠️ [Research/IntentClassifier] LLM 분류 실패, 규칙 기반 사용: %s", exc)
+            final_depth = keyword_depth if keyword_depth != "standard" else profile_depth
+            depth_reason = "키워드 및 프로파일 기반 분류"
+
+    else:
+        # 키워드가 명확한 경우: 키워드 우선, 없으면 프로파일 사용
+        if keyword_depth != "standard":
+            final_depth = keyword_depth
+            depth_reason = f"쿼리 키워드 기반 ({keyword_depth})"
+        else:
+            final_depth = profile_depth
+            depth_reason = f"사용자 프로파일 기반 ({profile_depth})"
+
+    # 최종 유효성 검증
+    if final_depth not in ANALYSIS_DEPTH_LEVELS:
+        final_depth = get_default_depth()
+        depth_reason += " (기본값으로 대체)"
+
+    depth_config = ANALYSIS_DEPTH_LEVELS[final_depth]
+
+    logger.info(
+        "✅ [Research/IntentClassifier] 분석 깊이 결정: %s (%s) | 집중 영역: %s",
+        final_depth,
+        depth_config["name"],
+        focus_workers or "없음",
+    )
+
+    message = AIMessage(
+        content=(
+            f"분석 깊이: {depth_config['name']} ({depth_config['estimated_time']})\n"
+            f"이유: {depth_reason}"
+            + (f"\n집중 영역: {', '.join(focus_workers)}" if focus_workers else "")
+        )
+    )
+
+    return {
+        "analysis_depth": final_depth,
+        "focus_areas": focus_workers,
+        "depth_reason": depth_reason,
+        "messages": [message],
+    }
 
 
 async def planner_node(state: ResearchState) -> ResearchState:

@@ -30,6 +30,19 @@ class ResearchState(TypedDict, total=False):
     request_id: Optional[str]
     """요청 ID (Supervisor 호출 시 없을 수 있음)"""
 
+    # 동적 Worker 선택 시스템 (Analysis Depth)
+    analysis_depth: Optional[str]
+    """분석 깊이 레벨 ("quick" | "standard" | "comprehensive")"""
+
+    focus_areas: Optional[List[str]]
+    """집중 분석 영역 (예: ["technical", "trading_flow"])"""
+
+    depth_reason: Optional[str]
+    """분석 깊이 선택 이유 (디버깅/로깅용)"""
+
+    user_profile: Optional[Dict[str, Any]]
+    """사용자 프로파일 (preferred_depth, expertise_level 등)"""
+
     # Deep Agent 루프 제어
     plan: Optional[Dict[str, Any]]
     """LLM이 생성한 조사 계획"""
