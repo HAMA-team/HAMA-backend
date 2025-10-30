@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 
 from .state import ResearchState
 from .nodes import (
+    query_intent_classifier_node,
     planner_node,
     task_router_node,
     data_worker_node,
@@ -41,7 +42,11 @@ def build_research_subgraph():
     Research Agent 서브그래프 생성
 
     Flow:
-    planner → task_router → (worker loop) → synthesis → END
+    query_intent_classifier → planner → task_router → (worker loop) → synthesis → END
+
+    Dynamic Worker Selection:
+    - query_intent_classifier: 쿼리 의도 분석 및 분석 깊이 결정 (quick/standard/comprehensive)
+    - planner: 분석 깊이에 맞춰 동적으로 worker 선택 (Smart Planner)
 
     Workers (PRISM-INSIGHT 패턴 적용):
     - data_worker: 원시 데이터 수집
@@ -56,6 +61,7 @@ def build_research_subgraph():
     workflow = StateGraph(ResearchState)
 
     # 노드 추가
+    workflow.add_node("query_intent_classifier", query_intent_classifier_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("task_router", task_router_node)
     workflow.add_node("data_worker", data_worker_node)
@@ -69,7 +75,8 @@ def build_research_subgraph():
     workflow.add_node("synthesis", synthesis_node)
 
     # 시작점
-    workflow.set_entry_point("planner")
+    workflow.set_entry_point("query_intent_classifier")
+    workflow.add_edge("query_intent_classifier", "planner")
     workflow.add_edge("planner", "task_router")
 
     # 조건부 라우팅

@@ -42,6 +42,9 @@ class GraphState(TypedDict):
     automation_level: int
     """자동화 레벨 (1=Pilot, 2=Copilot, 3=Advisor)"""
 
+    user_profile: Optional[Dict[str, Any]]
+    """사용자 프로파일 (preferred_depth, expertise_level, technical_level, trading_style 등)"""
+
     # ==================== 의도 및 라우팅 ====================
 
     intent: Optional[str]

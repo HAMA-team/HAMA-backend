@@ -19,8 +19,12 @@ from src.services.portfolio_preview_service import (
     calculate_portfolio_preview,
     calculate_weight_change
 )
+from src.services.user_profile_service import UserProfileService
 from src.schemas.hitl import ApprovalRequest as HITLApprovalRequest
 from src.config.settings import settings
+from src.models.database import get_db
+from fastapi import Depends
+from sqlalchemy.orm import Session
 
 router = APIRouter()
 
@@ -88,7 +92,7 @@ class ChatSessionSummary(BaseModel):
 
 
 @router.post("/", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     """
     메인 채팅 엔드포인트입니다.
 
@@ -103,6 +107,12 @@ async def chat(request: ChatRequest):
     try:
         conversation_uuid = _ensure_uuid(request.conversation_id)
         conversation_id = str(conversation_uuid)
+
+        # Get user profile for dynamic worker selection
+        user_profile_service = UserProfileService()
+        user_profile = user_profile_service.get_user_profile(DEMO_USER_UUID, db)
+        logger.info("📋 [Chat] UserProfile 로드 완료: preferred_depth=%s, expertise_level=%s",
+                    user_profile.get("preferred_depth"), user_profile.get("expertise_level"))
 
         # Ensure session exists and store the incoming user message
         await chat_history_service.upsert_session(
@@ -134,6 +144,7 @@ async def chat(request: ChatRequest):
             "user_id": str(DEMO_USER_UUID),
             "conversation_id": conversation_id,
             "automation_level": request.automation_level,
+            "user_profile": user_profile,  # Dynamic worker selection을 위한 사용자 프로파일
             "intent": None,
             "query": request.message,
             "agent_results": {},

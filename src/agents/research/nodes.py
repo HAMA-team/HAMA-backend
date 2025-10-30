@@ -274,26 +274,79 @@ JSON 형식으로 답변:
 
 
 async def planner_node(state: ResearchState) -> ResearchState:
+    """
+    Smart Planner - 분석 깊이에 따라 동적으로 worker 선택
+
+    query_intent_classifier_node에서 결정한 analysis_depth와 focus_areas를 기반으로
+    필요한 worker만 선택하여 비용과 시간을 최적화합니다.
+    """
     query = state.get("query") or "종목 분석"
     stock_code = _extract_stock_code(state)
+    analysis_depth = state.get("analysis_depth", "standard")
+    focus_areas = state.get("focus_areas") or []
+    depth_reason = state.get("depth_reason", "")
+
+    # 분석 깊이에 맞는 추천 worker 리스트 가져오기
+    from src.constants.analysis_depth import get_recommended_workers, get_depth_config
+
+    recommended_workers = get_recommended_workers(analysis_depth, focus_areas)
+    depth_config = get_depth_config(analysis_depth)
+
+    logger.info(
+        "🧠 [Research/Planner] Smart Planner 시작 | 깊이: %s (%s) | 추천 Worker: %s",
+        analysis_depth, depth_config["name"], recommended_workers
+    )
+
+    # Worker 설명
+    worker_descriptions = {
+        "data": "원시 데이터 수집 (주가, 재무제표, 기업 정보, 기술적 지표)",
+        "technical": "기술적 분석 전문가 (이평선, 지지/저항선, 기술적 지표 해석)",
+        "trading_flow": "거래 동향 분석 전문가 (기관/외국인/개인 순매수 분석)",
+        "information": "정보 분석 전문가 (뉴스, 호재/악재, 시장 센티먼트)",
+        "macro": "거시경제 분석 (금리, 환율, 경기 동향)",
+        "bull": "강세 시나리오 분석 (상승 가능성 및 근거)",
+        "bear": "약세 시나리오 분석 (하락 리스크 및 근거)",
+        "insight": "종합 인사이트 정리 (핵심 포인트 요약)",
+    }
+
+    # LLM에게 제공할 worker 정보
+    available_workers = "\n".join([
+        f"- **{worker}**: {worker_descriptions.get(worker, '')}"
+        for worker in recommended_workers
+    ])
 
     llm = get_llm(temperature=0, max_tokens=1600)
     prompt = f"""
-당신은 심층 종목 조사를 계획하는 플래너입니다.
+당신은 심층 종목 조사를 계획하는 Smart Planner입니다.
+
 사용자 요청: {query}
 예상 종목코드: {stock_code}
+
+**분석 깊이 설정:**
+- 레벨: {analysis_depth} ({depth_config["name"]})
+- 이유: {depth_reason}
+- 집중 영역: {", ".join(focus_areas) if focus_areas else "없음"}
+- 예상 소요 시간: {depth_config["estimated_time"]}
+
+**사용 가능한 Worker (최대 {depth_config["max_workers"]}개):**
+{available_workers}
+
+**작업 계획 수립 가이드:**
+1. 추천된 worker 중에서 선택하세요 (위 목록 참고)
+2. {analysis_depth} 레벨에 맞는 적절한 worker 수를 선택하세요
+3. 집중 영역({", ".join(focus_areas) if focus_areas else "없음"})이 있다면 우선적으로 포함하세요
+4. worker는 순차적으로 실행됩니다 (data → technical → trading_flow → ... → insight)
 
 JSON 형식으로만 답변하세요:
 {{
   "plan_summary": "한 문장 요약",
   "tasks": [
-    {{"id": "task_1", "worker": "data", "description": "..." }},
-    {{"id": "task_2", "worker": "bull", "description": "..." }},
-    {{"id": "task_3", "worker": "bear", "description": "..." }},
-    {{"id": "task_4", "worker": "insight", "description": "..."}}
+    {{"id": "task_1", "worker": "data", "description": "주가 및 재무 데이터 수집" }},
+    {{"id": "task_2", "worker": "technical", "description": "기술적 분석 수행" }}
   ]
 }}
-worker 값은 반드시 data, bull, bear, insight 중 하나여야 합니다.
+
+중요: worker 값은 위에 나열된 worker 중에서만 선택하세요: {", ".join(recommended_workers)}
 """
 
     try:
@@ -305,24 +358,42 @@ worker 값은 반드시 data, bull, bear, insight 중 하나여야 합니다.
             raise ValueError("LLM이 올바른 JSON 형식의 계획을 생성하지 못했습니다.")
 
         sanitized_tasks = _sanitize_tasks(plan.get("tasks", []))
-        plan["tasks"] = sanitized_tasks
+
+        # Worker 검증: 추천된 worker만 사용하도록 필터링
+        validated_tasks = []
+        for task in sanitized_tasks:
+            worker = task.get("worker", "").lower()
+            if worker in recommended_workers:
+                validated_tasks.append(task)
+            else:
+                logger.warning(
+                    "⚠️ [Research/Planner] 추천되지 않은 worker 제외: %s (추천: %s)",
+                    worker, recommended_workers
+                )
+
+        if not validated_tasks:
+            # Fallback: 최소한 data worker는 실행
+            logger.warning("⚠️ [Research/Planner] 유효한 task가 없어 기본 task 생성")
+            validated_tasks = [{"id": "task_1", "worker": "data", "description": "기본 데이터 수집"}]
+
+        plan["tasks"] = validated_tasks
 
     except Exception as exc:
         logger.error("❌ [Research/Planner] 계획 생성 실패: %s", exc)
         raise
 
     plan_message_lines = [
-        "📋 조사 계획을 수립했습니다.",
+        f"📋 조사 계획을 수립했습니다 ({depth_config['name']}, {len(validated_tasks)}개 작업).",
         plan.get("plan_summary", "종목 분석 계획"),
     ]
-    for task in sanitized_tasks:
+    for task in validated_tasks:
         plan_message_lines.append(f"- ({task['worker']}) {task['description']}")
 
     plan_message = AIMessage(content="\n".join(plan_message_lines))
 
     return {
         "plan": plan,
-        "pending_tasks": deepcopy(sanitized_tasks),
+        "pending_tasks": deepcopy(validated_tasks),
         "completed_tasks": [],
         "current_task": None,
         "task_notes": [],
