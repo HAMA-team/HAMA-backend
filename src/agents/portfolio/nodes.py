@@ -1,13 +1,15 @@
 """Portfolio Agent 노드 함수들
 
-포트폴리오 스냅샷 → 최적화 → 리밸런싱 계획 → 요약
+포트폴리오 스냅샷 → 최적화 → 리밸런싱 계획 → 승인 (HITL) → 실행
 """
 from __future__ import annotations
 
 import logging
 from typing import Dict, List
+import uuid
 
 from langchain_core.messages import AIMessage
+from langgraph_sdk.schema import Interrupt
 
 from src.agents.portfolio.state import (
     PortfolioState,
@@ -451,6 +453,10 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     messages = list(state.get("messages", []))
     messages.append(AIMessage(content=summary))
 
+    # 리밸런싱 준비 완료 플래그 설정
+    rebalance_prepared = state.get("rebalancing_needed", False)
+    rebalance_order_id = state.get("rebalance_order_id") or str(uuid.uuid4())
+
     # MasterState(GraphState)로 결과 전달
     return {
         **state,
@@ -458,6 +464,141 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
         "portfolio_report": portfolio_report,  # PortfolioState 내부용
         "agent_results": {  # MasterState 공유용
             "portfolio": portfolio_report
+        },
+        "messages": messages,
+        "rebalance_prepared": rebalance_prepared,
+        "rebalance_order_id": rebalance_order_id if rebalance_prepared else None,
+    }
+
+
+def approval_rebalance_node(state: PortfolioState) -> dict:
+    """
+    리밸런싱 승인 노드 (HITL Interrupt Point)
+
+    이 노드는 자동화 레벨과 리밸런싱 필요 여부에 따라 사용자 승인을 요청합니다.
+    interrupt_before=["approval_rebalance"]로 설정되어 그래프가 이 노드 전에 일시 정지됩니다.
+    """
+    # 이미 승인된 경우 스킵
+    if state.get("rebalance_approved"):
+        logger.info("⏭️ [Portfolio] 이미 승인된 리밸런싱입니다")
+        return {}
+
+    # 리밸런싱이 필요하지 않은 경우
+    if not state.get("rebalancing_needed"):
+        logger.info("⏭️ [Portfolio] 리밸런싱이 필요하지 않습니다")
+        return {"rebalance_approved": True}  # 자동 승인
+
+    # 자동화 레벨 1 (Pilot)은 자동 승인
+    automation_level = state.get("automation_level", 2)
+    if automation_level == 1:
+        logger.info("✅ [Portfolio] 자동화 레벨 1 - 리밸런싱 자동 승인")
+        return {"rebalance_approved": True}
+
+    logger.info("🔔 [Portfolio] 리밸런싱 사용자 승인을 요청합니다")
+
+    # Interrupt payload 생성
+    trades_required = state.get("trades_required") or []
+    proposed_allocation = state.get("proposed_allocation") or []
+
+    interrupt_payload = {
+        "type": "rebalance_approval",
+        "order_id": state.get("rebalance_order_id", "UNKNOWN"),
+        "automation_level": automation_level,
+        "rebalancing_needed": state.get("rebalancing_needed", False),
+        "trades_required": trades_required,
+        "proposed_allocation": proposed_allocation,
+        "expected_return": state.get("expected_return"),
+        "expected_volatility": state.get("expected_volatility"),
+        "sharpe_ratio": state.get("sharpe_ratio"),
+        "constraint_violations": state.get("constraint_violations") or [],
+        "market_condition": state.get("market_condition", "중립장"),
+        "message": "리밸런싱을 승인하시겠습니까?",
+    }
+
+    approval: Interrupt = {
+        "id": f"rebalance-{interrupt_payload['order_id']}",
+        "value": interrupt_payload,
+    }
+
+    logger.info("✅ [Portfolio] 승인 요청 생성: %s", approval)
+
+    messages = list(state.get("messages", []))
+    return {"rebalance_approved": True, "messages": messages}
+
+
+async def execute_rebalance_node(state: PortfolioState) -> dict:
+    """
+    리밸런싱 실행 노드
+
+    승인된 리밸런싱을 실제로 실행합니다.
+    """
+    # 이미 실행된 경우 스킵
+    if state.get("rebalance_executed"):
+        logger.info("⏭️ [Portfolio] 이미 실행된 리밸런싱입니다")
+        return {}
+
+    # 승인되지 않은 경우
+    if not state.get("rebalance_approved"):
+        warning = "리밸런싱이 승인되지 않았습니다."
+        logger.warning("⚠️ [Portfolio] %s", warning)
+        return {"error": warning}
+
+    # 리밸런싱이 필요하지 않은 경우
+    if not state.get("rebalancing_needed"):
+        logger.info("⏭️ [Portfolio] 리밸런싱이 필요하지 않습니다")
+        return {
+            "rebalance_executed": True,
+            "messages": list(state.get("messages", [])),
+        }
+
+    logger.info("💼 [Portfolio] 리밸런싱 실행 시작")
+
+    trades_required = state.get("trades_required") or []
+
+    if not trades_required:
+        logger.info("⏭️ [Portfolio] 실행할 거래가 없습니다")
+        return {
+            "rebalance_executed": True,
+            "messages": list(state.get("messages", [])),
+        }
+
+    # TODO: 실제 거래 실행 로직 (Phase 2)
+    # 현재는 시뮬레이션으로 처리
+    logger.info(f"📝 [Portfolio] {len(trades_required)}건의 거래를 시뮬레이션합니다")
+
+    execution_results = []
+    for trade in trades_required:
+        execution_results.append({
+            "action": trade["action"],
+            "stock_code": trade["stock_code"],
+            "stock_name": trade["stock_name"],
+            "amount": trade["amount"],
+            "status": "simulated",  # Phase 2: "executed"
+        })
+        logger.info(
+            f"  - {trade['action']} {trade['stock_name']} {trade['amount']:,.0f}원"
+        )
+
+    messages = list(state.get("messages", []))
+    summary = (
+        f"✅ 리밸런싱 완료:\n"
+        f"{len(execution_results)}건의 거래를 시뮬레이션했습니다.\n"
+        f"예상 수익률: {state.get('expected_return', 0):.1%}\n"
+        f"예상 변동성: {state.get('expected_volatility', 0):.1%}"
+    )
+    messages.append(AIMessage(content=summary))
+
+    # MasterState(GraphState)로 결과 전달
+    return {
+        "rebalance_executed": True,
+        "execution_results": execution_results,
+        "agent_results": {  # MasterState 공유용
+            "portfolio": {
+                "rebalancing_executed": True,
+                "trades": execution_results,
+                "expected_return": state.get("expected_return"),
+                "expected_volatility": state.get("expected_volatility"),
+            }
         },
         "messages": messages,
     }

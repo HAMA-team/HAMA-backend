@@ -61,12 +61,29 @@ async def prepare_trade_node(state: TradingState) -> dict:
 
 
 def approval_trade_node(state: TradingState) -> dict:
-    """2단계: 사용자 승인 (interrupt)."""
+    """
+    매매 승인 노드 (HITL Interrupt Point)
+
+    자동화 레벨에 따라 승인 여부를 결정합니다:
+    - Level 1 (Pilot): 자동 승인
+    - Level 2 (Copilot): 사용자 승인 필요
+    - Level 3 (Advisor): 사용자 승인 필요
+    """
+    # 이미 승인된 경우 스킵
     if state.get("trade_approved"):
         logger.info("⏭️ [Trade] 이미 승인된 주문입니다")
         return {}
 
-    logger.info("🔔 [Trade] 사용자 승인을 요청합니다")
+    # 자동화 레벨 확인
+    automation_level = state.get("automation_level", 2)
+
+    # Level 1 (Pilot): 자동 승인
+    if automation_level == 1:
+        logger.info("✅ [Trade] 자동화 레벨 1 - 매매 자동 승인")
+        return {"trade_approved": True}
+
+    # Level 2, 3: 사용자 승인 필요
+    logger.info("🔔 [Trade] 사용자 승인을 요청합니다 (Level %d)", automation_level)
 
     summary = state.get("trade_summary") or {}
     interrupt_payload = {
@@ -77,7 +94,7 @@ def approval_trade_node(state: TradingState) -> dict:
         "quantity": summary.get("order_quantity") or state.get("quantity"),
         "order_type": summary.get("order_type") or state.get("order_type"),
         "order_price": summary.get("order_price") or state.get("order_price"),
-        "automation_level": state.get("automation_level", 2),
+        "automation_level": automation_level,
         "message": "매매 주문을 승인하시겠습니까?",
     }
     approval: Interrupt = {
@@ -85,7 +102,7 @@ def approval_trade_node(state: TradingState) -> dict:
         "value": interrupt_payload,
     }
 
-    logger.info("✅ [Trade] 승인 수락: %s", approval)
+    logger.info("✅ [Trade] 승인 요청 생성: %s", approval)
 
     messages = list(state.get("messages", []))
     return {"trade_approved": True, "messages": messages}

@@ -59,6 +59,19 @@ class PortfolioState(TypedDict, total=False):
     trades_required: Optional[List[RebalanceInstruction]]
     hitl_required: bool
 
+    # HITL 진행 상태 (Trading Agent와 동일한 패턴)
+    rebalance_prepared: bool
+    """리밸런싱 준비 완료 여부"""
+
+    rebalance_approved: bool
+    """리밸런싱 승인 여부"""
+
+    rebalance_executed: bool
+    """리밸런싱 실행 완료 여부"""
+
+    rebalance_order_id: Optional[str]
+    """리밸런싱 주문 ID"""
+
     # 포트폴리오 제약 조건
     max_slots: Optional[int]
     """최대 보유 종목 수 (기본 10개)"""

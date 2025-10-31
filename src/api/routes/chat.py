@@ -187,8 +187,11 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 "message": "매매 주문을 승인하시겠습니까?",
             }
 
+            # Interrupt 타입에 따라 처리
+            interrupt_type = interrupt_data.get("type", "")
+
             # 매매 주문인 경우 상세 정보 계산
-            if interrupt_data and interrupt_data.get("action") in ["buy", "sell"]:
+            if interrupt_type == "trade_approval" or (interrupt_data and interrupt_data.get("action") in ["buy", "sell"]):
                 try:
                     # 포트폴리오 조회
                     snapshot = await portfolio_service.get_portfolio_snapshot()
@@ -237,6 +240,29 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
 
                 except Exception as e:
                     logger.warning(f"HITL 상세 정보 계산 실패: {e}")
+                    # 실패 시 기본 형식 유지
+
+            # 리밸런싱 승인인 경우
+            elif interrupt_type == "rebalance_approval":
+                try:
+                    # 리밸런싱 상세 정보는 interrupt_data에 이미 포함되어 있음
+                    approval_request = {
+                        "type": "rebalance_approval",
+                        "thread_id": conversation_id,
+                        "pending_node": state.next[0] if state.next else None,
+                        "order_id": interrupt_data.get("order_id"),
+                        "rebalancing_needed": interrupt_data.get("rebalancing_needed", False),
+                        "trades_required": interrupt_data.get("trades_required", []),
+                        "proposed_allocation": interrupt_data.get("proposed_allocation", []),
+                        "expected_return": interrupt_data.get("expected_return"),
+                        "expected_volatility": interrupt_data.get("expected_volatility"),
+                        "sharpe_ratio": interrupt_data.get("sharpe_ratio"),
+                        "constraint_violations": interrupt_data.get("constraint_violations", []),
+                        "market_condition": interrupt_data.get("market_condition", "중립장"),
+                        "message": interrupt_data.get("message", "리밸런싱을 승인하시겠습니까?"),
+                    }
+                except Exception as e:
+                    logger.warning(f"리밸런싱 승인 정보 파싱 실패: {e}")
                     # 실패 시 기본 형식 유지
 
             message_text = "🔔 사용자 승인이 필요합니다."
