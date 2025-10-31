@@ -25,10 +25,80 @@ from src.config.settings import settings
 from src.models.database import get_db
 from fastapi import Depends
 from sqlalchemy.orm import Session
+from src.models.agent import ApprovalRequest as ApprovalRequestModel, UserDecision
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
 DEMO_USER_UUID = settings.demo_user_uuid
+
+
+def _save_approval_request_to_db(
+    db: Session,
+    user_id: uuid.UUID,
+    request_type: str,
+    approval_data: dict,
+    automation_level: int
+) -> Optional[uuid.UUID]:
+    """
+    ApprovalRequest를 DB에 저장합니다.
+
+    Args:
+        db: DB 세션
+        user_id: 사용자 ID
+        request_type: 요청 타입 (trade_approval, rebalance_approval)
+        approval_data: 승인 요청 데이터
+        automation_level: 자동화 레벨
+
+    Returns:
+        저장된 request_id (UUID) 또는 None (실패 시)
+    """
+    try:
+        # 요청 제목 생성
+        if request_type == "trade_approval":
+            stock_name = approval_data.get("stock_name", approval_data.get("stock_code", ""))
+            action = approval_data.get("action", "거래")
+            request_title = f"{stock_name} {action} 승인 요청"
+        elif request_type == "rebalance_approval":
+            request_title = "포트폴리오 리밸런싱 승인 요청"
+        else:
+            request_title = "승인 요청"
+
+        # 제안 내용 구성
+        proposed_actions = approval_data.copy()
+
+        # 리스크 경고 추출
+        risk_warnings = []
+        if "risk_warning" in approval_data and approval_data["risk_warning"]:
+            risk_warnings.append(approval_data["risk_warning"])
+
+        # DB 모델 생성
+        approval_request = ApprovalRequestModel(
+            user_id=user_id,
+            request_type=request_type,
+            request_title=request_title,
+            request_description=approval_data.get("message"),
+            proposed_actions=proposed_actions,
+            risk_warnings=risk_warnings if risk_warnings else None,
+            alternatives=approval_data.get("alternatives"),
+            status="pending",
+            triggering_agent=approval_data.get("type", request_type).split("_")[0],  # "trade" or "rebalance"
+            automation_level=automation_level,
+            urgency="normal",
+            expires_at=datetime.utcnow() + timedelta(hours=24),  # 24시간 후 만료
+        )
+
+        db.add(approval_request)
+        db.commit()
+        db.refresh(approval_request)
+
+        logger.info(f"✅ ApprovalRequest 저장 완료: {approval_request.request_id}")
+        return approval_request.request_id
+
+    except Exception as e:
+        logger.error(f"❌ ApprovalRequest 저장 실패: {e}")
+        db.rollback()
+        return None
 
 
 def _ensure_uuid(value: Optional[str]) -> uuid.UUID:
@@ -265,6 +335,20 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                     logger.warning(f"리밸런싱 승인 정보 파싱 실패: {e}")
                     # 실패 시 기본 형식 유지
 
+            # DB에 승인 요청 저장
+            request_id = _save_approval_request_to_db(
+                db=db,
+                user_id=DEMO_USER_UUID,
+                request_type=interrupt_type,
+                approval_data=approval_request,
+                automation_level=request.automation_level
+            )
+            if request_id:
+                approval_request["request_id"] = str(request_id)
+                logger.info(f"✅ ApprovalRequest DB 저장 완료: {request_id}")
+            else:
+                logger.warning("⚠️ ApprovalRequest DB 저장 실패 (계속 진행)")
+
             message_text = "🔔 사용자 승인이 필요합니다."
 
             await chat_history_service.append_message(
@@ -493,11 +577,72 @@ async def list_chat_sessions(limit: int = Query(50, ge=1, le=100)):
 
 # ==================== Approval Endpoint ====================
 
+def _save_user_decision_to_db(
+    db: Session,
+    request_id: uuid.UUID,
+    user_id: uuid.UUID,
+    decision: str,
+    modifications: Optional[dict] = None,
+    user_notes: Optional[str] = None
+) -> bool:
+    """
+    사용자 결정을 DB에 저장하고 ApprovalRequest 상태를 업데이트합니다.
+
+    Args:
+        db: DB 세션
+        request_id: ApprovalRequest ID
+        user_id: 사용자 ID
+        decision: 결정 (approved, rejected, modified)
+        modifications: 사용자 수정 사항
+        user_notes: 사용자 노트
+
+    Returns:
+        성공 여부
+    """
+    try:
+        # 1. UserDecision 레코드 생성
+        user_decision = UserDecision(
+            request_id=request_id,
+            user_id=user_id,
+            decision=decision,
+            modifications=modifications,
+            user_notes=user_notes,
+        )
+        db.add(user_decision)
+
+        # 2. ApprovalRequest 상태 업데이트
+        approval_request = db.query(ApprovalRequestModel).filter(
+            ApprovalRequestModel.request_id == request_id
+        ).first()
+
+        if approval_request:
+            # 상태 매핑: approved -> approved, rejected -> rejected, modified -> approved
+            new_status = "approved" if decision in ["approved", "modified"] else "rejected"
+            approval_request.status = new_status
+            approval_request.responded_at = datetime.utcnow()
+
+            # 수정 사항이 있으면 proposed_actions 업데이트
+            if modifications and decision == "modified":
+                # 원본 proposed_actions에 수정사항 병합
+                original_actions = approval_request.proposed_actions or {}
+                approval_request.proposed_actions = {**original_actions, **modifications}
+
+        db.commit()
+        logger.info(f"✅ UserDecision 저장 완료: request_id={request_id}, decision={decision}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ UserDecision 저장 실패: {e}")
+        db.rollback()
+        return False
+
+
 class ApprovalRequest(BaseModel):
     """승인 요청 스키마"""
     thread_id: str = Field(description="대화 스레드 ID")
     decision: str = Field(description="승인 결정: approved, rejected, modified")
     automation_level: int = Field(default=2, ge=1, le=3)
+    request_id: Optional[str] = Field(default=None, description="DB에 저장된 ApprovalRequest ID")
     modifications: Optional[dict] = None
     user_notes: Optional[str] = None
 
@@ -511,14 +656,18 @@ class ApprovalResponse(BaseModel):
 
 
 @router.post("/approve", response_model=ApprovalResponse)
-async def approve_action(approval: ApprovalRequest):
+async def approve_action(
+    approval: ApprovalRequest,
+    db: Session = Depends(get_db)
+):
     """
     승인 혹은 거부 결정을 처리하는 엔드포인트입니다.
 
     처리 흐름:
     1. thread_id를 통해 중단된 그래프 상태를 조회합니다.
-    2. 결정 값에 따라 Command(resume=...)를 전달합니다.
-    3. 그래프를 재개하고 최종 결과를 반환합니다.
+    2. 사용자 결정을 DB에 저장합니다.
+    3. 결정 값에 따라 Command(resume=...)를 전달합니다.
+    4. 그래프를 재개하고 최종 결과를 반환합니다.
     """
     try:
         conversation_uuid = _ensure_uuid(approval.thread_id)
@@ -563,12 +712,34 @@ async def approve_action(approval: ApprovalRequest):
                 )
             return "\n".join(filter(None, parts)) or "처리가 완료되었습니다."
 
-        if approval.decision == "approved":
+        # DB에 사용자 결정 저장 (request_id가 있는 경우)
+        if approval.request_id:
+            try:
+                request_uuid = uuid.UUID(approval.request_id)
+                _save_user_decision_to_db(
+                    db=db,
+                    request_id=request_uuid,
+                    user_id=DEMO_USER_UUID,
+                    decision=approval.decision,
+                    modifications=approval.modifications,
+                    user_notes=approval.user_notes
+                )
+            except ValueError as e:
+                logger.warning(f"Invalid request_id: {approval.request_id}, {e}")
+
+        # 승인 또는 수정된 승인 처리
+        if approval.decision in ["approved", "modified"]:
             resume_value = {
                 "approved": True,
                 "user_id": str(DEMO_USER_UUID),
                 "notes": approval.user_notes,
             }
+
+            # 사용자 수정사항 적용 (modified인 경우)
+            if approval.decision == "modified" and approval.modifications:
+                # modifications를 resume_value에 병합
+                resume_value["modifications"] = approval.modifications
+                logger.info(f"✏️ 사용자 수정사항 적용: {approval.modifications}")
 
             resume_command: Command = cast(Command, {"resume": resume_value})
             result = await configured_app.ainvoke(resume_command)
