@@ -333,3 +333,13 @@ class PortfolioOptimizer:
 
 # 싱글톤 인스턴스
 portfolio_optimizer = PortfolioOptimizer()
+
+
+# 모듈 레벨 wrapper 함수 (backward compatibility)
+async def calculate_target_allocation(*args, **kwargs):
+    """
+    모듈 레벨 wrapper 함수
+
+    portfolio_optimizer 인스턴스의 calculate_target_allocation 메서드를 호출합니다.
+    """
+    return await portfolio_optimizer.calculate_target_allocation(*args, **kwargs)
