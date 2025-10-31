@@ -963,4 +963,10 @@ async def update_recent_prices_for_market(
             summary["success"] += 1
         summary["processed"] = idx
 
+        if idx % 20 == 0 or idx == len(codes):
+            print(
+                f"📦 가격 시드 진행 ({market}): {idx}/{len(codes)} "
+                f"(성공 {summary['success']}, 실패 {len(summary['failed'])})"
+            )
+
     return summary
