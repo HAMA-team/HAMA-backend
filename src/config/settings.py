@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     # LLM Mode: openai (기본), anthropic, google 등
     LLM_MODE: str = "openai"  # openai (기본), anthropic, google 등
 
-    # Router 전용 모델 (빠른 라우팅을 위해 경량 모델 사용)
+    # Router 전용 모델 (정확한 라우팅을 위해 강력한 모델 사용)
     ROUTER_MODEL_PROVIDER: str = "openai"  # anthropic, openai, google
-    ROUTER_MODEL: str = "gpt-4o-mini"
+    ROUTER_MODEL: str = "gpt-5"  # 종목명 인식 개선을 위해 gpt-4o 사용
 
 
     # Web Search
@@ -98,6 +98,10 @@ class Settings(BaseSettings):
 
     # BOK API
     BOK_API_KEY: str = ""
+
+    # 네이버 검색 API
+    NAVER_CLIENT_ID: str = ""
+    NAVER_CLIENT_SECRET: str = ""
     BOK_BASE_URL: str = "https://ecos.bok.or.kr/api"
 
     # KIS API (Phase 2)

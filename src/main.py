@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream, artifacts, approvals
+from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream, artifacts, approvals, news
 from src.api.routes import settings as settings_router
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.error_handlers import setup_error_handlers
@@ -47,6 +47,10 @@ tags_metadata = [
     {
         "name": "approvals",
         "description": "승인 이력 조회 및 관리 (매매, 리밸런싱 등 HITL 승인 기록)를 위한 엔드포인트입니다.",
+    },
+    {
+        "name": "news",
+        "description": "종목 관련 뉴스 검색 및 조회 (네이버 뉴스 API 연동)를 위한 엔드포인트입니다.",
     },
 ]
 
@@ -130,6 +134,7 @@ app.include_router(stocks.router, prefix=f"{api_prefix}/stocks", tags=["stocks"]
 app.include_router(settings_router.router, prefix=f"{api_prefix}/settings", tags=["settings"])
 app.include_router(artifacts.router, prefix=f"{api_prefix}/artifacts", tags=["artifacts"])
 app.include_router(approvals.router, prefix=f"{api_prefix}/approvals", tags=["approvals"])
+app.include_router(news.router, tags=["news"])  # 뉴스 API (prefix는 news.py에 정의됨)
 
 
 @app.get("/")
