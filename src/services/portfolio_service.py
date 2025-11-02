@@ -22,6 +22,9 @@ from src.services.stock_data_service import stock_data_service
 
 logger = logging.getLogger(__name__)
 
+TRADING_DAYS_PER_YEAR = 252
+DEFAULT_RISK_FREE_RATE = getattr(settings, "RISK_FREE_RATE", 0.035)
+
 
 class PortfolioNotFoundError(Exception):
     """Raised when the requested portfolio is not found in the database."""
@@ -376,6 +379,12 @@ class PortfolioService:
         var_95 = portfolio_volatility * 1.65
         average_return = float(weighted_returns.mean())
 
+        daily_risk_free_rate = DEFAULT_RISK_FREE_RATE / TRADING_DAYS_PER_YEAR
+        sharpe_ratio = None
+        if portfolio_volatility > 0:
+            excess_return = average_return - daily_risk_free_rate
+            sharpe_ratio = excess_return / portfolio_volatility
+
         cumulative = (1 + weighted_returns).cumprod()
         if cumulative.empty:
             max_drawdown = None
@@ -390,6 +399,7 @@ class PortfolioService:
             "portfolio_volatility": portfolio_volatility,
             "var_95": var_95,
             "average_daily_return": average_return,
+            "sharpe_ratio": float(sharpe_ratio) if sharpe_ratio is not None else None,
             "max_drawdown_estimate": max_drawdown,
             "beta": beta_map,
             "observations": len(weighted_returns),

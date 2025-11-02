@@ -6,7 +6,7 @@ Frontend PRD v3.0 요구사항에 맞는 데이터 구조 정의
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, Literal, List
 
-
+# TODO 이거 왜 mock 데이터 위주로 들어가있지? 이거 수정 필요함.
 class Alternative(BaseModel):
     """HITL 대안 제시"""
     suggestion: str = Field(..., description="대안 설명")

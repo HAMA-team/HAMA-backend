@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from src.agents.portfolio.nodes import rebalance_plan_node
 from src.services import (
@@ -19,24 +19,15 @@ from src.services import (
     portfolio_service,
 )
 from src.schemas.portfolio import PortfolioChartData, StockChartData
-from src.services.stock_data_service import stock_data_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-# 간단한 대체 함수 (실제로는 DART API 또는 DB에서 조회해야 함)
-def get_sector(stock_code: str) -> str:
-    """종목의 섹터 반환 (미구현)"""
-    return "기타"
+class DecimalFriendlyModel(BaseModel):
+    """Decimal 값을 JSON 직렬화 시 float로 변환하기 위한 베이스 모델."""
 
-
-def get_sector_color(sector: str) -> str:
-    """섹터 색상 반환 (간단한 해시 기반)"""
-    # 섹터명을 해시하여 색상 생성
-    import hashlib
-    hash_val = int(hashlib.md5(sector.encode()).hexdigest()[:6], 16)
-    return f"#{hash_val % 0xFFFFFF:06X}"
+    model_config = ConfigDict(json_encoders={Decimal: float})
 
 
 def _to_decimal(value: Optional[Any]) -> Optional[Decimal]:
@@ -49,7 +40,7 @@ def _to_decimal(value: Optional[Any]) -> Optional[Decimal]:
         return None
 
 
-class Position(BaseModel):
+class Position(DecimalFriendlyModel):
     """포트폴리오 보유 종목"""
 
     stock_code: str
@@ -64,7 +55,7 @@ class Position(BaseModel):
     sector: Optional[str] = None
 
 
-class PortfolioSummary(BaseModel):
+class PortfolioSummary(DecimalFriendlyModel):
     """포트폴리오 요약"""
 
     portfolio_id: str
@@ -361,6 +352,28 @@ async def get_portfolio_performance(portfolio_id: str):
     else:
         total_return = 0.0
 
+    beta_data = market_data.get("beta")
+    portfolio_beta: Optional[float] = None
+    if isinstance(beta_data, dict) and beta_data:
+        holdings_data = snapshot.portfolio_data.get("holdings") or []
+        weight_map: Dict[str, float] = {}
+        for holding in holdings_data:
+            code = holding.get("stock_code")
+            if not code or code.upper() == "CASH":
+                continue
+            weight_value = _float(holding.get("weight"))
+            if weight_value <= 0:
+                continue
+            weight_map[code] = weight_value
+
+        if weight_map:
+            portfolio_beta = sum(
+                weight_map[code] * _float(beta_data.get(code), 0.0)
+                for code in weight_map
+            )
+    elif isinstance(beta_data, (int, float)):
+        portfolio_beta = float(beta_data)
+
     response = {
         "portfolio_id": str(snapshot.portfolio_data.get("portfolio_id") or portfolio_id),
         "total_return": total_return,
@@ -369,7 +382,7 @@ async def get_portfolio_performance(portfolio_id: str):
         "max_drawdown": market_data.get("max_drawdown_estimate"),
         "volatility": market_data.get("portfolio_volatility"),
         "var_95": market_data.get("var_95"),
-        "beta": market_data.get("beta"),
+        "beta": portfolio_beta,
         "observations": market_data.get("observations"),
     }
 
@@ -438,10 +451,13 @@ async def get_portfolio_chart_data():
         quantity = int(holding.get("quantity") or 0)
         avg_price = _float(holding.get("average_price"))
         current_price = _float(holding.get("current_price"), avg_price)
-        market_value = current_price * quantity
+        market_value = _float(holding.get("market_value"), current_price * quantity)
 
-        # 비중 계산
-        weight = market_value / total_value if total_value > 0 else 0.0
+        # 비중 계산 (스냅샷에 저장된 weight가 있으면 우선 사용)
+        weight = _float(
+            holding.get("weight"),
+            market_value / total_value if total_value > 0 else 0.0,
+        )
 
         # 수익률 계산
         cost_basis = avg_price * quantity
@@ -450,8 +466,8 @@ async def get_portfolio_chart_data():
         else:
             return_percent = 0.0
 
-        # 섹터 정보 (Mock 데이터)
-        sector = get_sector(stock_code)
+        sector = holding.get("sector")
+        sector_name = str(sector) if sector else "기타"
 
         stock_chart_data = StockChartData(
             stock_code=stock_code,
@@ -461,13 +477,13 @@ async def get_portfolio_chart_data():
             purchase_price=avg_price,
             weight=round(weight, 4),
             return_percent=round(return_percent, 2),
-            sector=sector
+            sector=sector_name,
         )
 
         stocks_data.append(stock_chart_data)
 
         # 섹터별 비중 집계
-        sector_weights[sector] = sector_weights.get(sector, 0.0) + weight
+        sector_weights[sector_name] = sector_weights.get(sector_name, 0.0) + weight
 
     # 현금 비중 추가
     if total_value > 0:
