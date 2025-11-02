@@ -9,7 +9,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2-orange.svg)](https://langchain-ai.github.io/langgraph/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**완성도: 80%** | **Phase: 1 (MVP)** | **Status: Active Development**
+**완성도: 90%** | **Phase: 1 (MVP)** | **Status: Active Development**
 
 ---
 
@@ -80,17 +80,33 @@ Level 3 (Advisor) → 모든 결정 승인 필요
 
 | 데이터 소스 | 상태 | 제공 데이터 |
 |------------|------|------------|
-| **FinanceDataReader** | ✅ 연동 완료 | 주가, 거래량, 종목 리스트 |
+| **pykrx** | ✅ 연동 완료 | 주가, 거래량, 종목 리스트 |
+| **한국투자증권 API** | ✅ 연동 완료 | 실시간 시세, 차트, 호가 |
 | **DART API** | ✅ 연동 완료 | 재무제표, 공시, 기업 정보 |
+| **한국은행 API** | ✅ 연동 완료 | 금리, 거시경제 지표 |
 | **Redis** | ✅ 작동 중 | 캐싱 (TTL 60초) |
-| **한국투자증권 API** | ⏸️ Phase 2 | 실시간 시세 |
 | **네이버 금융** | ⏸️ Phase 2 | 뉴스 크롤링 |
 
 ### 4. **RESTful API** (FastAPI)
 
+**Chat & HITL:**
 - `POST /api/v1/chat/` - 대화형 인터페이스
 - `POST /api/v1/chat/approve` - HITL 승인/거부
 - `GET /api/v1/chat/history/{id}` - 대화 이력 조회
+- `POST /api/v1/multi-agent-stream/` - 스트리밍 응답
+
+**Settings & Automation:**
+- `GET /api/v1/settings/automation-level` - 자동화 레벨 조회
+- `PUT /api/v1/settings/automation-level` - 자동화 레벨 업데이트
+- `GET /api/v1/settings/automation-levels` - 사용 가능한 프리셋 목록
+
+**Portfolio & Trading:**
+- `GET /api/v1/portfolio/{user_id}` - 포트폴리오 조회
+- `POST /api/v1/approvals/` - 승인 요청 처리
+
+**Stock & Market Data:**
+- `GET /api/v1/stocks/{stock_code}` - 종목 정보
+- `GET /api/v1/dashboard/` - 대시보드 데이터
 
 ---
 
@@ -161,8 +177,10 @@ if state.next:  # Interrupt 발생
 - **Supervisor 패턴** - 멀티 에이전트 조율
 
 ### **Data Sources**
-- **FinanceDataReader** - KRX 시장 데이터
+- **pykrx** - KRX 시장 데이터
+- **한국투자증권 API** - 실시간 시세, 차트, 호가
 - **DART Open API** - 금융감독원 공시 시스템
+- **한국은행 API** - 금리, 거시경제 지표
 
 ### **DevOps**
 - **Docker & Docker Compose** ✅ - 컨테이너화
@@ -447,26 +465,47 @@ HAMA-backend/
 │   │   ├── trading/         ✅ 서브그래프 (매매 실행)
 │   │   ├── portfolio/       ✅ 서브그래프 (포트폴리오)
 │   │   ├── general/         ✅ 서브그래프 (일반 QA)
-│   │   ├── graph_master.py  ✅ Supervisor (마스터 에이전트)
-│   │   └── legacy/          ⚠️ 마이그레이션 중
+│   │   ├── router/          ✅ 라우터 에이전트
+│   │   └── graph_master.py  ✅ Supervisor (마스터 에이전트)
 │   ├── api/
 │   │   └── routes/
-│   │       ├── chat.py      ✅ 대화 API + HITL
-│   │       ├── portfolio.py
-│   │       └── stocks.py
+│   │       ├── chat.py              ✅ 대화 API + HITL
+│   │       ├── approvals.py         ✅ 승인 요청 처리
+│   │       ├── settings.py          ✅ 자동화 레벨 설정
+│   │       ├── portfolio.py         ✅ 포트폴리오 관리
+│   │       ├── multi_agent_stream.py ✅ 스트리밍
+│   │       ├── onboarding.py        ✅ 온보딩
+│   │       ├── stocks.py            ✅ 종목 정보
+│   │       └── dashboard.py         ✅ 대시보드
 │   ├── services/            # 데이터 서비스
-│   │   ├── stock_data_service.py   ✅ FinanceDataReader
-│   │   ├── dart_service.py         ✅ DART API
-│   │   └── cache_manager.py        ✅ Redis 캐싱
+│   │   ├── stock_data_service.py     ✅ pykrx
+│   │   ├── kis_service.py            ✅ 한국투자증권 API
+│   │   ├── dart_service.py           ✅ DART API
+│   │   ├── bok_service.py            ✅ 한국은행 API
+│   │   ├── cache_manager.py          ✅ Redis 캐싱
+│   │   ├── portfolio_optimizer.py    ✅ 포트폴리오 최적화
+│   │   ├── portfolio_service.py      ✅ 포트폴리오 관리
+│   │   ├── approval_service.py       ✅ 승인 처리
+│   │   ├── user_profile_service.py   ✅ 사용자 프로필
+│   │   └── ...                       ✅ 15+ 서비스
 │   ├── models/              # SQLAlchemy 모델
+│   │   ├── user_settings.py ✅ HITL 설정
+│   │   ├── agent.py         ✅ ApprovalRequest 등
+│   │   └── ...              ✅ 10+ 모델
+│   ├── repositories/        # Repository 패턴
+│   │   └── user_settings_repository.py ✅
 │   ├── schemas/             # Pydantic 스키마
+│   │   ├── hitl_config.py   ✅ HITL 설정 스키마
+│   │   ├── settings.py      ✅ Settings API 스키마
+│   │   └── ...              ✅ 20+ 스키마
+│   ├── utils/               # 유틸리티
+│   │   ├── stock_name_extractor.py ✅ GPT-5 종목명 추출
+│   │   └── ...
 │   ├── config/              # 설정
 │   └── main.py              # FastAPI 앱
 ├── tests/
-│   ├── test_agents/
-│   │   ├── test_end_to_end.py           ✅ E2E 테스트 (6개 통과)
-│   │   └── test_research_data_collection.py  ✅ 데이터 연동 검증
-│   └── test_api_chat.py     ✅ API + HITL 테스트
+│   ├── test_services/       ✅ 서비스 레이어 테스트
+│   └── test_general_agent_json.py ✅ Agent 테스트
 ├── docs/
 │   ├── PRD.md               # 제품 요구사항
 │   ├── schema.md            # DB 스키마
@@ -535,28 +574,37 @@ python tests/test_research_data_collection.py
 
 ## 🗺️ 로드맵
 
-### **Phase 1 (현재) - MVP 완성** 🔵 80% 완료
+### **Phase 1 (현재) - MVP 완성** 🔵 90% 완료
 
 - [x] LangGraph Supervisor 패턴 아키텍처
 - [x] 6개 서브그래프 에이전트 구현
-- [x] HITL (Human-in-the-Loop) API
-- [x] 실제 데이터 연동 (FinanceDataReader, DART)
+- [x] HITL (Human-in-the-Loop) 시스템
+  - [x] HITLConfig 스키마 (3단계 프리셋)
+  - [x] UserSettings 모델 및 Repository
+  - [x] Settings API (자동화 레벨 관리)
+  - [x] ApprovalRequest DB 저장
+- [x] 실제 데이터 연동
+  - [x] pykrx (주가, 거래량)
+  - [x] 한국투자증권 API (실시간 시세)
+  - [x] DART API (재무제표, 공시)
+  - [x] 한국은행 API (금리, 경제지표)
 - [x] Redis 캐싱 시스템
-- [x] E2E 테스트 (6개 통과)
+- [x] 종목명 추출 개선 (GPT-5 기반)
+- [x] 15+ 서비스 레이어 구현
 - [x] 프론트엔드 통합 가이드
-- [ ] Legacy Agent 완전 제거 (1/3 완료)
+- [ ] 테스트 커버리지 확대
 - [ ] API 인증/권한 시스템
 - [ ] 프론트엔드 개발
 
-### **Phase 2 - 실제 매매 연동** 🔵 예정
+### **Phase 2 - 확장 기능** 🔵 예정
 
-- [ ] 한국투자증권 API 연동 (실시간 시세)
 - [ ] 실제 매매 주문 실행
 - [ ] WebSocket 실시간 알림
 - [ ] 뉴스 크롤링 (네이버 금융)
-- [ ] 대화 이력 저장 (DB)
 - [ ] 사용자 인증 시스템 (JWT)
 - [ ] 포트폴리오 백테스팅
+- [ ] 자동화 레벨 커스터마이징 (세부 조정)
+- [ ] Bull/Bear 토론 시각화
 
 ### **Phase 3 - 확장** ⚪ 계획 중
 
@@ -572,16 +620,18 @@ python tests/test_research_data_collection.py
 
 | 컴포넌트 | 완성도 | 비고 |
 |---------|--------|------|
-| Backend Core | 🟢 90% | FastAPI + LangGraph |
-| Agents | 🟢 85% | 6/9 서브그래프 완성 |
-| Data Integration | 🟢 80% | FDR + DART 연동 |
-| API Endpoints | 🟢 95% | HITL 포함 완성 |
+| Backend Core | 🟢 95% | FastAPI + LangGraph |
+| Agents | 🟢 90% | 6개 서브그래프 + Router |
+| HITL System | 🟢 95% | HITLConfig + Settings API |
+| Data Integration | 🟢 95% | pykrx + KIS + DART + BOK |
+| API Endpoints | 🟢 95% | 9개 라우트 완성 |
+| Services | 🟢 90% | 15+ 서비스 레이어 |
 | Documentation | 🟢 90% | 프론트엔드 가이드 완성 |
-| Testing | 🟡 70% | E2E + API 테스트 |
+| Testing | 🟡 70% | 테스트 커버리지 확대 중 |
 | Frontend | 🔴 0% | 개발 대기 중 |
 | Deployment | 🟢 90% | Docker + Railway |
 
-**전체: 85%** 🎯
+**전체: 90%** 🎯
 
 ---
 
@@ -649,4 +699,4 @@ MIT License
 
 **Built with ❤️ using LangGraph & FastAPI**
 
-Last Updated: 2025-10-06
+Last Updated: 2025-11-01
