@@ -4,7 +4,7 @@ Application configuration and settings
 import os
 import uuid
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -148,12 +148,29 @@ class Settings(BaseSettings):
     # 현재 동기 캐싱 구조에서는 사용 복잡. 추후 비동기 초기화로 개선 예정 (Phase 2)
 
     # CORS
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000"
+    CORS_ORIGINS: str = (
+        "http://localhost:3000,"
+        "http://localhost:8000,"
+        "http://127.0.0.1:3000,"
+        "http://0.0.0.0:3000"
+    )
+    CORS_ORIGIN_REGEX: str = (
+        r"https://.*\.vercel\.app$|"
+        r"http://(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?$|"
+        r"http://192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$|"
+        r"http://10\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?$"
+    )
 
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string"""
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def cors_origin_regex(self) -> Optional[str]:
+        """Return combined CORS origin regex pattern or None"""
+        value = (self.CORS_ORIGIN_REGEX or "").strip()
+        return value or None
 
     @property
     def demo_user_uuid(self) -> uuid.UUID:

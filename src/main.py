@@ -102,12 +102,11 @@ app = FastAPI(
 # Logging middleware (요청/응답 추적)
 app.add_middleware(RequestLoggingMiddleware)
 
-# CORS middleware
-# Vercel 프리뷰 도메인을 위한 정규식 패턴 추가
+# CORS middleware (환경 변수 기반 허용 범위)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    allow_origin_regex=r"https://.*\.vercel\.app$",  # 모든 Vercel 프리뷰 허용
+    allow_origin_regex=settings.cors_origin_regex,  # 환경설정 기반 프리뷰/로컬 네트워크 허용
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

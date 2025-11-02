@@ -63,22 +63,28 @@ class RoutingDecision(BaseModel):
         description="사용자 의도: quick_info | stock_analysis | trading | portfolio_management | definition | etc"
     )
 
-    # 2. 에이전트 선택
+    # 2. 종목 정보 추출
+    stock_names: Optional[list[str]] = Field(
+        default=None,
+        description="질문에서 추출한 종목명 리스트 (예: ['SK하이닉스', '삼성전자']). 종목이 없으면 None."
+    )
+
+    # 3. 에이전트 선택
     agents_to_call: list[str] = Field(
         description="호출할 에이전트 리스트: research, strategy, risk, trading, portfolio, general"
     )
 
-    # 3. 답변 깊이 수준
+    # 4. 답변 깊이 수준
     depth_level: str = Field(
         description="답변 깊이: brief | detailed | comprehensive"
     )
 
-    # 4. 개인화 설정
+    # 5. 개인화 설정
     personalization: PersonalizationSettings = Field(
         description="개인화 설정 (adjust_for_expertise, include_explanations, use_analogies 등)"
     )
 
-    # 5. 근거
+    # 6. 근거
     reasoning: str = Field(description="판단 근거")
 
     def __getitem__(self, item: str) -> Any:
@@ -130,6 +136,7 @@ async def route_query(
         return RoutingDecision(
             query_complexity="simple",
             user_intent="general_inquiry",
+            stock_names=None,
             agents_to_call=["general"],
             depth_level="brief",
             personalization=PersonalizationSettings(
@@ -156,9 +163,23 @@ async def route_query(
 
 **임무:**
 1. 질문의 복잡도를 판단하세요 (simple/moderate/expert)
-2. 필요한 에이전트를 선택하세요 (research/strategy/risk/trading/portfolio/general)
-3. 답변 깊이 수준을 결정하세요 (brief/detailed/comprehensive)
-4. 사용자 프로파일을 고려하여 개인화 설정을 결정하세요
+2. **질문에서 종목명을 추출하세요** (예: "SK하이닉스", "삼성전자") - 종목이 없으면 None
+3. 필요한 에이전트를 선택하세요 (research/strategy/risk/trading/portfolio/general)
+4. 답변 깊이 수준을 결정하세요 (brief/detailed/comprehensive)
+5. 사용자 프로파일을 고려하여 개인화 설정을 결정하세요
+
+**종목명 추출 규칙:**
+- 종목명만 추출하세요 (예: "SK하이닉스", "삼성전자", "네이버")
+- 띄어쓰기를 정규화하세요 (예: "sk 하이닉스" → "SK하이닉스")
+- 종목명이 아닌 단어는 제외하세요 (예: "전망", "분석", "매수", "어때" 등)
+- 한국 상장 기업명만 추출하세요
+- 종목명이 없으면 None을 반환하세요
+
+**종목명 추출 예시:**
+- "sk 하이닉스 전망 분석해줘" → ["SK하이닉스"]
+- "삼성전자와 SK하이닉스 비교해줘" → ["삼성전자", "SK하이닉스"]
+- "PER이 뭐야?" → None
+- "코스피 지수는?" → None
 
 **사용자 프로파일:**
 - 투자 경험: {user_expertise}
@@ -279,6 +300,7 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
         logger.info(f"✅ [Router] 판단 완료:")
         logger.info(f"  - 복잡도: {result.query_complexity}")
         logger.info(f"  - 의도: {result.user_intent}")
+        logger.info(f"  - 종목명: {result.stock_names}")
         logger.info(f"  - 에이전트: {result.agents_to_call}")
         logger.info(f"  - 깊이: {result.depth_level}")
         logger.info(f"  - 근거: {result.reasoning}")

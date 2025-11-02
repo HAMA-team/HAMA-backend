@@ -6,14 +6,18 @@ import json
 import logging
 import re
 from copy import deepcopy
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Union, Coroutine
 
 from langchain_core.messages import AIMessage, HumanMessage
 
+from src.agents.research.state import ResearchState
 from src.config.settings import settings
 from src.utils.llm_factory import get_llm
 from src.utils.json_parser import safe_json_parse
 from src.utils.indicators import calculate_all_indicators
+from src.utils.stock_name_extractor import extract_stock_names_from_query
 from src.services.stock_data_service import stock_data_service
 from src.services.dart_service import dart_service
 from src.constants.analysis_depth import (
@@ -30,6 +34,26 @@ logger = logging.getLogger(__name__)
 ALLOWED_WORKERS = {"data", "bull", "bear", "insight", "macro", "technical", "trading_flow", "information"}
 
 
+def _json_default(value: Any) -> Union[float, str, list]:
+    """json.dumps에서 직렬화할 수 없는 값을 안전하게 변환한다."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, set):
+        return list(value)
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _dumps(data: Any, **kwargs: Any) -> str:
+    """ensure_ascii를 False로 유지하며 기본 변환기를 적용한다."""
+    kwargs.setdefault("ensure_ascii", False)
+    kwargs.setdefault("default", _json_default)
+    return json.dumps(data, **kwargs)
+
+
 def _coerce_number(value: Any, fallback: float) -> float:
     try:
         if value is None:
@@ -44,11 +68,22 @@ def _coerce_number(value: Any, fallback: float) -> float:
         return float(fallback)
 
 
-def _extract_stock_code(state: ResearchState) -> str:
+async def _extract_stock_code(state: ResearchState) -> str:
+    """
+    State에서 종목 코드를 추출합니다 (LLM 기반 종목명 추출 지원).
+
+    Returns:
+        종목 코드 (6자리)
+
+    Raises:
+        ValueError: 종목 코드를 찾을 수 없는 경우
+    """
+    # 1. State에 이미 종목 코드가 있으면 사용
     stock_code = state.get("stock_code")
     if stock_code:
         return stock_code
 
+    # 2. 6자리 코드 패턴 검색 (빠른 매칭)
     pattern = re.compile(r"\b(\d{6})\b")
 
     query = state.get("query")
@@ -63,7 +98,30 @@ def _extract_stock_code(state: ResearchState) -> str:
             if match:
                 return match.group(1)
 
-    raise ValueError("질문에서 종목 코드를 찾을 수 없습니다.")
+    # 3. LLM을 사용하여 종목명 추출 후 코드로 변환
+    if query:
+        try:
+            stock_names = await extract_stock_names_from_query(query)
+            if stock_names:
+                stock_name = stock_names[0]  # 첫 번째 종목 사용
+
+                # 종목명으로 코드 검색
+                markets = ["KOSPI", "KOSDAQ", "KONEX"]
+                for market in markets:
+                    try:
+                        code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+                        if code:
+                            logger.info(f"✅ [Research] 종목 코드 추출 성공: {stock_name} -> {code}")
+                            return code
+                    except Exception as exc:
+                        logger.debug(f"⚠️ [Research] 종목 검색 실패 ({stock_name}/{market}): {exc}")
+                        continue
+
+                logger.warning(f"⚠️ [Research] 종목 코드를 찾을 수 없음: {stock_name}")
+        except Exception as exc:
+            logger.error(f"❌ [Research] 종목명 추출 실패: {exc}")
+
+    raise ValueError(f"질문에서 종목 코드를 찾을 수 없습니다: {query}")
 
 
 def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -281,7 +339,7 @@ async def planner_node(state: ResearchState) -> ResearchState:
     필요한 worker만 선택하여 비용과 시간을 최적화합니다.
     """
     query = state.get("query") or "종목 분석"
-    stock_code = _extract_stock_code(state)
+    stock_code = await _extract_stock_code(state)
     analysis_depth = state.get("analysis_depth", "standard")
     focus_areas = state.get("focus_areas") or []
     depth_reason = state.get("depth_reason", "")
@@ -417,7 +475,7 @@ def task_router_node(state: ResearchState) -> ResearchState:
 
 async def data_worker_node(state: ResearchState) -> ResearchState:
     task = state.get("current_task")
-    stock_code = _extract_stock_code(state)
+    stock_code = await _extract_stock_code(state)
     request_id = state.get("request_id", "research-agent")
 
     logger.info("📊 [Research/Data] 데이터 수집 시작: %s", stock_code)
@@ -537,7 +595,7 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🐂 [Research/Bull] 강세 분석 시작: %s", stock_code)
 
@@ -550,15 +608,15 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
     investor = state.get("investor_trading_data") or {}
     price = state.get("price_data") or {}
 
-    prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요.
+    prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요. 
 
 종목코드: {stock_code}
-현재가: {price.get('latest_close')}
-시가총액: {market_cap.get('market_cap')}
-펀더멘털: {json.dumps(fundamental, ensure_ascii=False)}
-투자주체: {json.dumps(investor, ensure_ascii=False)}
-기술적 지표: {json.dumps(technical, ensure_ascii=False)}
-시장 지수: {json.dumps(market, ensure_ascii=False)}
+현재가: {price.get('latest_close')} 
+시가총액: {market_cap.get('market_cap')} 
+펀더멘털: {_dumps(fundamental)} 
+투자주체: {_dumps(investor)} 
+기술적 지표: {_dumps(technical)} 
+시장 지수: {_dumps(market)} 
 
 JSON 형식으로 답변하세요:
 {{
@@ -634,7 +692,7 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🐻 [Research/Bear] 약세 분석 시작: %s", stock_code)
 
@@ -648,12 +706,12 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
 
     prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 리스크 시나리오를 제시하세요.
 
-종목코드: {stock_code}
-현재가: {price.get('latest_close')}
-펀더멘털: {json.dumps(fundamental, ensure_ascii=False)}
-투자주체: {json.dumps(investor, ensure_ascii=False)}
-기술적 지표: {json.dumps(technical, ensure_ascii=False)}
-시장 지수: {json.dumps(market, ensure_ascii=False)}
+종목코드: {stock_code} 
+현재가: {price.get('latest_close')} 
+펀더멘털: {_dumps(fundamental)} 
+투자주체: {_dumps(investor)} 
+기술적 지표: {_dumps(technical)} 
+시장 지수: {_dumps(market)} 
 
 JSON 형식으로 답변하세요:
 {{
@@ -740,7 +798,7 @@ async def macro_worker_node(state: ResearchState) -> ResearchState:
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🌍 [Research/Macro] 거시경제 분석 시작: %s", stock_code)
 
@@ -844,7 +902,7 @@ async def insight_worker_node(state: ResearchState) -> ResearchState:
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🧠 [Research/Insight] 인사이트 정리 시작: %s", stock_code)
 
@@ -865,8 +923,8 @@ async def insight_worker_node(state: ResearchState) -> ResearchState:
 
     prompt = f"""당신은 시니어 애널리스트입니다. 다음 정보를 기반으로 핵심 인사이트를 도출하세요.
 
-컨텍스트:
-{json.dumps(context, ensure_ascii=False)}
+컨텍스트: 
+{_dumps(context)} 
 
 **특히 거시경제 환경(macro)을 고려하여 종목의 리스크와 기회를 평가하세요.**
 
@@ -930,7 +988,7 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("📊 [Research/TechnicalAnalyst] 기술적 분석 시작: %s", stock_code)
 
@@ -962,8 +1020,8 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
 - 현재가: {current_price:,}원
 - 거래량: {volume:,}주
 
-## 기술적 지표
-{json.dumps(technical, ensure_ascii=False, indent=2)}
+## 기술적 지표 
+{_dumps(technical, indent=2)} 
 
 ## 분석 항목
 1. **주가 추세 분석**: 상승추세/하락추세/횡보 판단 (이동평균선 기반)
@@ -1086,7 +1144,7 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("💹 [Research/TradingFlowAnalyst] 거래 동향 분석 시작: %s", stock_code)
 
@@ -1116,8 +1174,8 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
 - 종목코드: {stock_code}
 - 현재가: {current_price:,}원
 
-## 투자자별 거래 동향
-{json.dumps(investor_data, ensure_ascii=False, indent=2)}
+## 투자자별 거래 동향 
+{_dumps(investor_data, indent=2)} 
 
 ## 분석 항목
 1. **외국인 투자자**:
@@ -1233,7 +1291,7 @@ async def information_analyst_worker_node(state: ResearchState) -> ResearchState
         return state
 
     task = state.get("current_task")
-    stock_code = state.get("stock_code") or _extract_stock_code(state)
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("📰 [Research/InformationAnalyst] 정보 분석 시작: %s", stock_code)
 
@@ -1260,8 +1318,8 @@ async def information_analyst_worker_node(state: ResearchState) -> ResearchState
 - 기업명: {company_name}
 - 종목코드: {stock_code}
 
-## 시장 컨텍스트
-{json.dumps(context, ensure_ascii=False, indent=2)}
+## 시장 컨텍스트 
+{_dumps(context, indent=2)} 
 
 ## 분석 항목
 1. **기업 개요 및 사업 특성**:
@@ -1345,8 +1403,6 @@ JSON 형식으로 답변하세요:
 async def synthesis_node(state: ResearchState) -> ResearchState:
     """
     최종 의견 통합 (Research Synthesizer)
-
-    PRISM-INSIGHT 패턴 적용:
     - Technical Analyst 결과
     - Trading Flow Analyst 결과
     - Information Analyst 결과
@@ -1483,7 +1539,12 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     if current_price:
         upside = (target_price - current_price) / current_price
 
-    rsi_signal = technical.get("rsi", {}).get("signal", "중립")
+    rsi_signal = (
+        tech_signals.get("rsi_signal")
+        or technical_indicators.get("rsi_signal")
+        or technical_indicators.get("rsi", {}).get("signal")
+        or "중립"
+    )
 
     if upside > 0.15 and rsi_signal != "과매수" and valuation_status != "고평가":
         recommendation = "BUY"

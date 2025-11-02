@@ -6,6 +6,8 @@ from typing import TypedDict, Optional, List, Literal, Annotated
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
+from src.schemas.hitl_config import HITLConfig
+
 
 class PortfolioHolding(TypedDict, total=False):
     """포트폴리오 내 단일 자산 정보"""
@@ -34,7 +36,7 @@ class PortfolioState(TypedDict, total=False):
     # 입력
     request_id: str
     user_id: Optional[str]
-    automation_level: int
+    hitl_config: HITLConfig
     risk_profile: Optional[str]
     horizon: Optional[str]
     preferences: Optional[dict]

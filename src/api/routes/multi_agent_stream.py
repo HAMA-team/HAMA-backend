@@ -18,53 +18,42 @@ from src.agents.router import route_query
 from src.services.stock_data_service import stock_data_service
 from src.services.user_profile_service import user_profile_service
 from src.models.database import get_db_context
+from src.utils.stock_name_extractor import extract_stock_names_from_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_STOCK_NAME_STOPWORDS = {
-    "현재",
-    "지금",
-    "주식",
-    "주가",
-    "가격",
-    "얼마",
-    "얼마지",
-    "분석",
-    "어때",
-    "상황",
-    "정보",
-    "알려줘",
-    "문의",
-    "질문",
-    "요청",
-}
-
 
 async def resolve_stock_code(message: str) -> Optional[str]:
     """
-    사용자 질의에서 종목 코드를 추출하거나 종목명으로 매핑한다.
+    사용자 질의에서 종목 코드를 추출 (LLM 기반).
+
+    Args:
+        message: 사용자 질문
+
+    Returns:
+        종목 코드 (6자리) 또는 None
     """
+    # 1. 6자리 코드가 직접 입력된 경우
     digit_match = re.search(r"\b(\d{6})\b", message)
     if digit_match:
         return digit_match.group(1)
 
-    candidates = re.findall(r"[가-힣A-Za-z]{2,}", message)
-    tried = set()
-    for candidate in candidates:
-        token = candidate.strip()
-        if not token or token in _STOCK_NAME_STOPWORDS:
-            continue
-        if token in tried:
-            continue
-        tried.add(token)
+    # 2. LLM으로 종목명 추출
+    stock_names = await extract_stock_names_from_query(message)
+    if not stock_names:
+        return None
 
-        for market in ("KOSPI", "KOSDAQ", "KONEX"):
-            code = await stock_data_service.get_stock_by_name(token, market=market)
-            if code:
-                return code
+    # 3. 첫 번째 종목명으로 코드 검색
+    stock_name = stock_names[0]
+    for market in ("KOSPI", "KOSDAQ", "KONEX"):
+        code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+        if code:
+            logger.info(f"✅ [ResolveStock] 종목 코드 찾기 성공: {stock_name} -> {code}")
+            return code
 
+    logger.warning(f"⚠️ [ResolveStock] 종목 코드를 찾을 수 없음: {stock_name}")
     return None
 
 
@@ -123,8 +112,26 @@ async def stream_multi_agent_execution(
         resolved_stock_code: Optional[str] = None
         clarification_message: Optional[str] = None
 
+        # Router가 이미 종목명을 추출했는지 확인
+        stock_names = routing_decision.stock_names
+        logger.info(f"🧭 [Router] 추출된 종목명: {stock_names}")
+
         if "research" in agents_to_call:
-            resolved_stock_code = await resolve_stock_code(message)
+            # Router가 종목을 추출했으면 사용, 아니면 fallback
+            if stock_names:
+                stock_name = stock_names[0]  # 첫 번째 종목 사용
+                # 종목명으로 코드 검색
+                for market in ("KOSPI", "KOSDAQ", "KONEX"):
+                    code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+                    if code:
+                        resolved_stock_code = code
+                        logger.info(f"✅ [ResolveStock] 종목 코드 찾기 성공: {stock_name} -> {code}")
+                        break
+
+            # Fallback: Router가 종목을 못 찾았거나 코드 변환 실패
+            if not resolved_stock_code:
+                resolved_stock_code = await resolve_stock_code(message)
+
             if not resolved_stock_code:
                 clarification_message = (
                     "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
@@ -132,7 +139,7 @@ async def stream_multi_agent_execution(
                 )
                 agents_to_call = ["general"]
 
-        yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level}, ensure_ascii=False)}\n\n"
+        yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level, 'stock_names': stock_names}, ensure_ascii=False)}\n\n"
 
         # 4. 각 에이전트 실행
         agent_results = {}

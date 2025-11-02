@@ -9,6 +9,8 @@ from langchain_core.tools import tool
 
 from src.services.search_service import web_search_service
 from src.services.stock_data_service import stock_data_service
+from src.utils.stock_name_extractor import extract_stock_names_from_query
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,10 +25,10 @@ def _is_stock_code(value: str) -> bool:
 @tool
 async def lookup_stock(query: str) -> dict:
     """
-    종목 코드/이름 조회 도구.
+    종목 코드/이름 조회 도구 (LLM 기반 종목명 추출 지원).
 
     Args:
-        query: 종목명 또는 6자리 종목 코드
+        query: 종목명 또는 6자리 종목 코드 (예: "SK하이닉스", "삼성전자", "005930")
 
     Returns:
         {
@@ -37,34 +39,47 @@ async def lookup_stock(query: str) -> dict:
             "message": str
         }
     """
-    normalized = _normalize_stock_query(query)
+    # 1. LLM 기반 종목명 추출 (GPT-5 사용)
+    stock_names = await extract_stock_names_from_query(query)
+
+    if not stock_names:
+        return {
+            "success": False,
+            "stock_code": None,
+            "stock_name": None,
+            "market": None,
+            "message": f"'{query}'에서 종목명을 찾을 수 없습니다.",
+        }
+
+    # 2. 첫 번째 종목명으로 검색 (향후 다중 종목 지원 가능)
+    stock_name = stock_names[0]
 
     # 6자리 코드인 경우 그대로 사용
-    if _is_stock_code(normalized):
+    if _is_stock_code(stock_name):
         return {
             "success": True,
-            "stock_code": normalized,
+            "stock_code": stock_name,
             "stock_name": None,
             "market": None,
             "message": "입력값을 종목 코드로 인식했습니다.",
         }
 
-    # 종목명으로 검색
+    # 3. 종목명으로 검색 (모든 시장에서 검색)
     markets = ["KOSPI", "KOSDAQ", "KONEX"]
     for market in markets:
         try:
-            code = await stock_data_service.get_stock_by_name(normalized, market=market)
+            code = await stock_data_service.get_stock_by_name(stock_name, market=market)
         except Exception as exc:  # pragma: no cover - 외부 API 실패
-            logger.debug("⚠️ [lookup_stock] 종목 검색 실패 (%s/%s): %s", normalized, market, exc)
+            logger.debug("⚠️ [lookup_stock] 종목 검색 실패 (%s/%s): %s", stock_name, market, exc)
             continue
 
         if code:
             return {
                 "success": True,
                 "stock_code": code,
-                "stock_name": normalized,
+                "stock_name": stock_name,
                 "market": market,
-                "message": f"{market} 시장에서 종목을 찾았습니다.",
+                "message": f"{market} 시장에서 '{stock_name}'을(를) 찾았습니다.",
             }
 
     return {
@@ -72,7 +87,7 @@ async def lookup_stock(query: str) -> dict:
         "stock_code": None,
         "stock_name": None,
         "market": None,
-        "message": f"'{query}'에 해당하는 종목을 찾지 못했습니다.",
+        "message": f"'{stock_name}'에 해당하는 종목을 찾지 못했습니다.",
     }
 
 
