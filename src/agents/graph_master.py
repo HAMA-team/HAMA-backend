@@ -20,11 +20,18 @@ from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langgraph.checkpoint.memory import MemorySaver
+try:
+    from langgraph.checkpoints.memory import MemorySaver
+except ImportError:  # pragma: no cover - 호환성 유지
+    from langgraph.checkpoint.memory import MemorySaver  # type: ignore
+
 try:  # Redis saver is optional
     from langgraph.checkpoints.redis import RedisSaver  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
-    RedisSaver = None  # type: ignore[assignment]
+    try:
+        from langgraph.checkpoint.redis import RedisSaver  # type: ignore
+    except ImportError:
+        RedisSaver = None  # type: ignore[assignment]
 from langgraph_supervisor import create_supervisor
 
 from src.config.settings import settings
@@ -50,9 +57,25 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
     Langgraph Supervisor 패턴 기반 Master Agent 정의를 생성합니다.
     """
     if llm is None:
-        llm = get_llm(
-            temperature=0,
+        # 라우팅에는 ROUTER_MODEL 설정 사용 (종목명 인식 개선을 위해 강력한 모델)
+        from src.utils.llm_factory import _build_llm, _loop_token
+
+        provider = settings.ROUTER_MODEL_PROVIDER
+        model_name = settings.ROUTER_MODEL
+        loop_token = _loop_token()
+
+        logger.info(
+            "🤖 [Supervisor] 라우팅 모델 초기화: provider=%s, model=%s",
+            provider,
+            model_name,
+        )
+
+        llm = _build_llm(
+            provider=provider,
+            model_name=model_name,
+            temperature=0.0,
             max_tokens=settings.MAX_TOKENS,
+            loop_token=loop_token,
         )
 
     supervisor_prompt = f"""당신은 투자 에이전트 팀을 관리하는 Supervisor입니다.
@@ -84,10 +107,10 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
    - 포트폴리오 구성 및 최적화
    - 리밸런싱 제안
 
-6. **monitoring_agent** (시장 모니터링)
-   - 가격 변동 추적
-   - 이벤트 감지 (거래량 급증, VI 발동)
-   - 정기 리포트 생성
+6. **monitoring_agent** (뉴스 모니터링)
+   - 포트폴리오 종목 뉴스 수집 및 분석
+   - 중요 뉴스 알림 생성 (긍정/부정 판단)
+   - 뉴스 기반 투자 의사결정 지원
 
 7. **general_agent** (일반 질의응답)
    - 투자 용어 설명 (PER, PBR 등)
@@ -107,6 +130,8 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
      → transfer_to_research_agent, transfer_to_strategy_agent, transfer_to_risk_agent (3개 동시)
    - "내 포트폴리오 리밸런싱"
      → transfer_to_portfolio_agent, transfer_to_risk_agent (2개 동시)
+   - "포트폴리오 뉴스 확인해줘" 또는 "내 종목들 최근 뉴스 보여줘"
+     → transfer_to_monitoring_agent (1개만)
    - "PER이 뭐야?"
      → transfer_to_general_agent (1개만)
    - "삼성전자 10주 매수"
@@ -120,6 +145,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 4. **판단 기준:**
    - 종목 분석 관련 → research + strategy + risk (필수 3개)
    - 포트폴리오 관련 → portfolio + risk (필수 2개)
+   - 뉴스 모니터링 → monitoring (1개)
    - 매매 실행 → trading (1개)
    - 일반 질문 → general (1개)
 
@@ -134,7 +160,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
             _load_agent("src.agents.trading", "trading_agent"),
             _load_agent("src.agents.general", "general_agent"),
             _load_agent("src.agents.portfolio", "portfolio_agent"),
-            # monitoring_agent,
+            _load_agent("src.agents.monitoring", "monitoring_subgraph"),
         ],
         model=llm,
         parallel_tool_calls=True,
@@ -153,11 +179,8 @@ def build_state_graph(automation_level: int = 2):
 
     그래프 정의 단계에서는 순수하게 구조만 생성하고 부수효과를 최소화합니다.
     """
-    llm = get_llm(
-        temperature=0,
-        max_tokens=settings.MAX_TOKENS,
-    )
-    return build_supervisor(automation_level=automation_level, llm=llm)
+    # build_supervisor 내부에서 ROUTER_MODEL을 사용하므로 llm=None으로 전달
+    return build_supervisor(automation_level=automation_level, llm=None)
 
 
 def _resolve_backend_key(backend: Optional[str] = None) -> str:
