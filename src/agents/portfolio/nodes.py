@@ -156,6 +156,11 @@ async def rebalance_plan_node(state: PortfolioState) -> PortfolioState:
     processed_codes = set()
 
     for code, proposed_item in proposed_map.items():
+        # CASH는 명시적인 거래 대상이 아님 (주식 매도 시 자동 증가)
+        if code == "CASH":
+            processed_codes.add(code)
+            continue
+
         current_weight = current_map.get(code, {}).get("weight", 0.0)
         delta = round(proposed_item.get("weight", 0.0) - current_weight, 4)
         max_delta = max(max_delta, abs(delta))
