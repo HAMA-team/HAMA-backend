@@ -5,12 +5,13 @@ import logging
 from typing import Any, Dict
 
 from langchain_core.messages import AIMessage
-from langgraph_sdk.schema import Interrupt
+from langgraph.types import interrupt
 
 from src.agents.trading.state import TradingState
 from src.services import OrderNotFoundError, PortfolioNotFoundError, trading_service
 from src.utils.llm_factory import get_llm
 from src.utils.json_parser import safe_json_parse
+from src.schemas.hitl_config import HITLConfig, PRESET_COPILOT
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +75,23 @@ def approval_trade_node(state: TradingState) -> dict:
         logger.info("⏭️ [Trade] 이미 승인된 주문입니다")
         return {}
 
-    # 자동화 레벨 확인
-    automation_level = state.get("automation_level", 2)
+    config_raw = state.get("hitl_config") or PRESET_COPILOT.model_dump()
+    hitl_config = HITLConfig.model_validate(config_raw)
+    trade_phase = hitl_config.phases.trade
+    risk_level = state.get("risk_level", "medium")
 
-    # Level 1 (Pilot): 자동 승인
-    if automation_level == 1:
+
+    # Pilot 조건부 자동 승인
+    if trade_phase == "conditional" and risk_level == "low":
         logger.info("✅ [Trade] 자동화 레벨 1 - 매매 자동 승인")
-        return {"trade_approved": True}
-
-    # Level 2, 3: 사용자 승인 필요
-    logger.info("🔔 [Trade] 사용자 승인을 요청합니다 (Level %d)", automation_level)
+        return {
+            "trade_approved": True,
+            "approval_type": "automatic",
+            "skip_hitl": True,
+        }
 
     summary = state.get("trade_summary") or {}
-    interrupt_payload = {
+    order_details = {
         "type": "trade_approval",
         "order_id": state.get("trade_order_id", "UNKNOWN"),
         "query": state.get("query", ""),
@@ -94,18 +99,56 @@ def approval_trade_node(state: TradingState) -> dict:
         "quantity": summary.get("order_quantity") or state.get("quantity"),
         "order_type": summary.get("order_type") or state.get("order_type"),
         "order_price": summary.get("order_price") or state.get("order_price"),
-        "automation_level": automation_level,
+        "estimated_price": summary.get("order_price") or state.get("order_price"),
+        "total_amount": (summary.get("order_quantity") or state.get("quantity") or 0)
+        * (summary.get("order_price") or state.get("order_price") or 0),
+        "risk_level": risk_level,
+        "risk_factors": state.get("risk_factors", []),
         "message": "매매 주문을 승인하시겠습니까?",
     }
-    approval: Interrupt = {
-        "id": f"trade-{interrupt_payload['order_id']}",
-        "value": interrupt_payload,
-    }
 
-    logger.info("✅ [Trade] 승인 요청 생성: %s", approval)
+    if not trade_phase:
+        logger.info("✅ [Trade] HITL 불필요 - 자동 승인 (preset=%s)", hitl_config.preset)
+        return {"trade_approved": True}
 
+    logger.info("🔔 [Trade] 사용자 승인을 요청합니다 (preset=%s)", hitl_config.preset)
+
+    user_response = interrupt(value="trade_approval", payload=order_details)
+
+    logger.info("🟢 [Trade] 사용자 결정 수신: %s", user_response)
+
+    decision = (user_response or {}).get("decision")
     messages = list(state.get("messages", []))
-    return {"trade_approved": True, "messages": messages}
+
+    if decision == "approved":
+        return {
+            "trade_approved": True,
+            "approval_type": "manual",
+            "user_notes": user_response.get("notes"),
+            "messages": messages,
+        }
+    if decision == "rejected":
+        return {
+            "trade_approved": False,
+            "rejection_reason": user_response.get("reason"),
+            "messages": messages,
+        }
+    if decision == "modified":
+        modifications = user_response.get("modifications", {})
+        return {
+            "trade_approved": True,
+            "approval_type": "modified",
+            "modified_quantity": modifications.get("quantity", state.get("quantity")),
+            "user_notes": user_response.get("notes"),
+            "messages": messages,
+        }
+
+    logger.warning("⚠️ [Trade] 알 수 없는 사용자 결정, 거래를 중단합니다: %s", user_response)
+    return {
+        "trade_approved": False,
+        "rejection_reason": "unknown_decision",
+        "messages": messages,
+    }
 
 
 async def execute_trade_node(state: TradingState) -> dict:

@@ -12,6 +12,8 @@ from langgraph.managed import RemainingSteps
 from langchain_core.messages import BaseMessage
 import operator
 
+from src.schemas.hitl_config import HITLConfig
+
 
 class GraphState(TypedDict):
     """
@@ -39,8 +41,11 @@ class GraphState(TypedDict):
     conversation_id: str
     """대화 스레드 ID (checkpointer thread_id와 동일)"""
 
+    hitl_config: HITLConfig | Dict[str, Any]
+    """자동화 레벨 프리셋 및 단계별 HITL 설정"""
+
     automation_level: int
-    """자동화 레벨 (1=Pilot, 2=Copilot, 3=Advisor)"""
+    """[Deprecated] 레거시 automation_level (1-3). hitl_config에서 파생."""
 
     user_profile: Optional[Dict[str, Any]]
     """사용자 프로파일 (preferred_depth, expertise_level, technical_level, trading_style 등)"""

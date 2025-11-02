@@ -2,8 +2,8 @@
 채팅 및 승인 관련 API 엔드포인트 모음
 """
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Dict, Any, cast
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import List, Optional, Dict, Any, Literal, cast
 import uuid
 import os
 import logging
@@ -21,12 +21,19 @@ from src.services.portfolio_preview_service import (
 )
 from src.services.user_profile_service import UserProfileService
 from src.schemas.hitl import ApprovalRequest as HITLApprovalRequest
+from src.schemas.hitl_config import (
+    HITLConfig,
+    PRESET_COPILOT,
+    level_to_config,
+    config_to_level,
+)
 from src.config.settings import settings
 from src.models.database import get_db
 from fastapi import Depends
 from sqlalchemy.orm import Session
 from src.models.agent import ApprovalRequest as ApprovalRequestModel, UserDecision
 from datetime import datetime, timedelta
+from src.models.chat import ChatSession
 
 router = APIRouter()
 
@@ -38,7 +45,7 @@ def _save_approval_request_to_db(
     user_id: uuid.UUID,
     request_type: str,
     approval_data: dict,
-    automation_level: int
+    hitl_config: HITLConfig,
 ) -> Optional[uuid.UUID]:
     """
     ApprovalRequest를 DB에 저장합니다.
@@ -48,7 +55,7 @@ def _save_approval_request_to_db(
         user_id: 사용자 ID
         request_type: 요청 타입 (trade_approval, rebalance_approval)
         approval_data: 승인 요청 데이터
-        automation_level: 자동화 레벨
+        hitl_config: HITL 설정
 
     Returns:
         저장된 request_id (UUID) 또는 None (실패 시)
@@ -83,7 +90,7 @@ def _save_approval_request_to_db(
             alternatives=approval_data.get("alternatives"),
             status="pending",
             triggering_agent=approval_data.get("type", request_type).split("_")[0],  # "trade" or "rebalance"
-            automation_level=automation_level,
+            automation_level=config_to_level(hitl_config),
             urgency="normal",
             expires_at=datetime.utcnow() + timedelta(hours=24),  # 24시간 후 만료
         )
@@ -104,8 +111,11 @@ def _save_approval_request_to_db(
 def _ensure_uuid(value: Optional[str]) -> uuid.UUID:
     """Validate or generate a conversation UUID."""
     if value:
+        value_str = str(value).strip()
+        if not value_str:
+            return uuid.uuid4()
         try:
-            return uuid.UUID(str(value))
+            return uuid.UUID(value_str)
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
@@ -128,9 +138,27 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     """채팅 요청 스키마"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     message: str = Field(..., min_length=1, description="사용자 메시지 (비어있으면 안 됨)")
-    conversation_id: Optional[str] = None
-    automation_level: int = Field(default=2, ge=1, le=3, description="자동화 레벨: 1=Pilot, 2=Copilot, 3=Advisor")
+    conversation_id: Optional[str] = Field(
+        default=None,
+        alias="conversation_id",
+        validation_alias=AliasChoices("conversation_id", "conversationId"),
+    )
+    hitl_config: HITLConfig = Field(
+        default_factory=PRESET_COPILOT.model_copy,
+        validation_alias=AliasChoices("hitl_config", "hitlConfig"),
+        description="HITL 단계별 설정 (기본값: Copilot)",
+    )
+    automation_level: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=3,
+        validation_alias=AliasChoices("automation_level", "automationLevel"),
+        description="[Deprecated] automation_level은 hitl_config로 대체되었습니다.",
+    )
 
     @field_validator("message")
     @classmethod
@@ -139,6 +167,15 @@ class ChatRequest(BaseModel):
         if not v.strip():
             raise ValueError("메시지는 공백만 포함할 수 없습니다")
         return v
+
+    @model_validator(mode="after")
+    def _apply_legacy_level(self) -> "ChatRequest":
+        """
+        legacy automation_level 입력이 존재할 경우 대응되는 프리셋으로 덮어쓴다.
+        """
+        if self.automation_level is not None:
+            self.hitl_config = level_to_config(self.automation_level)
+        return self
 
 
 class ChatResponse(BaseModel):
@@ -156,9 +193,19 @@ class ChatSessionSummary(BaseModel):
     title: str
     last_message: Optional[str] = None
     last_message_at: Optional[str] = None
-    automation_level: int
+    hitl_config: HITLConfig = Field(default_factory=PRESET_COPILOT.model_copy)
+    automation_level: Optional[int] = Field(
+        default=None,
+        description="[Deprecated] 호환성 유지를 위한 automation_level 필드",
+    )
     message_count: int
     created_at: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _populate_legacy_level(self) -> "ChatSessionSummary":
+        if self.automation_level is None:
+            self.automation_level = config_to_level(self.hitl_config)
+        return self
 
 
 @router.post("/", response_model=ChatResponse)
@@ -178,6 +225,9 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         conversation_uuid = _ensure_uuid(request.conversation_id)
         conversation_id = str(conversation_uuid)
 
+        hitl_config = request.hitl_config
+        legacy_level = config_to_level(hitl_config)
+
         # Get user profile for dynamic worker selection
         user_profile_service = UserProfileService()
         user_profile = user_profile_service.get_user_profile(DEMO_USER_UUID, db)
@@ -188,7 +238,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=request.automation_level,
+            automation_level=legacy_level,
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -197,7 +247,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         )
 
         # Build graph with automation level
-        app = build_graph(automation_level=request.automation_level, backend_key="redis")
+        app = build_graph(automation_level=legacy_level, backend_key="redis")
 
         # Config for checkpointer
         config: RunnableConfig = {
@@ -213,7 +263,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "messages": [HumanMessage(content=request.message)],
             "user_id": str(DEMO_USER_UUID),
             "conversation_id": conversation_id,
-            "automation_level": request.automation_level,
+            "hitl_config": hitl_config.model_dump(),
+            "automation_level": legacy_level,
             "user_profile": user_profile,  # Dynamic worker selection을 위한 사용자 프로파일
             "intent": None,
             "query": request.message,
@@ -341,7 +392,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 user_id=DEMO_USER_UUID,
                 request_type=interrupt_type,
                 approval_data=approval_request,
-                automation_level=request.automation_level
+                automation_level=legacy_level
             )
             if request_id:
                 approval_request["request_id"] = str(request_id)
@@ -360,7 +411,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=request.automation_level,
+                automation_level=legacy_level,
                 metadata={"interrupted": True},
             )
 
@@ -371,7 +422,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 approval_request=approval_request,
                 metadata={
                     "interrupted": True,
-                    "automation_level": request.automation_level,
+                    "automation_level": legacy_level,
                 },
             )
 
@@ -455,7 +506,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "intent": intent,
             "agents_called": data.get("agents_called", []),
             "hitl_required": hitl_required,
-            "automation_level": request.automation_level,
+            "automation_level": legacy_level,
         }
 
         await chat_history_service.append_message(
@@ -467,7 +518,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=request.automation_level,
+            automation_level=legacy_level,
             metadata=message_metadata,
             summary=data.get("summary"),
             last_agent=(data.get("agents_called") or [None])[-1] if data.get("agents_called") else None,
@@ -639,10 +690,14 @@ def _save_user_decision_to_db(
 
 class ApprovalRequest(BaseModel):
     """승인 요청 스키마"""
+
     thread_id: str = Field(description="대화 스레드 ID")
-    decision: str = Field(description="승인 결정: approved, rejected, modified")
-    automation_level: int = Field(default=2, ge=1, le=3)
-    request_id: Optional[str] = Field(default=None, description="DB에 저장된 ApprovalRequest ID")
+    decision: Literal["approved", "rejected", "modified"] = Field(
+        description="승인 결정"
+    )
+    request_id: Optional[str] = Field(
+        default=None, description="DB에 저장된 ApprovalRequest ID"
+    )
     modifications: Optional[dict] = None
     user_notes: Optional[str] = None
 
@@ -673,6 +728,13 @@ async def approve_action(
         conversation_uuid = _ensure_uuid(approval.thread_id)
         conversation_id = str(conversation_uuid)
 
+        session_row = (
+            db.query(ChatSession)
+            .filter(ChatSession.conversation_id == conversation_uuid)
+            .first()
+        )
+        legacy_level = session_row.automation_level if session_row else 2
+
         decision_metadata = {
             "decision": approval.decision,
             "user_notes": approval.user_notes,
@@ -682,7 +744,7 @@ async def approve_action(
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=approval.automation_level,
+            automation_level=legacy_level,
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -691,7 +753,7 @@ async def approve_action(
             metadata=decision_metadata,
         )
 
-        app = build_graph(automation_level=approval.automation_level, backend_key="redis")
+        app = build_graph(automation_level=legacy_level, backend_key="redis")
 
         config: RunnableConfig = {
             "configurable": {
@@ -755,7 +817,7 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=approval.automation_level,
+                automation_level=legacy_level,
                 metadata={"decision": "approved"},
                 summary=final_response.get("summary"),
             )
@@ -788,7 +850,7 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=approval.automation_level,
+                automation_level=legacy_level,
                 metadata={"decision": "rejected"},
                 summary="사용자가 거부함",
             )
@@ -822,7 +884,7 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=approval.automation_level,
+                automation_level=legacy_level,
                 metadata={"decision": "modified"},
                 summary=final_response.get("summary"),
             )

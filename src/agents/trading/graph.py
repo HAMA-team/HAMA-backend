@@ -53,9 +53,23 @@ def build_trading_subgraph():
     workflow.add_edge("buy_specialist", "sell_specialist")
     workflow.add_edge("sell_specialist", "risk_reward_calculator")
     workflow.add_edge("risk_reward_calculator", "approval_trade")
-    workflow.add_edge("approval_trade", "execute_trade")
 
-    # 종료
+    def should_execute_trade(state: TradingState) -> str:
+        if state.get("skip_hitl"):
+            return "execute_trade"
+        if state.get("trade_approved"):
+            return "execute_trade"
+        return END
+
+    workflow.add_conditional_edges(
+        "approval_trade",
+        should_execute_trade,
+        {
+            "execute_trade": "execute_trade",
+            END: END,
+        },
+    )
+
     workflow.add_edge("execute_trade", END)
 
     logger.info("✅ [Trading] 서브그래프 빌드 완료 (PRISM-INSIGHT 패턴)")

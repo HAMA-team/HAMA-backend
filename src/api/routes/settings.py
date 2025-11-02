@@ -1,221 +1,164 @@
 """
-사용자 설정 관련 API 엔드포인트
+사용자 자동화(HITL) 설정 관련 API.
 """
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional
-import logging
+from __future__ import annotations
 
+import logging
+import uuid
+from typing import Dict
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from src.models.database import get_db
-from src.models.user import User
+
 from src.config.settings import settings
+from src.models.database import get_db
+from src.repositories.user_settings_repository import UserSettingsRepository
+from src.schemas.hitl_config import (
+    HITLConfig,
+    PRESET_PILOT,
+    PRESET_COPILOT,
+    PRESET_ADVISOR,
+    PRESET_METADATA,
+    get_interrupt_points,
+)
+from src.schemas.settings import (
+    AutomationLevelResponse,
+    AutomationLevelUpdateRequest,
+    AutomationLevelUpdateResponse,
+    AutomationPresetsResponse,
+    AutomationPresetMetadata,
+)
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+router = APIRouter(prefix="/settings", tags=["settings"])
 
-DEMO_USER_UUID = settings.demo_user_uuid
-
-
-class AutomationLevelResponse(BaseModel):
-    """자동화 레벨 조회 응답"""
-    level: int = Field(..., ge=1, le=3, description="자동화 레벨 (1=Pilot, 2=Copilot, 3=Advisor)")
-    level_name: str = Field(..., description="레벨 명칭")
-    description: str = Field(..., description="레벨 설명")
-    interrupt_points: List[str] = Field(..., description="HITL 개입 지점")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "level": 2,
-                "level_name": "코파일럿",
-                "description": "AI가 제안하고, 중요한 결정만 승인합니다",
-                "interrupt_points": ["전략 생성", "포트폴리오 구성", "매매 실행", "리밸런싱"]
-            }
-        }
-    )
+DEMO_USER_ID = uuid.UUID(str(settings.demo_user_uuid))
 
 
-class AutomationLevelUpdateRequest(BaseModel):
-    """자동화 레벨 변경 요청"""
-    level: int = Field(..., ge=1, le=3, description="변경할 자동화 레벨")
-    confirm: bool = Field(default=False, description="변경 확인")
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "level": 3,
-                "confirm": True
-            }
-        }
-    )
+def _ensure_repo(db: Session) -> UserSettingsRepository:
+    """요청 스코프에서 사용할 Repository 생성."""
+    return UserSettingsRepository(db)
 
 
-class AutomationLevelUpdateResponse(BaseModel):
-    """자동화 레벨 변경 응답"""
-    level: int
-    message: str
-
-    model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "level": 3,
-                "message": "어드바이저 모드로 변경되었습니다. 향후 모든 결정에 승인이 필요합니다."
-            }
-        }
-    )
-
-
-# 자동화 레벨 정의
-AUTOMATION_LEVELS = {
-    1: {
-        "name": "파일럿",
-        "description": "AI가 거의 모든 것을 처리합니다",
-        "interrupt_points": ["고위험 매매", "리밸런싱 (분기 1회)"],
-        "detail": "AI 자율성 85% - 월 1회 확인"
-    },
-    2: {
-        "name": "코파일럿",
-        "description": "AI가 제안하고, 중요한 결정만 승인합니다",
-        "interrupt_points": ["전략 생성", "포트폴리오 구성", "매매 실행", "리밸런싱"],
-        "detail": "AI 자율성 50% - 주 1-2회 알림"
-    },
-    3: {
-        "name": "어드바이저",
-        "description": "AI는 정보만 제공하고, 모든 결정을 직접 합니다",
-        "interrupt_points": ["모든 전략 결정", "모든 매매", "모든 포트폴리오 변경"],
-        "detail": "AI 자율성 20% - 일일 검토 가능"
+def _resolve_metadata(config: HITLConfig) -> Dict[str, str]:
+    preset_meta = PRESET_METADATA.get(config.preset)
+    if preset_meta:
+        return preset_meta
+    # Custom인 경우 기본 설명 제공
+    return {
+        "name": "Custom",
+        "description": "사용자 정의 프리셋",
+        "features": [],
+        "recommended_for": "고급 사용자",
     }
-}
+
+
+def _validate_custom_config(config: HITLConfig) -> None:
+    """Custom 프리셋 검증."""
+    if config.preset != "custom":
+        return
+
+    phases = config.phases
+    has_any = any(
+        [
+            phases.data_collection,
+            phases.analysis,
+            phases.portfolio,
+            phases.risk,
+            phases.trade is True or phases.trade == "conditional",
+        ]
+    )
+
+    if not has_any:
+        raise HTTPException(
+            status_code=422,
+            detail="Custom 모드에서는 최소 한 개 이상의 HITL 단계가 활성화되어야 합니다.",
+        )
 
 
 @router.get("/automation-level", response_model=AutomationLevelResponse)
-async def get_automation_level(db: Session = Depends(get_db)):
+def get_automation_level(
+    db: Session = Depends(get_db),
+) -> AutomationLevelResponse:
     """
-    현재 자동화 레벨 조회
-
-    자동화 레벨:
-    - 1 (Pilot): AI가 거의 모든 것을 처리
-    - 2 (Copilot): AI가 제안, 큰 결정만 승인 (기본값)
-    - 3 (Advisor): AI는 정보만 제공, 사용자가 결정
+    현재 사용자의 HITL 설정을 반환한다.
+    설정이 없으면 Copilot 프리셋을 기본값으로 사용한다.
     """
-    # Demo 사용자 조회
-    user = db.query(User).filter(User.user_id == str(DEMO_USER_UUID)).first()
+    repo = _ensure_repo(db)
+    settings_row = repo.get_user_settings(DEMO_USER_ID)
 
-    if not user:
-        # 기본값: 코파일럿 모드
-        level = 2
+    if settings_row:
+        config = settings_row.as_hitl_config()
     else:
-        level = user.automation_level or 2
+        config = PRESET_COPILOT.model_copy()
 
-    level_info = AUTOMATION_LEVELS.get(level, AUTOMATION_LEVELS[2])
+    metadata = _resolve_metadata(config)
+    interrupt_points = get_interrupt_points(config)
+
+    logger.info("📡 [Settings] HITL config 조회 preset=%s", config.preset)
 
     return AutomationLevelResponse(
-        level=level,
-        level_name=level_info["name"],
-        description=level_info["description"],
-        interrupt_points=level_info["interrupt_points"]
+        hitl_config=config,
+        preset_name=metadata["name"],
+        description=metadata["description"],
+        interrupt_points=interrupt_points,
     )
 
 
 @router.put("/automation-level", response_model=AutomationLevelUpdateResponse)
-async def update_automation_level(
+def update_automation_level(
     request: AutomationLevelUpdateRequest,
-    db: Session = Depends(get_db)
-):
+    db: Session = Depends(get_db),
+) -> AutomationLevelUpdateResponse:
     """
-    자동화 레벨 변경
-
-    Request:
-    ```json
-    {
-        "level": 3,
-        "confirm": true
-    }
-    ```
-
-    변경 영향:
-    - Level 1 → 2: 향후 매매 시 승인 필요
-    - Level 2 → 1: 향후 매매가 자동 실행 (고위험만 승인)
-    - Level 2 → 3: 향후 모든 결정에 승인 필요
+    사용자 HITL 설정 저장.
     """
-    new_level = request.level
-
-    if new_level not in AUTOMATION_LEVELS:
+    if not request.confirm:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid automation level: {new_level}. Must be 1, 2, or 3."
+            detail="자동화 레벨 변경을 위해서는 confirm=true가 필요합니다.",
         )
 
-    # Demo 사용자 조회 또는 생성
-    user = db.query(User).filter(User.user_id == str(DEMO_USER_UUID)).first()
+    _validate_custom_config(request.hitl_config)
 
-    if not user:
-        # 사용자 생성
-        from src.models.user import InvestmentStyle, RiskTolerance
+    repo = _ensure_repo(db)
+    repo.upsert_hitl_config(DEMO_USER_ID, request.hitl_config)
 
-        user = User(
-            user_id=str(DEMO_USER_UUID),
-            username="demo_user",
-            email="demo@hama.ai",
-            investment_style=InvestmentStyle.MODERATE,
-            risk_tolerance=RiskTolerance.MEDIUM,
-            automation_level=new_level
-        )
-        db.add(user)
-    else:
-        # 기존 레벨
-        old_level = user.automation_level or 2
+    metadata = _resolve_metadata(request.hitl_config)
 
-        # 레벨 변경
-        user.automation_level = new_level
-
-        logger.info(f"Automation level changed: {old_level} → {new_level}")
-
-    db.commit()
-    db.refresh(user)
-
-    # 변경 메시지 생성
-    level_info = AUTOMATION_LEVELS[new_level]
-    message = f"{level_info['name']} 모드로 변경되었습니다. {level_info['description']}"
+    logger.info(
+        "✅ [Settings] HITL config 저장 완료 preset=%s", request.hitl_config.preset
+    )
 
     return AutomationLevelUpdateResponse(
-        level=new_level,
-        message=message
+        success=True,
+        message=f"{metadata['name']} 모드로 변경되었습니다",
+        new_config=request.hitl_config,
     )
 
 
-@router.get("/automation-levels")
-async def list_automation_levels():
+@router.get("/automation-levels", response_model=AutomationPresetsResponse)
+def list_automation_levels() -> AutomationPresetsResponse:
     """
-    사용 가능한 자동화 레벨 목록
-
-    Response:
-    ```json
-    {
-        "levels": [
-            {
-                "level": 1,
-                "name": "파일럿",
-                "description": "...",
-                "interrupt_points": [...],
-                "detail": "..."
-            },
-            ...
-        ]
-    }
-    ```
+    사용 가능한 자동화 프리셋 목록을 반환한다.
     """
-    levels = [
-        {
-            "level": level,
-            "name": info["name"],
-            "description": info["description"],
-            "interrupt_points": info["interrupt_points"],
-            "detail": info["detail"]
-        }
-        for level, info in AUTOMATION_LEVELS.items()
+    presets = [
+        AutomationPresetMetadata(
+            preset="pilot",
+            config=PRESET_PILOT.model_copy(),
+            metadata=PRESET_METADATA["pilot"],
+        ),
+        AutomationPresetMetadata(
+            preset="copilot",
+            config=PRESET_COPILOT.model_copy(),
+            metadata=PRESET_METADATA["copilot"],
+        ),
+        AutomationPresetMetadata(
+            preset="advisor",
+            config=PRESET_ADVISOR.model_copy(),
+            metadata=PRESET_METADATA["advisor"],
+        ),
     ]
 
-    return {"levels": levels}
+    return AutomationPresetsResponse(presets=presets, custom_available=True)

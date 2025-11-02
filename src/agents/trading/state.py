@@ -8,6 +8,8 @@ from typing import TypedDict, Optional, List, Annotated
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
+from src.schemas.hitl_config import HITLConfig
+
 
 class TradingState(TypedDict):
     """
@@ -36,8 +38,8 @@ class TradingState(TypedDict):
     query: str
     """사용자 질의 (매매 요청)"""
 
-    automation_level: int
-    """자동화 레벨 (1-3)"""
+    hitl_config: HITLConfig
+    """자동화 레벨/단계별 HITL 설정"""
 
     # Research 결과 (Buy/Sell Specialist가 참조)
     research_result: Optional[dict]
