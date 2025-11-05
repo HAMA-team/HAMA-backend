@@ -1,4 +1,3 @@
-"""Trading Agent 노드 함수들 (실제 서비스 연동 버전 + PRISM-INSIGHT 패턴)."""
 from __future__ import annotations
 
 import logging
@@ -61,7 +60,7 @@ async def prepare_trade_node(state: TradingState) -> dict:
     }
 
 
-def approval_trade_node(state: TradingState) -> dict:
+async def approval_trade_node(state: TradingState) -> dict:
     """
     매매 승인 노드 (HITL Interrupt Point)
 
@@ -75,15 +74,25 @@ def approval_trade_node(state: TradingState) -> dict:
         logger.info("⏭️ [Trade] 이미 승인된 주문입니다")
         return {}
 
+    # automation_level 직접 확인: 1이면 무조건 자동 승인
+    automation_level = state.get("automation_level", 2)
+    if automation_level == 1:
+        logger.info("✅ [Trade] 자동화 레벨 1 (Pilot) - 매매 자동 승인")
+        return {
+            "trade_approved": True,
+            "approval_type": "automatic",
+            "skip_hitl": True,
+        }
+
     config_raw = state.get("hitl_config") or PRESET_COPILOT.model_dump()
     hitl_config = HITLConfig.model_validate(config_raw)
     trade_phase = hitl_config.phases.trade
     risk_level = state.get("risk_level", "medium")
 
 
-    # Pilot 조건부 자동 승인
+    # Pilot 조건부 자동 승인 (legacy)
     if trade_phase == "conditional" and risk_level == "low":
-        logger.info("✅ [Trade] 자동화 레벨 1 - 매매 자동 승인")
+        logger.info("✅ [Trade] 조건부 자동 승인 (낮은 리스크)")
         return {
             "trade_approved": True,
             "approval_type": "automatic",
@@ -113,7 +122,8 @@ def approval_trade_node(state: TradingState) -> dict:
 
     logger.info("🔔 [Trade] 사용자 승인을 요청합니다 (preset=%s)", hitl_config.preset)
 
-    user_response = interrupt(value="trade_approval", payload=order_details)
+    # LangGraph interrupt: payload 대신 order_details만 반환
+    user_response = interrupt(order_details)
 
     logger.info("🟢 [Trade] 사용자 결정 수신: %s", user_response)
 
@@ -192,12 +202,19 @@ async def execute_trade_node(state: TradingState) -> dict:
     messages.append(AIMessage(content=summary))
 
     # MasterState(GraphState)로 결과 전달
+    # agent_results는 간단한 요약만 포함 (프론트엔드 직렬화 문제 방지)
     return {
         "trade_executed": True,
         "trade_result": result,  # TradingState 내부용
         "portfolio_snapshot": result.get("portfolio_snapshot"),
         "agent_results": {  # MasterState 공유용
-            "trading": result
+            "trading": {
+                "status": result.get("status"),
+                "summary": summary,
+                "order_id": result.get("order_id"),
+                "kis_order_no": result.get("kis_order_no"),
+                "kis_executed": result.get("kis_executed", False),
+            }
         },
         "messages": messages,
     }
@@ -211,16 +228,10 @@ def _format_trade_summary(result: Dict[str, Any]) -> str:
     return f"{order_type} {quantity}주 @ {price:,.0f}원 (총 {total:,.0f}원)"
 
 
-# ============================================================================
-# PRISM-INSIGHT 패턴: Buy/Sell Specialist, Risk/Reward Calculator
-# ============================================================================
-
-
 async def buy_specialist_node(state: TradingState) -> dict:
     """
     Buy Specialist (매수 전문가)
 
-    PRISM-INSIGHT 패턴:
     - Research 결과를 분석하여 매수 점수 산정 (1-10점)
     - 8~10점: 강력 매수
     - 7점: 매수 고려
@@ -275,7 +286,7 @@ async def buy_specialist_node(state: TradingState) -> dict:
 - **정보 분석**: 센티먼트 {information_summary.get('sentiment', 'N/A')}, 리스크 {information_summary.get('risk_level', 'N/A')}
 - **펀더멘털**: PER {fundamental_summary.get('PER', 'N/A')}, PBR {fundamental_summary.get('PBR', 'N/A')}, 밸류에이션 {fundamental_summary.get('valuation', 'N/A')}
 
-## 매수 점수 기준 (PRISM-INSIGHT 패턴)
+## 매수 점수 기준 
 - **10점**: 완벽한 매수 타이밍 (기술적 + 펀더멘털 + 수급 모두 강세, 리스크 낮음)
 - **9점**: 매우 강한 매수 신호 (대부분 긍정적, 일부 중립)
 - **8점**: 강한 매수 신호 (긍정적 요인 우세)
@@ -343,7 +354,6 @@ async def sell_specialist_node(state: TradingState) -> dict:
     """
     Sell Specialist (매도 전문가)
 
-    PRISM-INSIGHT 패턴:
     - 보유 기간, 수익률, 시장 상황을 고려하여 매도 결정
     - 손절매 조건 최우선
     - 목표가 도달 → 매도 고려
@@ -382,7 +392,7 @@ async def sell_specialist_node(state: TradingState) -> dict:
 - 수급 전망: {trading_flow_summary.get('outlook', 'N/A')}
 - 시장 센티먼트: {information_summary.get('sentiment', 'N/A')}
 
-## 매도 결정 기준 (PRISM-INSIGHT 패턴)
+## 매도 결정 기준
 1. **손절매 조건**: 손절가 도달 시 즉시 매도
 2. **목표가 도달**: 목표가 달성 시 매도 고려
 3. **추세 전환**: 기술적 하락 추세 전환 시
@@ -439,7 +449,6 @@ async def risk_reward_calculator_node(state: TradingState) -> dict:
     """
     Risk/Reward Calculator (손익비 계산기)
 
-    PRISM-INSIGHT 패턴:
     - 현재가 기준 목표가와 손절가 자동 계산
     - Risk/Reward Ratio 최소 1.5:1 이상 유지
     - 매수가 대비 -5% ~ -7% 손절가 권장

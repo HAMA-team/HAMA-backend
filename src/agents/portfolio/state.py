@@ -40,6 +40,8 @@ class PortfolioState(TypedDict, total=False):
     risk_profile: Optional[str]
     horizon: Optional[str]
     preferences: Optional[dict]
+    view_only: Optional[bool]
+    """조회 전용 모드 (True시 리밸런싱 스킵)"""
 
     portfolio_profile: Optional[dict]
     """사용자 프로필 / 투자 성향 캡처"""

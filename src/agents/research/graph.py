@@ -48,7 +48,7 @@ def build_research_subgraph():
     - query_intent_classifier: 쿼리 의도 분석 및 분석 깊이 결정 (quick/standard/comprehensive)
     - planner: 분석 깊이에 맞춰 동적으로 worker 선택 (Smart Planner)
 
-    Workers (PRISM-INSIGHT 패턴 적용):
+    Workers
     - data_worker: 원시 데이터 수집
     - technical_analyst: 기술적 분석 (주가, 거래량, 지표)
     - trading_flow_analyst: 거래 동향 분석 (기관/외국인/개인)
@@ -114,7 +114,7 @@ def build_research_subgraph():
 
     app = workflow.compile(name="research_agent")
 
-    logger.info("✅ [Research] 서브그래프 빌드 완료 (Deep Agent + PRISM-INSIGHT 패턴)")
+    logger.info("✅ [Research] 서브그래프 빌드 완료 (Deep Agent)")
 
     return app
 

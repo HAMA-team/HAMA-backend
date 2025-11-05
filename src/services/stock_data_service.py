@@ -1,6 +1,7 @@
 """주가 데이터 서비스 (DB Repository + 외부 API + Realtime Cache)"""
 
 import asyncio
+import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -16,6 +17,8 @@ from src.repositories import (
 )
 from src.services.cache_manager import cache_manager
 from src.utils.indicators import calculate_all_indicators
+
+logger = logging.getLogger(__name__)
 
 
 class StockDataService:
@@ -108,19 +111,50 @@ class StockDataService:
         return await asyncio.to_thread(_fetch)
 
     async def _save_listing_to_db(self, market: str, df: pd.DataFrame) -> None:
+        """종목 리스트를 DB에 저장 (DataFrame 타입 체크 포함)"""
         records: List[Dict[str, Any]] = []
-        for _, row in df.iterrows():
-            records.append(
-                {
-                    "stock_code": row["Code"],
-                    "stock_name": row["Name"],
-                    "market": row.get("Market", market),
-                    "sector": row.get("Industry"),
-                    "industry": row.get("Industry"),
-                }
-            )
+        for idx, row in df.iterrows():
+            try:
+                # Code, Name 필수 필드 검증
+                stock_code = row.get("Code")
+                stock_name = row.get("Name")
+
+                # None, DataFrame, Series 타입 체크
+                if stock_code is None or isinstance(stock_code, (pd.DataFrame, pd.Series)):
+                    logger.warning(f"⚠️ [DB] 잘못된 stock_code 타입: {type(stock_code).__name__} at index {idx}")
+                    continue
+
+                if stock_name is None or isinstance(stock_name, (pd.DataFrame, pd.Series)):
+                    logger.warning(f"⚠️ [DB] 잘못된 stock_name 타입: {type(stock_name).__name__} for {stock_code}")
+                    continue
+
+                # 문자열로 변환
+                stock_code_str = str(stock_code).strip()
+                stock_name_str = str(stock_name).strip()
+
+                if not stock_code_str or not stock_name_str:
+                    logger.warning(f"⚠️ [DB] 빈 필드: code={stock_code_str}, name={stock_name_str}")
+                    continue
+
+                records.append(
+                    {
+                        "stock_code": stock_code_str,
+                        "stock_name": stock_name_str,
+                        "market": str(row.get("Market", market)),
+                        "sector": str(row.get("Industry")) if pd.notna(row.get("Industry")) else None,
+                        "industry": str(row.get("Industry")) if pd.notna(row.get("Industry")) else None,
+                    }
+                )
+            except Exception as row_error:
+                logger.error(f"❌ [DB] 레코드 변환 오류 at index {idx}: {row_error}")
+                continue
+
         if records:
+            logger.info(f"💾 [DB] 종목 {len(records)}개 저장 시작...")
             await asyncio.to_thread(stock_repository.upsert_many, records)
+            logger.info(f"✅ [DB] 종목 {len(records)}개 저장 완료")
+        else:
+            logger.warning("⚠️ [DB] 저장할 유효한 레코드 없음")
 
     @staticmethod
     def _cache_listing_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
@@ -426,19 +460,41 @@ class StockDataService:
             if ticker_list:
                 data = []
                 for ticker in ticker_list:
-                    name = await asyncio.to_thread(
-                        krx_stock.get_market_ticker_name,
-                        ticker
-                    )
-                    data.append(
-                        {
-                            "Code": ticker,
-                            "Name": name,
-                            "Market": market,
-                        }
-                    )
+                    try:
+                        name = await asyncio.to_thread(
+                            krx_stock.get_market_ticker_name,
+                            ticker
+                        )
 
-                pykrx_df = pd.DataFrame(data)
+                        # None이거나 DataFrame 타입이면 건너뛰기
+                        if name is None or isinstance(name, pd.DataFrame):
+                            logger.warning(f"⚠️ [pykrx] 종목명 조회 실패: {ticker} (결과: {type(name).__name__})")
+                            continue
+
+                        # 문자열로 변환 시도
+                        name_str = str(name).strip()
+                        if not name_str or name_str == "None":
+                            logger.warning(f"⚠️ [pykrx] 종목명이 비어있음: {ticker}")
+                            continue
+
+                        data.append(
+                            {
+                                "Code": ticker,
+                                "Name": name_str,
+                                "Market": market,
+                            }
+                        )
+                    except Exception as name_error:
+                        # 개별 종목 오류는 로그만 남기고 계속 진행
+                        logger.warning(f"⚠️ [pykrx] 종목명 조회 오류: {ticker} - {name_error}")
+                        continue
+
+                if data:
+                    pykrx_df = pd.DataFrame(data)
+                    logger.info(f"✅ [pykrx] 종목 리스트 생성: {len(data)}/{len(ticker_list)}개")
+                else:
+                    logger.warning(f"⚠️ [pykrx] 유효한 종목 데이터 없음: {market}")
+                    pykrx_df = None
             else:
                 print(f"⚠️ pykrx 종목 리스트 없음: {market}")
 

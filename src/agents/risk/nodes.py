@@ -261,10 +261,17 @@ async def final_assessment_node(state: RiskState) -> dict:
     messages.append(AIMessage(content=summary))
 
     # MasterState(GraphState)로 결과 전달
+    # agent_results는 간단한 요약만 포함 (프론트엔드 직렬화 문제 방지)
     return {
         "risk_assessment": risk_assessment,  # RiskState 내부용
         "agent_results": {  # MasterState 공유용
-            "risk": risk_assessment
+            "risk": {
+                "summary": summary,
+                "risk_level": risk_level,
+                "risk_score": risk_score,
+                "warnings_count": len(all_warnings),
+                "should_trigger_hitl": should_trigger_hitl,
+            }
         },
         "messages": messages,
     }

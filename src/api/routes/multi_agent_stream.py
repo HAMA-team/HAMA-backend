@@ -116,7 +116,8 @@ async def stream_multi_agent_execution(
         stock_names = routing_decision.stock_names
         logger.info(f"🧭 [Router] 추출된 종목명: {stock_names}")
 
-        if "research" in agents_to_call:
+        # research, trading 에이전트는 종목 코드가 필요 (portfolio는 불필요)
+        if any(agent in agents_to_call for agent in ["research", "trading"]):
             # Router가 종목을 추출했으면 사용, 아니면 fallback
             if stock_names:
                 stock_name = stock_names[0]  # 첫 번째 종목 사용
@@ -133,10 +134,17 @@ async def stream_multi_agent_execution(
                 resolved_stock_code = await resolve_stock_code(message)
 
             if not resolved_stock_code:
-                clarification_message = (
-                    "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
-                    "종목명이나 티커(예: 128940)를 알려주시면 분석을 도와드릴게요."
-                )
+                # trading이면 매매 관련 메시지, 아니면 분석 관련 메시지
+                if "trading" in agents_to_call:
+                    clarification_message = (
+                        "어떤 종목을 매매하시겠습니까? "
+                        "종목명이나 티커(예: 086790)를 알려주세요."
+                    )
+                else:
+                    clarification_message = (
+                        "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
+                        "종목명이나 티커(예: 128940)를 알려주시면 분석을 도와드릴게요."
+                    )
                 agents_to_call = ["general"]
 
         yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level, 'stock_names': stock_names}, ensure_ascii=False)}\n\n"
@@ -222,6 +230,139 @@ async def stream_multi_agent_execution(
             elif agent_name == "risk":
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'calculate_risk', 'status': 'running'}, ensure_ascii=False)}\n\n"
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'risk_level': 'MEDIUM', 'max_loss': 0.15}}, ensure_ascii=False)}\n\n"
+
+            elif agent_name == "trading":
+                # Trading Agent 실행
+                from src.agents.trading.graph import build_trading_subgraph
+
+                if not resolved_stock_code:
+                    raise ValueError("매매를 위한 종목 코드를 추출하지 못했습니다.")
+
+                # 수량 추출 (질문에서 "10주", "30주" 등 파싱)
+                quantity_match = re.search(r"(\d+)\s*주", message)
+                quantity = int(quantity_match.group(1)) if quantity_match else 10
+
+                # 매수/매도 구분
+                order_type = "SELL" if "매도" in message else "BUY"
+
+                input_state = {
+                    "messages": [HumanMessage(content=message)],
+                    "stock_code": resolved_stock_code,
+                    "quantity": quantity,
+                    "order_type": order_type,
+                    "user_id": user_id,
+                    "portfolio_id": None,  # 기본 포트폴리오 사용
+                    "automation_level": automation_level,
+                    "query": message,
+                }
+
+                yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'prepare_trade', 'status': 'running', 'message': f'{order_type} 주문 준비 중...'}, ensure_ascii=False)}\n\n"
+
+                try:
+                    # automation_level에 따라 처리 방식 분기
+                    if automation_level == 1:
+                        # Pilot 모드: Trading 서브그래프 완전 실행 (자동 승인)
+                        agent = build_trading_subgraph().compile()
+                        result = await agent.ainvoke(input_state)
+
+                        trade_result = result.get("trade_result", {})
+                        agent_results[agent_name] = result
+
+                        if result.get("trade_executed"):
+                            summary = f"{order_type} {quantity}주 주문이 실행되었습니다. (KIS 주문번호: {trade_result.get('kis_order_no', 'N/A')})"
+                            yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'summary': summary, 'order_id': trade_result.get('order_id'), 'status': 'executed', 'kis_executed': True}}, ensure_ascii=False)}\n\n"
+                        else:
+                            error_msg = result.get("error", "실행 실패")
+                            yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': error_msg}}, ensure_ascii=False)}\n\n"
+
+                    else:
+                        # Copilot/Advisor 모드: 주문 생성만 (HITL 승인 필요)
+                        from src.services import trading_service
+
+                        order = await trading_service.create_pending_order(
+                            user_id=user_id,
+                            portfolio_id=None,
+                            stock_code=resolved_stock_code,
+                            order_type=order_type,
+                            quantity=quantity,
+                            notes=f"멀티 에이전트 요청: {message}"
+                        )
+
+                        agent_results[agent_name] = {"order": order}
+                        summary = f"{order_type} {quantity}주 주문이 생성되었습니다. 승인이 필요합니다."
+
+                        yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'summary': summary, 'order_id': order.get('order_id'), 'status': 'pending', 'requires_approval': True}}, ensure_ascii=False)}\n\n"
+
+                except Exception as e:
+                    logger.error(f"❌ [Trading] 에러: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': str(e)}}, ensure_ascii=False)}\n\n"
+
+            elif agent_name == "portfolio":
+                # Portfolio Agent 실행
+                from src.agents.portfolio.graph import build_portfolio_subgraph
+
+                agent = build_portfolio_subgraph().compile()
+
+                input_state = {
+                    "messages": [HumanMessage(content=message)],
+                    "user_id": user_id,
+                    "portfolio_id": None,  # 기본 포트폴리오 사용
+                    "automation_level": automation_level,
+                    "query": message,
+                    "view_only": True,  # 조회 전용 모드
+                }
+
+                try:
+                    # 노드 실행 이벤트 스트리밍
+                    async for event in agent.astream_events(input_state, version="v2"):
+                        event_type = event["event"]
+
+                        if event_type == "on_chain_start":
+                            node_name = event.get("name", "")
+                            if node_name and node_name != "LangGraph":
+                                yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'running', 'message': f'{node_name} 노드 실행 중...'}, ensure_ascii=False)}\n\n"
+                        elif event_type == "on_chain_end":
+                            node_name = event.get("name", "")
+                            if node_name and node_name != "LangGraph":
+                                yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'complete', 'message': f'{node_name} 완료'}, ensure_ascii=False)}\n\n"
+
+                    # 최종 결과
+                    result = await agent.ainvoke(input_state)
+                    agent_results[agent_name] = result
+
+                    portfolio_report = result.get("portfolio_report", {})
+                    summary = result.get("summary", "포트폴리오 분석 완료")
+
+                    yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'summary': summary, 'rebalancing_needed': portfolio_report.get('rebalancing_needed', False), 'expected_return': portfolio_report.get('expected_return'), 'trades_count': len(portfolio_report.get('trades_required', []))}}, ensure_ascii=False)}\n\n"
+
+                except Exception as e:
+                    logger.error(f"❌ [Portfolio] 에러: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                    # 에러 시 안내 메시지
+                    error_msg = str(e)
+                    if "포트폴리오" in error_msg or "찾을 수 없습니다" in error_msg:
+                        # 포트폴리오가 없는 경우 친절한 안내
+                        friendly_msg = (
+                            "📭 아직 포트폴리오가 없습니다.\n\n"
+                            "포트폴리오를 만들려면:\n"
+                            "1. 원하는 종목을 선택하세요\n"
+                            "2. '삼성전자 10주 매수' 같은 명령으로 매수하세요\n"
+                            "3. 포트폴리오가 자동으로 생성됩니다"
+                        )
+                        agent_results[agent_name] = {
+                            "answer": friendly_msg,
+                            "no_portfolio": True
+                        }
+                        yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': friendly_msg}}, ensure_ascii=False)}\n\n"
+                    else:
+                        agent_results[agent_name] = {
+                            "error": error_msg
+                        }
+                        yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': error_msg}}, ensure_ascii=False)}\n\n"
 
             else:
                 logger.warning("⚠️ [MultiAgentStream] 지원되지 않는 에이전트 요청: %s", agent_name)

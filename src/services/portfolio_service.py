@@ -125,8 +125,11 @@ class PortfolioService:
             portfolio_id=portfolio_id,
         )
         if not resolved_id:
-            logger.warning("[PortfolioService] 포트폴리오 ID를 찾지 못해 기본 데이터를 반환합니다")
-            return self._default_snapshot()
+            logger.error("[PortfolioService] 포트폴리오를 찾을 수 없습니다")
+            raise PortfolioNotFoundError(
+                f"사용자 '{user_id}'의 포트폴리오를 찾을 수 없습니다. "
+                "먼저 종목을 매수하여 포트폴리오를 만들어주세요."
+            )
 
         base_snapshot = await asyncio.to_thread(self._load_snapshot_sync, resolved_id)
         if base_snapshot is None:

@@ -977,7 +977,7 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
     """
     기술적 분석 전문가 (Technical Analyst)
 
-    PRISM-INSIGHT의 Technical Analyst 역할:
+    역할:
     - 주가 및 거래량 기술적 분석
     - 이동평균선 분석 (골든크로스/데드크로스)
     - 지지선/저항선 식별
@@ -1134,7 +1134,7 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
     """
     거래 동향 분석 전문가 (Trading Flow Analyst)
 
-    PRISM-INSIGHT의 Trading Flow Analyst 역할:
+    역할:
     - 투자자별(기관/외국인/개인) 거래 동향 분석
     - 순매수/순매도 추이 분석
     - 주가와의 상관관계 분석
@@ -1279,7 +1279,7 @@ async def information_analyst_worker_node(state: ResearchState) -> ResearchState
     """
     정보 분석 전문가 (Information Analyst)
 
-    PRISM-INSIGHT의 Information Analyst 역할:
+    역할:
     - 뉴스 및 이슈 트렌드 분석
     - 호재/악재 식별
     - 시장 센티먼트 분석
@@ -1413,7 +1413,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     if state.get("error"):
         return state
 
-    logger.info("🤝 [Research/Synthesis] 최종 의견 통합 시작 (PRISM-INSIGHT 패턴)")
+    logger.info("🤝 [Research/Synthesis] 최종 의견 통합 시작 ")
 
     # 기존 분석 결과
     bull = state.get("bull_analysis") or {}
@@ -1622,7 +1622,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         "confidence": confidence,
         "bull_case": bull.get("positive_factors", []),
         "bear_case": bear.get("risk_factors", []),
-        # 전문가 분석 요약 (PRISM-INSIGHT 패턴)
+        # 전문가 분석 요약
         "technical_summary": technical_summary,
         "trading_flow_summary": trading_flow_summary,
         "information_summary": information_summary,

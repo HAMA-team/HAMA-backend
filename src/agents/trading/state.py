@@ -41,6 +41,9 @@ class TradingState(TypedDict):
     hitl_config: HITLConfig
     """자동화 레벨/단계별 HITL 설정"""
 
+    automation_level: Optional[int]
+    """자동화 레벨 (1: Pilot, 2: Copilot, 3: Advisor)"""
+
     # Research 결과 (Buy/Sell Specialist가 참조)
     research_result: Optional[dict]
     """Research Agent의 consensus 결과"""
@@ -61,7 +64,6 @@ class TradingState(TypedDict):
     trade_summary: Optional[dict]
     """주문 생성 요약 데이터"""
 
-    # PRISM-INSIGHT 패턴: Buy/Sell Specialist 결과
     buy_score: Optional[int]
     """매수 점수 (1-10점, 8점 이상 강력 매수)"""
 

@@ -225,10 +225,16 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
         messages.append(AIMessage(content=summary))
 
         # MasterState(GraphState)로 결과 전달
+        # agent_results는 간단한 요약만 포함 (프론트엔드 직렬화 문제 방지)
         return {
             "blueprint": blueprint,  # StrategyState 내부용
             "agent_results": {  # MasterState 공유용
-                "strategy": blueprint
+                "strategy": {
+                    "summary": summary,
+                    "market_cycle": market_outlook.get('cycle', 'expansion'),
+                    "stock_ratio": asset_allocation.get('stocks', 0.7),
+                    "confidence": blueprint["confidence_score"],
+                }
             },
             "messages": messages,
         }

@@ -1,5 +1,5 @@
 """
-Trading Agent 서브그래프 (PRISM-INSIGHT 패턴 적용)
+Trading Agent 서브그래프
 
 매매 실행을 위한 Langgraph 서브그래프
 """
@@ -20,13 +20,12 @@ logger = logging.getLogger(__name__)
 
 def build_trading_subgraph():
     """
-    Trading Agent 서브그래프 생성 (PRISM-INSIGHT 패턴)
+    Trading Agent 서브그래프 생성
 
     Flow:
     prepare_trade → [buy_specialist | sell_specialist] → risk_reward_calculator
     → approval_trade → execute_trade → END
 
-    PRISM-INSIGHT 패턴:
     - buy_specialist: 매수 점수 산정 (1-10점), 매수 근거 생성
     - sell_specialist: 매도 결정 로직, 매도 근거 생성
     - risk_reward_calculator: 손절가/목표가 자동 계산
@@ -72,6 +71,6 @@ def build_trading_subgraph():
 
     workflow.add_edge("execute_trade", END)
 
-    logger.info("✅ [Trading] 서브그래프 빌드 완료 (PRISM-INSIGHT 패턴)")
+    logger.info("✅ [Trading] 서브그래프 빌드 완료")
 
     return workflow

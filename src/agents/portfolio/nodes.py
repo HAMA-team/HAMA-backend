@@ -401,12 +401,69 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     if state.get("error"):
         return state
 
+    current = state.get("current_holdings") or []
+    market_condition = state.get("market_condition", "중립장")
+    view_only = state.get("view_only", False)
+
+    # 조회 전용 모드: 현재 포트폴리오만 표시
+    if view_only:
+        # 현재 보유 종목 정보
+        total_value = state.get("total_value", 0.0)
+        stock_holdings = [h for h in current if h.get("stock_code") != "CASH"]
+        cash = next((h for h in current if h.get("stock_code") == "CASH"), None)
+
+        summary_parts = [
+            f"💼 총 자산: {total_value:,.0f}원",
+            f"📊 보유 종목: {len(stock_holdings)}개",
+        ]
+
+        # 종목별 정보
+        for holding in stock_holdings:
+            stock_name = holding.get("stock_name", "")
+            weight = holding.get("weight", 0.0)
+            value = holding.get("value", 0.0)
+            summary_parts.append(f"  - {stock_name}: {value:,.0f}원 ({weight:.1%})")
+
+        if cash:
+            cash_value = cash.get("value", 0.0)
+            cash_weight = cash.get("weight", 0.0)
+            summary_parts.append(f"  - 예수금: {cash_value:,.0f}원 ({cash_weight:.1%})")
+
+        summary = "\n".join(summary_parts)
+
+        portfolio_report = {
+            "portfolio_id": state.get("portfolio_id"),
+            "total_value": total_value,
+            "current_allocation": current,
+            "market_condition": market_condition,
+            "view_only": True,
+        }
+
+        logger.info("📝 [Portfolio] 조회 전용 리포트 생성 완료")
+
+        messages = list(state.get("messages", []))
+        messages.append(AIMessage(content=summary))
+
+        return {
+            **state,
+            "summary": summary,
+            "portfolio_report": portfolio_report,
+            "agent_results": {
+                "portfolio": {
+                    "summary": summary,
+                    "total_value": total_value,
+                    "holdings_count": len(stock_holdings),
+                    "view_only": True,
+                }
+            },
+            "messages": messages,
+        }
+
+    # 리밸런싱 모드 (기존 로직)
     proposed = state.get("proposed_allocation") or []
     trades = state.get("trades_required") or []
-    current = state.get("current_holdings") or []
     risk_profile = state.get("risk_profile", "moderate")
     violations = state.get("constraint_violations") or []
-    market_condition = state.get("market_condition", "중립장")
     max_slots = state.get("max_slots", 10)
 
     equity_weight = sum(item["weight"] for item in proposed if item["stock_code"] != "CASH")
@@ -463,12 +520,20 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     rebalance_order_id = state.get("rebalance_order_id") or str(uuid.uuid4())
 
     # MasterState(GraphState)로 결과 전달
+    # agent_results는 간단한 요약만 포함 (프론트엔드 직렬화 문제 방지)
     return {
         **state,
         "summary": summary,
         "portfolio_report": portfolio_report,  # PortfolioState 내부용
         "agent_results": {  # MasterState 공유용
-            "portfolio": portfolio_report
+            "portfolio": {
+                "summary": summary,
+                "rebalancing_needed": state.get("rebalancing_needed", False),
+                "expected_return": state.get("expected_return"),
+                "expected_volatility": state.get("expected_volatility"),
+                "trades_count": len(trades) if trades else 0,
+                "market_condition": market_condition,
+            }
         },
         "messages": messages,
         "rebalance_prepared": rebalance_prepared,
