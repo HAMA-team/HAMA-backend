@@ -133,8 +133,11 @@ class PortfolioService:
 
         base_snapshot = await asyncio.to_thread(self._load_snapshot_sync, resolved_id)
         if base_snapshot is None:
-            logger.warning("[PortfolioService] 포트폴리오 스냅샷을 생성하지 못해 기본 데이터를 반환합니다")
-            return self._default_snapshot()
+            logger.error("[PortfolioService] 포트폴리오 데이터를 로드할 수 없습니다")
+            raise PortfolioNotFoundError(
+                f"포트폴리오 ID '{resolved_id}'의 데이터를 찾을 수 없습니다. "
+                "KIS API 동기화를 시도해주세요."
+            )
 
         portfolio_data = base_snapshot["portfolio_data"]
         market_data = base_snapshot["market_data"]

@@ -37,12 +37,17 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
     logger.info(f"📊 [Portfolio] 현재 포트폴리오 스냅샷 조회 - user_id={user_id}, portfolio_id={portfolio_id}")
 
     try:
-        snapshot = await portfolio_service.get_portfolio_snapshot(
+        # 항상 KIS와 동기화하여 최신 데이터 가져오기
+        logger.info("🔄 [Portfolio] KIS API와 실시간 동기화 시작")
+        snapshot = await portfolio_service.sync_with_kis(
             user_id=state.get("user_id"),
             portfolio_id=state.get("portfolio_id"),
         )
+
+        # 동기화 실패 시 DB 캐시 사용
         if snapshot is None or not (snapshot.portfolio_data or {}).get("holdings"):
-            snapshot = await portfolio_service.sync_with_kis(
+            logger.warning("⚠️ [Portfolio] KIS 동기화 실패, DB 캐시 사용")
+            snapshot = await portfolio_service.get_portfolio_snapshot(
                 user_id=state.get("user_id"),
                 portfolio_id=state.get("portfolio_id"),
             )
