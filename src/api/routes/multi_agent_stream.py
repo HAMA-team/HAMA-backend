@@ -378,14 +378,23 @@ async def stream_multi_agent_execution(
         # 5. Master가 결과 집계
         yield f"event: master_aggregating\ndata: {json.dumps({'message': '분석 결과를 종합하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
-        # 6. 답변 개인화
-        personalized = await personalize_response(
-            agent_results=agent_results,
-            user_profile=user_profile,
-            routing_decision=routing_decision.model_dump()
-        )
-
-        final_response = personalized.get("response", "분석이 완료되었습니다.")
+        # 6. 최종 응답 생성
+        # Portfolio/General Agent는 이미 완성된 답변을 가지고 있으므로 직접 사용
+        if "portfolio" in agent_results and agent_results["portfolio"].get("summary"):
+            final_response = agent_results["portfolio"]["summary"]
+            logger.info("✅ [MultiAgentStream] Portfolio Agent 결과 직접 사용")
+        elif "general" in agent_results and agent_results["general"].get("answer"):
+            final_response = agent_results["general"]["answer"]
+            logger.info("✅ [MultiAgentStream] General Agent 결과 직접 사용")
+        else:
+            # Research/Strategy/Risk 등은 개인화 필요
+            personalized = await personalize_response(
+                agent_results=agent_results,
+                user_profile=user_profile,
+                routing_decision=routing_decision.model_dump()
+            )
+            final_response = personalized.get("response", "분석이 완료되었습니다.")
+            logger.info("✅ [MultiAgentStream] Aggregator 개인화 적용")
 
         # 7. 완료
         yield f"event: master_complete\ndata: {json.dumps({'message': final_response, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
