@@ -70,6 +70,10 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
         logger.error(f"❌ [Portfolio] {error_msg}")
         return {**state, "error": error_msg}
 
+    # 디버깅: 실제 조회된 종목 수 로그
+    logger.info(f"✅ [Portfolio] 조회된 종목 수: {len(holdings)}개")
+    logger.debug(f"📋 [Portfolio] 종목 상세: {[h.get('stock_name', h.get('stock_code')) for h in holdings]}")
+
     risk_profile = (
         state.get("risk_profile")
         or profile.get("risk_tolerance")
@@ -421,11 +425,12 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
         for holding in stock_holdings:
             stock_name = holding.get("stock_name", "")
             weight = holding.get("weight", 0.0)
-            value = holding.get("value", 0.0)
-            summary_parts.append(f"  - {stock_name}: {value:,.0f}원 ({weight:.1%})")
+            # market_value 필드 사용 (portfolio_service에서 반환하는 필드명)
+            market_value = holding.get("market_value", holding.get("value", 0.0))
+            summary_parts.append(f"  - {stock_name}: {market_value:,.0f}원 ({weight:.1%})")
 
         if cash:
-            cash_value = cash.get("value", 0.0)
+            cash_value = cash.get("market_value", cash.get("value", 0.0))
             cash_weight = cash.get("weight", 0.0)
             summary_parts.append(f"  - 예수금: {cash_value:,.0f}원 ({cash_weight:.1%})")
 
