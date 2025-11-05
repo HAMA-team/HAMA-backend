@@ -32,7 +32,9 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
     if state.get("error"):
         return state
 
-    logger.info("📊 [Portfolio] 현재 포트폴리오 스냅샷 조회")
+    user_id = state.get("user_id")
+    portfolio_id = state.get("portfolio_id")
+    logger.info(f"📊 [Portfolio] 현재 포트폴리오 스냅샷 조회 - user_id={user_id}, portfolio_id={portfolio_id}")
 
     try:
         snapshot = await portfolio_service.get_portfolio_snapshot(
@@ -72,7 +74,12 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
 
     # 디버깅: 실제 조회된 종목 수 로그
     logger.info(f"✅ [Portfolio] 조회된 종목 수: {len(holdings)}개")
-    logger.debug(f"📋 [Portfolio] 종목 상세: {[h.get('stock_name', h.get('stock_code')) for h in holdings]}")
+    logger.info(f"📋 [Portfolio] RAW DATA - 총 자산: {portfolio_data.get('total_value', 0):,.0f}원")
+    for idx, h in enumerate(holdings, 1):
+        logger.info(f"  [{idx}] {h.get('stock_name', 'N/A')} ({h.get('stock_code', 'N/A')}): "
+                   f"market_value={h.get('market_value', 0):,.0f}원, "
+                   f"weight={h.get('weight', 0):.2%}, "
+                   f"quantity={h.get('quantity', 0)}")
 
     risk_profile = (
         state.get("risk_profile")

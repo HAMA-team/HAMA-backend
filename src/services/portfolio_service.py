@@ -221,6 +221,12 @@ class PortfolioService:
                 .all()
             )
 
+            # 디버깅 로그
+            logger.info(f"🔍 [PortfolioService] DB 조회:")
+            logger.info(f"  - Portfolio ID: {pid}")
+            logger.info(f"  - User ID: {portfolio.user_id if portfolio else 'N/A'}")
+            logger.info(f"  - DB Positions Count: {len(positions)}개")
+
             stock_codes = [pos.stock_code for pos in positions if pos.stock_code and pos.stock_code.upper() != "CASH"]
             stocks: Dict[str, Stock] = {}
             if stock_codes:
@@ -276,6 +282,10 @@ class PortfolioService:
                 "sectors": sector_breakdown,
                 "currency": "KRW",
             }
+
+            # 디버깅 로그 - 최종 결과
+            logger.info(f"  - Total Value: {self._to_float(total_value_dec):,.0f}원")
+            logger.info(f"  - Holdings Count: {len(holdings)}개")
 
             market_data: Dict[str, Any] = {
                 "last_updated": datetime.utcnow().isoformat(),
