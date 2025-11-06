@@ -31,7 +31,7 @@ from src.schemas.settings import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(tags=["settings"])
 
 DEMO_USER_ID = uuid.UUID(str(settings.demo_user_uuid))
 

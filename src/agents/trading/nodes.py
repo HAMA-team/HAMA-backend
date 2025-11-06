@@ -16,21 +16,163 @@ logger = logging.getLogger(__name__)
 
 
 async def prepare_trade_node(state: TradingState) -> dict:
-    """1단계: 주문 생성 및 기본 정보 정리."""
+    """
+    1단계: 주문 생성 및 기본 정보 정리
+
+    LLM을 사용하여 query에서 매수/매도, 수량을 추출합니다.
+    """
     if state.get("trade_prepared"):
         logger.info("⏭️ [Trade] 이미 준비된 주문이 있어 재사용합니다")
         return {}
 
     stock_code = state.get("stock_code")
-    quantity = state.get("quantity")
+    query = state.get("query", "")
     messages = list(state.get("messages", []))
 
-    if not stock_code or not quantity:
-        error = "stock_code와 quantity가 필요합니다."
+    if not stock_code:
+        error = "stock_code가 필요합니다."
         logger.warning("⚠️ [Trade] %s", error)
         return {**state, "error": error, "messages": messages}
 
-    order_type = (state.get("order_type") or "BUY").upper()
+    # 1. LLM으로 query 분석 (order_type, quantity 추출)
+    logger.info("🔍 [Trade] 주문 내용 분석 중: %s", query)
+
+    llm = get_llm(max_tokens=500, temperature=0)
+
+    analysis_prompt = f"""다음 요청을 분석하세요:
+
+요청: "{query}"
+종목코드: {stock_code}
+
+먼저 이것이 **조회 요청**인지 **매매 요청**인지 판단하세요.
+
+**조회 요청 예시** (이런 경우 is_query_only: true):
+- "삼성전자 몇 주 있지?"
+- "현재 보유 중인 삼성전자 수량은?"
+- "삼성전자 얼마나 가지고 있어?"
+- "내가 삼성전자 있어?"
+
+**매매 요청 예시** (이런 경우 is_query_only: false):
+- "삼성전자 10주 매수"
+- "삼성전자 가지고 있는거 다 팔아"
+- "삼성전자 50% 매도"
+
+다음 정보를 JSON 형식으로 추출하세요:
+{{
+  "is_query_only": true | false,
+  "order_type": "BUY" | "SELL" | null,
+  "quantity_type": "specific" | "all" | "percentage" | null,
+  "quantity_value": <숫자> | null,
+  "reasoning": "판단 근거"
+}}
+
+규칙:
+- is_query_only: 단순 조회 요청이면 true, 매매 요청이면 false
+- 조회 요청(is_query_only: true)이면 order_type, quantity_type, quantity_value는 null
+- 매매 요청(is_query_only: false)이면:
+  * order_type: 매수 관련 키워드(매수, 사다, buy) → BUY / 매도 관련 키워드(매도, 팔다, 판다, 청산, 전량, sell) → SELL
+  * quantity_type:
+    - "specific": "10주", "20주" 같이 명확한 수량 지정
+    - "all": "전량", "다 팔아", "모두" 같이 보유 전체 매도
+    - "percentage": "50%", "절반" 같이 비율 지정
+  * quantity_value:
+    - specific → 주문 수량
+    - all → 0 (나중에 포트폴리오에서 조회)
+    - percentage → 비율 (예: 50)
+
+예시:
+- "삼성전자 몇 주 있지?" → {{"is_query_only": true, "order_type": null, "quantity_type": null, "quantity_value": null}}
+- "삼성전자 10주 매수" → {{"is_query_only": false, "order_type": "BUY", "quantity_type": "specific", "quantity_value": 10}}
+- "삼성전자 가지고 있는거 다 팔아" → {{"is_query_only": false, "order_type": "SELL", "quantity_type": "all", "quantity_value": 0}}
+"""
+
+    try:
+        response = await llm.ainvoke(analysis_prompt)
+        analysis = safe_json_parse(response.content, "TradingAnalysis")
+
+        if not isinstance(analysis, dict):
+            raise ValueError("LLM 응답을 파싱할 수 없습니다")
+
+        is_query_only = analysis.get("is_query_only", False)
+        reasoning = analysis.get("reasoning", "")
+
+        # 조회 요청인 경우 에러 반환 (Portfolio Agent가 처리해야 함)
+        if is_query_only:
+            error = f"보유 수량 조회는 Portfolio Agent에서 처리합니다. 매매 요청이 아닙니다."
+            logger.info("⏭️ [Trade] 조회 요청 감지 - Portfolio로 이동 필요: %s", query)
+            return {**state, "error": error, "is_query_only": True, "messages": messages}
+
+        order_type = analysis.get("order_type", "BUY")
+        if order_type:
+            order_type = order_type.upper()
+        else:
+            order_type = "BUY"
+
+        quantity_type = analysis.get("quantity_type", "specific")
+        quantity_value = analysis.get("quantity_value", 10)
+
+        logger.info("✅ [Trade] 분석 완료: %s, %s, %d - %s",
+                   order_type, quantity_type, quantity_value if quantity_value else 0, reasoning)
+
+        # 2. 수량 계산
+        quantity = quantity_value
+
+        # "전량 매도"인 경우 포트폴리오에서 보유 수량 조회
+        if quantity_type == "all" and order_type == "SELL":
+            from src.services import portfolio_service
+            try:
+                snapshot = await portfolio_service.get_portfolio_snapshot(
+                    user_id=state.get("user_id"),
+                    portfolio_id=state.get("portfolio_id")
+                )
+                if snapshot and snapshot.portfolio_data:
+                    holdings = snapshot.portfolio_data.get("holdings", [])
+                    for holding in holdings:
+                        if holding.get("stock_code") == stock_code:
+                            quantity = int(holding.get("quantity", 0))
+                            logger.info("📊 [Trade] 보유 수량 조회: %d주", quantity)
+                            break
+
+                if quantity == 0:
+                    error = f"{stock_code} 종목을 보유하고 있지 않습니다."
+                    logger.warning("⚠️ [Trade] %s", error)
+                    return {**state, "error": error, "messages": messages}
+            except Exception as exc:
+                logger.warning("⚠️ [Trade] 포트폴리오 조회 실패, 기본값 사용: %s", exc)
+                quantity = 10  # fallback
+
+        # "비율 매도"인 경우 계산
+        elif quantity_type == "percentage":
+            from src.services import portfolio_service
+            try:
+                snapshot = await portfolio_service.get_portfolio_snapshot(
+                    user_id=state.get("user_id"),
+                    portfolio_id=state.get("portfolio_id")
+                )
+                if snapshot and snapshot.portfolio_data:
+                    holdings = snapshot.portfolio_data.get("holdings", [])
+                    for holding in holdings:
+                        if holding.get("stock_code") == stock_code:
+                            total_quantity = int(holding.get("quantity", 0))
+                            quantity = int(total_quantity * quantity_value / 100)
+                            logger.info("📊 [Trade] %d%% 계산: %d주 / %d주",
+                                       quantity_value, quantity, total_quantity)
+                            break
+            except Exception as exc:
+                logger.warning("⚠️ [Trade] 비율 계산 실패: %s", exc)
+
+        if quantity <= 0:
+            error = "주문 수량이 0 이하입니다."
+            logger.warning("⚠️ [Trade] %s", error)
+            return {**state, "error": error, "messages": messages}
+
+    except Exception as exc:
+        logger.error("❌ [Trade] 주문 분석 실패: %s", exc)
+        # Fallback: 기존 state에서 가져오기
+        order_type = (state.get("order_type") or "BUY").upper()
+        quantity = state.get("quantity", 10)
+
+    # 3. 주문 생성
     try:
         order = await trading_service.create_pending_order(
             user_id=state.get("user_id"),
@@ -40,7 +182,7 @@ async def prepare_trade_node(state: TradingState) -> dict:
             quantity=int(quantity),
             order_price=state.get("order_price"),
             order_price_type=state.get("order_price_type"),
-            notes=state.get("order_note"),
+            notes=state.get("order_note") or query,
         )
     except PortfolioNotFoundError as exc:
         logger.error("❌ [Trade] 포트폴리오가 존재하지 않습니다: %s", exc)
@@ -49,13 +191,15 @@ async def prepare_trade_node(state: TradingState) -> dict:
         logger.exception("❌ [Trade] 주문 생성 실패: %s", exc)
         return {**state, "error": str(exc), "messages": messages}
 
-    logger.info("✅ [Trade] 주문 생성 완료: %s", order["order_id"])
+    logger.info("✅ [Trade] 주문 생성 완료: %s (%s %d주)", order["order_id"], order_type, quantity)
 
     return {
         "trade_prepared": True,
         "trade_order_id": order["order_id"],
         "trade_summary": order,
         "portfolio_id": order.get("portfolio_id") or state.get("portfolio_id"),
+        "order_type": order_type,  # State에 저장 (다른 노드에서 참조)
+        "quantity": quantity,
         "messages": messages,
     }
 

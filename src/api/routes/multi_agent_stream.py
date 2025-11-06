@@ -13,7 +13,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 
-from src.agents.aggregator import personalize_response
 from src.agents.router import route_query
 from src.services.stock_data_service import stock_data_service
 from src.services.user_profile_service import user_profile_service
@@ -63,6 +62,52 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3)
+
+
+def _format_agent_results(agent_results: dict) -> str:
+    """
+    에이전트 결과를 읽을 수 있는 텍스트로 포맷팅
+
+    Args:
+        agent_results: 에이전트 실행 결과 딕셔너리
+
+    Returns:
+        포맷팅된 텍스트 응답
+    """
+    response_parts = []
+
+    # Research Agent 결과
+    if "research" in agent_results:
+        research = agent_results["research"]
+        if research.get("summary"):
+            response_parts.append("## 📊 종목 분석\n")
+            response_parts.append(research["summary"])
+
+    # Strategy Agent 결과
+    if "strategy" in agent_results:
+        strategy = agent_results["strategy"]
+        if strategy.get("summary"):
+            response_parts.append("\n\n## 📈 투자 전략\n")
+            response_parts.append(strategy["summary"])
+
+    # Risk Agent 결과
+    if "risk" in agent_results:
+        risk = agent_results["risk"]
+        if risk.get("summary"):
+            response_parts.append("\n\n## ⚠️ 리스크 분석\n")
+            response_parts.append(risk["summary"])
+
+    # Trading Agent 결과
+    if "trading" in agent_results:
+        trading = agent_results["trading"]
+        if trading.get("summary"):
+            response_parts.append("\n\n## 💼 매매 실행\n")
+            response_parts.append(trading["summary"])
+
+    if not response_parts:
+        return "분석이 완료되었습니다."
+
+    return "\n".join(response_parts)
 
 
 async def stream_multi_agent_execution(
@@ -238,35 +283,34 @@ async def stream_multi_agent_execution(
                 if not resolved_stock_code:
                     raise ValueError("매매를 위한 종목 코드를 추출하지 못했습니다.")
 
-                # 수량 추출 (질문에서 "10주", "30주" 등 파싱)
-                quantity_match = re.search(r"(\d+)\s*주", message)
-                quantity = int(quantity_match.group(1)) if quantity_match else 10
-
-                # 매수/매도 구분
-                order_type = "SELL" if "매도" in message else "BUY"
-
+                # 원문(query)을 그대로 Trading Agent에 전달
+                # Trading Agent 내부에서 LLM으로 매수/매도, 수량 분석
                 input_state = {
                     "messages": [HumanMessage(content=message)],
                     "stock_code": resolved_stock_code,
-                    "quantity": quantity,
-                    "order_type": order_type,
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
                     "automation_level": automation_level,
                     "query": message,
+                    # order_type, quantity는 Trading Agent에서 LLM으로 추출
                 }
 
-                yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'prepare_trade', 'status': 'running', 'message': f'{order_type} 주문 준비 중...'}, ensure_ascii=False)}\n\n"
+                yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'prepare_trade', 'status': 'running', 'message': '주문 분석 중...'}, ensure_ascii=False)}\n\n"
 
                 try:
+                    # 모든 automation level에서 Trading 서브그래프 사용
+                    agent = build_trading_subgraph().compile()
+
                     # automation_level에 따라 처리 방식 분기
                     if automation_level == 1:
                         # Pilot 모드: Trading 서브그래프 완전 실행 (자동 승인)
-                        agent = build_trading_subgraph().compile()
                         result = await agent.ainvoke(input_state)
 
                         trade_result = result.get("trade_result", {})
                         agent_results[agent_name] = result
+
+                        order_type = result.get("order_type", "BUY")
+                        quantity = result.get("quantity", 0)
 
                         if result.get("trade_executed"):
                             summary = f"{order_type} {quantity}주 주문이 실행되었습니다. (KIS 주문번호: {trade_result.get('kis_order_no', 'N/A')})"
@@ -276,22 +320,157 @@ async def stream_multi_agent_execution(
                             yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': error_msg}}, ensure_ascii=False)}\n\n"
 
                     else:
-                        # Copilot/Advisor 모드: 주문 생성만 (HITL 승인 필요)
-                        from src.services import trading_service
+                        # Copilot/Advisor 모드: prepare_trade까지만 실행 (주문 생성만)
+                        # Trading 서브그래프의 prepare_trade 노드만 실행
+                        from src.agents.trading.nodes import prepare_trade_node
 
-                        order = await trading_service.create_pending_order(
-                            user_id=user_id,
-                            portfolio_id=None,
-                            stock_code=resolved_stock_code,
-                            order_type=order_type,
-                            quantity=quantity,
-                            notes=f"멀티 에이전트 요청: {message}"
-                        )
+                        # prepare_trade_node 실행하여 order_type, quantity 추출
+                        prepare_result = await prepare_trade_node(input_state)
 
-                        agent_results[agent_name] = {"order": order}
+                        if prepare_result.get("error"):
+                            error_msg = prepare_result.get("error")
+
+                            # 조회 요청인 경우 Portfolio Agent로 fallback
+                            if prepare_result.get("is_query_only"):
+                                logger.info(f"⏭️ [Trading] 조회 요청 감지 - Portfolio Agent로 전환")
+
+                                # Portfolio Agent 실행
+                                from src.agents.portfolio.graph import build_portfolio_subgraph
+                                portfolio_agent = build_portfolio_subgraph().compile()
+
+                                # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
+                                portfolio_input = {
+                                    "messages": [HumanMessage(content=message)],
+                                    "user_id": user_id,
+                                    "portfolio_id": None,
+                                    "automation_level": automation_level,
+                                    "query": message,  # Portfolio Agent가 query 분석
+                                    "view_only": True,
+                                }
+
+                                try:
+                                    portfolio_result = await portfolio_agent.ainvoke(portfolio_input)
+                                    agent_results["portfolio"] = portfolio_result
+
+                                    summary = portfolio_result.get("summary", "포트폴리오 조회 완료")
+                                    yield f"event: agent_complete\ndata: {json.dumps({'agent': 'portfolio', 'result': {'summary': summary}}, ensure_ascii=False)}\n\n"
+                                    break
+                                except Exception as e:
+                                    logger.error(f"❌ [Portfolio] 에러: {e}")
+                                    yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': str(e)}}, ensure_ascii=False)}\n\n"
+                                    continue
+                            else:
+                                # 일반 에러
+                                logger.error(f"❌ [Trading] 주문 준비 실패: {error_msg}")
+                                yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': error_msg}}, ensure_ascii=False)}\n\n"
+                                continue
+
+                        order = prepare_result.get("trade_summary", {})
+                        order_type = prepare_result.get("order_type", "BUY")
+                        quantity = prepare_result.get("quantity", 0)
+
+                        # 포트폴리오 정보 조회 (비중, 보유 단가, 수익/손실 계산용)
+                        current_weight = 0.0
+                        expected_weight = 0.0
+                        stock_name = ""
+                        current_price = 0
+                        average_price = 0  # 보유 단가
+                        profit_loss = 0  # 수익/손실 금액
+                        profit_loss_rate = 0  # 수익률
+
+                        try:
+                            from src.services import portfolio_service
+                            from src.models.stock import Stock
+
+                            # 종목명 조회
+                            with get_db_context() as db:
+                                stock = db.query(Stock).filter(Stock.stock_code == resolved_stock_code).first()
+                                if stock:
+                                    stock_name = stock.stock_name
+
+                            # 현재가 조회
+                            price_df = await stock_data_service.get_stock_price(resolved_stock_code, days=1)
+                            if price_df is not None and not price_df.empty:
+                                current_price = float(price_df["Close"].iloc[-1])
+
+                            # 포트폴리오 스냅샷 조회
+                            snapshot = await portfolio_service.get_portfolio_snapshot(
+                                user_id=user_id,
+                                portfolio_id=None
+                            )
+                            if snapshot and snapshot.portfolio_data:
+                                holdings = snapshot.portfolio_data.get("holdings", [])
+                                total_value = float(snapshot.portfolio_data.get("total_value", 0))
+
+                                # 현재 비중 및 보유 단가 조회
+                                for holding in holdings:
+                                    if holding.get("stock_code") == resolved_stock_code:
+                                        current_weight = float(holding.get("weight", 0))
+                                        average_price = float(holding.get("average_price", 0))
+                                        break
+
+                                # 수익/손실 계산 (매도 시)
+                                if order_type == "SELL" and average_price > 0:
+                                    profit_loss = (current_price - average_price) * quantity
+                                    profit_loss_rate = ((current_price - average_price) / average_price) * 100
+
+                                # 예상 비중 계산
+                                if total_value > 0 and current_price > 0:
+                                    order_value = current_price * quantity
+                                    if order_type == "BUY":
+                                        new_total = total_value + order_value
+                                        current_holding_value = total_value * current_weight
+                                        expected_weight = (current_holding_value + order_value) / new_total
+                                    else:  # SELL
+                                        new_total = total_value - order_value
+                                        current_holding_value = total_value * current_weight
+                                        expected_weight = max(0, (current_holding_value - order_value) / new_total) if new_total > 0 else 0
+
+                        except Exception as e:
+                            logger.warning(f"⚠️ [Trading] 상세 정보 계산 실패: {e}")
+                            import traceback
+                            traceback.print_exc()
+
+                        # agent_results에 상세 정보 저장 (Aggregator 전달용)
+                        trading_result = {
+                            'order': order,
+                            'order_type': order_type,
+                            'stock_code': resolved_stock_code,
+                            'stock_name': stock_name or resolved_stock_code,
+                            'quantity': quantity,
+                            'price': current_price,
+                            'total_amount': current_price * quantity,
+                            'average_price': average_price,  # 보유 단가
+                            'profit_loss': profit_loss,  # 수익/손실 금액
+                            'profit_loss_rate': profit_loss_rate,  # 수익률 (%)
+                            'current_weight': current_weight,
+                            'expected_weight': expected_weight,
+                            'status': 'pending',
+                            'requires_approval': True,
+                        }
+
+                        agent_results[agent_name] = trading_result
                         summary = f"{order_type} {quantity}주 주문이 생성되었습니다. 승인이 필요합니다."
+                        logger.info(f"✅ [Trading] Copilot 모드: {summary}")
 
-                        yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'summary': summary, 'order_id': order.get('order_id'), 'status': 'pending', 'requires_approval': True}}, ensure_ascii=False)}\n\n"
+                        # HITL 패널을 위한 상세 정보 포함 (프론트엔드 전달용)
+                        result_data = {
+                            'summary': summary,
+                            'order_id': order.get('order_id'),
+                            'status': 'pending',
+                            'requires_approval': True,
+                            # 프론트엔드 HITL 패널 필수 정보
+                            'stock_code': resolved_stock_code,
+                            'stock_name': stock_name or resolved_stock_code,
+                            'action': order_type,
+                            'quantity': quantity,
+                            'price': current_price,
+                            'total_amount': current_price * quantity,
+                            'current_weight': round(current_weight * 100, 2),  # 퍼센트로 변환
+                            'expected_weight': round(expected_weight * 100, 2),  # 퍼센트로 변환
+                        }
+
+                        yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': result_data}, ensure_ascii=False)}\n\n"
 
                 except Exception as e:
                     logger.error(f"❌ [Trading] 에러: {e}")
@@ -305,12 +484,13 @@ async def stream_multi_agent_execution(
 
                 agent = build_portfolio_subgraph().compile()
 
+                # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
                 input_state = {
                     "messages": [HumanMessage(content=message)],
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
                     "automation_level": automation_level,
-                    "query": message,
+                    "query": message,  # Portfolio Agent가 query 분석
                     "view_only": True,  # 조회 전용 모드
                 }
 
@@ -387,14 +567,12 @@ async def stream_multi_agent_execution(
             final_response = agent_results["general"]["answer"]
             logger.info("✅ [MultiAgentStream] General Agent 결과 직접 사용")
         else:
-            # Research/Strategy/Risk 등은 개인화 필요
-            personalized = await personalize_response(
-                agent_results=agent_results,
-                user_profile=user_profile,
-                routing_decision=routing_decision.model_dump()
-            )
-            final_response = personalized.get("response", "분석이 완료되었습니다.")
-            logger.info("✅ [MultiAgentStream] Aggregator 개인화 적용")
+            # 개인화 없이 agent_results 직접 포맷팅
+            final_response = _format_agent_results(agent_results)
+            logger.info("✅ [MultiAgentStream] Agent 결과 직접 포맷팅")
+
+        # 최종 답변 로그 출력 (디버깅용)
+        logger.info("📝 [MultiAgentStream] 최종 답변: %s", final_response[:200] if len(final_response) > 200 else final_response)
 
         # 7. 완료
         yield f"event: master_complete\ndata: {json.dumps({'message': final_response, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"

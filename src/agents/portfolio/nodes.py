@@ -27,6 +27,107 @@ from src.services import (
 logger = logging.getLogger(__name__)
 
 
+async def analyze_query_node(state: PortfolioState) -> PortfolioState:
+    """
+    Query 분석 노드 (ReAct 패턴)
+
+    사용자 질의를 분석하여:
+    1. 특정 종목 조회 요청인지 판단
+    2. 종목명 추출 및 코드 변환
+    3. state에 stock_code 저장
+    """
+    if state.get("error"):
+        return state
+
+    query = state.get("query", "")
+
+    # stock_code가 이미 있으면 skip (외부에서 전달된 경우)
+    if state.get("stock_code"):
+        logger.info(f"🔍 [Portfolio] 종목 코드 이미 제공됨: {state.get('stock_code')}")
+        return state
+
+    if not query:
+        logger.info("⏭️ [Portfolio] query 없음 - 전체 조회")
+        return state
+
+    # LLM으로 query 분석
+    from src.utils.llm_factory import get_llm
+    from src.utils.json_parser import safe_json_parse
+
+    llm = get_llm(max_tokens=300, temperature=0)
+
+    analysis_prompt = f"""다음 질문을 분석하세요:
+
+질문: "{query}"
+
+이 질문이 **특정 종목의 보유 수량/정보 조회**인지 판단하세요.
+
+**특정 종목 조회 예시**:
+- "삼성전자 몇 주 있어?"
+- "나 LG화학 있니?"
+- "하이닉스 보유 현황"
+
+**전체 포트폴리오 조회 예시**:
+- "내 포트폴리오 보여줘"
+- "전체 자산 알려줘"
+- "리밸런싱 해줘"
+
+JSON 형식으로 답변하세요:
+{{
+  "is_specific_stock_query": true | false,
+  "stock_name": "종목명" | null,
+  "reasoning": "판단 근거"
+}}
+
+규칙:
+- 특정 종목명이 명확히 언급되면 is_specific_stock_query: true
+- 종목명은 정규화된 형태로 반환 (예: "하이닉스" → "SK하이닉스", "LG 화학" → "LG화학")
+"""
+
+    try:
+        response = await llm.ainvoke(analysis_prompt)
+        analysis = safe_json_parse(response.content, "PortfolioQueryAnalysis")
+
+        if not isinstance(analysis, dict):
+            logger.warning("⚠️ [Portfolio] query 분석 실패, 전체 조회로 진행")
+            return state
+
+        is_specific = analysis.get("is_specific_stock_query", False)
+        stock_name = analysis.get("stock_name")
+        reasoning = analysis.get("reasoning", "")
+
+        logger.info(f"✅ [Portfolio] Query 분석: specific={is_specific}, stock_name={stock_name}")
+        logger.info(f"   근거: {reasoning}")
+
+        if not is_specific or not stock_name:
+            logger.info("⏭️ [Portfolio] 전체 포트폴리오 조회")
+            return state
+
+        # 종목 코드 변환
+        from src.services.stock_data_service import stock_data_service
+
+        stock_code = None
+        for market in ("KOSPI", "KOSDAQ", "KONEX"):
+            code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+            if code:
+                stock_code = code
+                logger.info(f"✅ [Portfolio] 종목 코드 변환: {stock_name} → {code}")
+                break
+
+        if not stock_code:
+            logger.warning(f"⚠️ [Portfolio] 종목 코드 변환 실패: {stock_name}")
+            return state
+
+        return {
+            **state,
+            "stock_code": stock_code,
+        }
+
+    except Exception as exc:
+        logger.error(f"❌ [Portfolio] Query 분석 실패: {exc}")
+        return state
+
+
 async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
     """포트폴리오 스냅샷 수집 노드 (KIS API 연동)."""
     if state.get("error"):
@@ -77,6 +178,18 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
         logger.error(f"❌ [Portfolio] {error_msg}")
         return {**state, "error": error_msg}
 
+    # 특정 종목 필터링 (stock_code가 있는 경우)
+    stock_code_filter = state.get("stock_code")
+    if stock_code_filter:
+        logger.info(f"🔍 [Portfolio] 특정 종목 필터링: {stock_code_filter}")
+        filtered_holdings = [h for h in holdings if h.get("stock_code") == stock_code_filter]
+        if not filtered_holdings:
+            error_msg = f"{stock_code_filter} 종목을 포트폴리오에서 찾을 수 없습니다."
+            logger.warning(f"⚠️ [Portfolio] {error_msg}")
+            return {**state, "error": error_msg}
+        holdings = filtered_holdings
+        logger.info(f"✅ [Portfolio] 필터링된 종목: {len(holdings)}개")
+
     # 디버깅: 실제 조회된 종목 수 로그
     logger.info(f"✅ [Portfolio] 조회된 종목 수: {len(holdings)}개")
     logger.info(f"📋 [Portfolio] RAW DATA - 총 자산: {portfolio_data.get('total_value', 0):,.0f}원")
@@ -98,6 +211,7 @@ async def collect_portfolio_node(state: PortfolioState) -> PortfolioState:
         "portfolio_id": portfolio_data.get("portfolio_id") or state.get("portfolio_id"),
         "total_value": float(portfolio_data.get("total_value", 0.0)),
         "current_holdings": holdings,
+        "stock_code_filter": stock_code_filter,  # 필터링 정보 저장
         "risk_profile": risk_profile,
         "portfolio_profile": profile,
         "portfolio_snapshot": {
@@ -427,26 +541,59 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
         total_value = state.get("total_value", 0.0)
         stock_holdings = [h for h in current if h.get("stock_code") != "CASH"]
         cash = next((h for h in current if h.get("stock_code") == "CASH"), None)
+        stock_code_filter = state.get("stock_code_filter")
 
-        summary_parts = [
-            f"💼 총 자산: {total_value:,.0f}원",
-            f"📊 보유 종목: {len(stock_holdings)}개",
-        ]
-
-        # 종목별 정보
-        for holding in stock_holdings:
+        # 특정 종목만 조회하는 경우 간결한 답변 + 포트폴리오 컨텍스트
+        if stock_code_filter and len(stock_holdings) == 1:
+            holding = stock_holdings[0]
             stock_name = holding.get("stock_name", "")
-            weight = holding.get("weight", 0.0)
-            # market_value 필드 사용 (portfolio_service에서 반환하는 필드명)
+            quantity = holding.get("quantity", 0)
             market_value = holding.get("market_value", holding.get("value", 0.0))
-            summary_parts.append(f"  - {stock_name}: {market_value:,.0f}원 ({weight:.1%})")
+            weight = holding.get("weight", 0.0)
+            average_price = holding.get("average_price", 0.0)
 
-        if cash:
-            cash_value = cash.get("market_value", cash.get("value", 0.0))
-            cash_weight = cash.get("weight", 0.0)
-            summary_parts.append(f"  - 예수금: {cash_value:,.0f}원 ({cash_weight:.1%})")
+            # 현금 정보 조회
+            cash_balance = 0.0
+            cash_weight = 0.0
+            if cash:
+                cash_balance = cash.get("market_value", cash.get("value", 0.0))
+                cash_weight = cash.get("weight", 0.0)
 
-        summary = "\n".join(summary_parts)
+            summary_parts = [
+                f"📊 **{stock_name}** 보유 현황:",
+                f"  - 수량: **{quantity}주**",
+                f"  - 평가 금액: {market_value:,.0f}원",
+                f"  - 평균 단가: {average_price:,.0f}원",
+                f"  - 포트폴리오 비중: {weight:.1%}",
+                "",
+                f"💼 전체 포트폴리오:",
+                f"  - 총 자산: {total_value:,.0f}원",
+                f"  - 주식 평가액: {market_value:,.0f}원 ({weight:.1%})",
+                f"  - 예수금: {cash_balance:,.0f}원 ({cash_weight:.1%})",
+            ]
+            summary = "\n".join(summary_parts)
+
+        else:
+            # 전체 포트폴리오 조회
+            summary_parts = [
+                f"💼 총 자산: {total_value:,.0f}원",
+                f"📊 보유 종목: {len(stock_holdings)}개",
+            ]
+
+            # 종목별 정보
+            for holding in stock_holdings:
+                stock_name = holding.get("stock_name", "")
+                weight = holding.get("weight", 0.0)
+                # market_value 필드 사용 (portfolio_service에서 반환하는 필드명)
+                market_value = holding.get("market_value", holding.get("value", 0.0))
+                summary_parts.append(f"  - {stock_name}: {market_value:,.0f}원 ({weight:.1%})")
+
+            if cash:
+                cash_value = cash.get("market_value", cash.get("value", 0.0))
+                cash_weight = cash.get("weight", 0.0)
+                summary_parts.append(f"  - 예수금: {cash_value:,.0f}원 ({cash_weight:.1%})")
+
+            summary = "\n".join(summary_parts)
 
         portfolio_report = {
             "portfolio_id": state.get("portfolio_id"),

@@ -753,7 +753,8 @@ async def approve_action(
             metadata=decision_metadata,
         )
 
-        app = build_graph(automation_level=legacy_level, backend_key="redis")
+        # Redis checkpointer는 async를 지원하지 않으므로 memory 사용
+        app = build_graph(automation_level=legacy_level, backend_key="memory")
 
         config: RunnableConfig = {
             "configurable": {
@@ -830,7 +831,9 @@ async def approve_action(
             )
 
         if approval.decision == "rejected":
+            # LangGraph aupdate_state 시그니처: aupdate_state(config, values, as_node=None)
             await configured_app.aupdate_state(
+                config,
                 {
                     "final_response": {
                         "summary": "사용자가 거부함",
@@ -904,7 +907,10 @@ async def approve_action(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"❌ [Approve] 승인 처리 실패: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(
             status_code=500,
-            detail=f"Approval processing error: {str(e)}",
+            detail=f"Approval processing error: {str(e) or type(e).__name__}",
         )

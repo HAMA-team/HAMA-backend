@@ -8,6 +8,7 @@ import logging
 
 from .state import PortfolioState
 from .nodes import (
+    analyze_query_node,
     collect_portfolio_node,
     market_condition_node,
     optimize_allocation_node,
@@ -40,7 +41,7 @@ def build_portfolio_subgraph():
     Portfolio Agent 서브그래프 생성
 
     Flow:
-    collect_portfolio → market_condition → summary
+    analyze_query → collect_portfolio → market_condition → summary
 
     조건부 분기:
     - view_only=True: summary → END (조회만)
@@ -48,6 +49,7 @@ def build_portfolio_subgraph():
                       → approval_rebalance → execute_rebalance → END
 
     새로운 기능:
+    - analyze_query: query에서 특정 종목 조회 여부 판단 (ReAct 패턴)
     - view_only: 조회 전용 모드
     - market_condition: 시장 상황 분석
     - validate_constraints: 포트폴리오 제약 조건 검증
@@ -57,6 +59,7 @@ def build_portfolio_subgraph():
     workflow = StateGraph(PortfolioState)
 
     # 노드 추가
+    workflow.add_node("analyze_query", analyze_query_node)
     workflow.add_node("collect_portfolio", collect_portfolio_node)
     workflow.add_node("market_condition", market_condition_node)
     workflow.add_node("summary", summary_node)
@@ -67,7 +70,8 @@ def build_portfolio_subgraph():
     workflow.add_node("execute_rebalance", execute_rebalance_node)
 
     # 플로우 정의
-    workflow.set_entry_point("collect_portfolio")
+    workflow.set_entry_point("analyze_query")
+    workflow.add_edge("analyze_query", "collect_portfolio")
     workflow.add_edge("collect_portfolio", "market_condition")
     workflow.add_edge("market_condition", "summary")
 
