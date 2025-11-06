@@ -21,11 +21,12 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 import requests
 from requests.exceptions import RequestException
 
 from src.config.settings import settings
-from src.constants.kis_constants import KIS_BASE_URLS, KIS_ENDPOINTS, KIS_TR_IDS
+from src.constants.kis_constants import KIS_BASE_URLS, KIS_ENDPOINTS, KIS_TR_IDS, INDEX_CODES
 from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
@@ -546,6 +547,162 @@ class KISService:
 
         logger.info(f"✅ [KIS] 주문 접수 완료: {order_no} ({order_type} {quantity}주)")
         return response
+
+    # ==================== 지수 조회 ====================
+
+    async def get_index_price(self, index_code: str) -> Optional[Dict[str, Any]]:
+        """
+        국내업종 현재지수 조회
+
+        Args:
+            index_code: 지수 코드 (ex. "0001": KOSPI, "1001": KOSDAQ, "2001": KOSPI200)
+
+        Returns:
+            {
+                "index_code": "0001",
+                "index_name": "KOSPI",
+                "current_price": 2500.12,
+                "change": 10.5,
+                "change_rate": 0.42,
+                "volume": 500000000,
+                "timestamp": "2025-11-06T..."
+            }
+
+        Raises:
+            KISAPIError: API 호출 실패 시
+        """
+        logger.info(f"📊 [KIS] 지수 조회: {index_code}")
+
+        # 캐시 확인
+        cache_key = f"kis_index_price:{index_code}"
+        cached = cache_manager.get(cache_key)
+        if cached:
+            logger.debug(f"✅ [KIS] 지수 캐시 히트: {index_code}")
+            return cached
+
+        # API 호출
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "U",  # 업종
+            "FID_INPUT_ISCD": index_code,
+        }
+
+        result = await self._api_call(
+            KIS_ENDPOINTS["index_price"],
+            KIS_TR_IDS["index_price"],
+            params
+        )
+
+        # output 파싱
+        output = result.get("output")
+        if not output:
+            logger.error(f"❌ [KIS] 지수 데이터 없음: {index_code}")
+            return None
+
+        # 응답 데이터 변환
+        response = {
+            "index_code": index_code,
+            "index_name": output.get("hts_kor_isnm", ""),  # 지수명
+            "current_price": float(output.get("bstp_nmix_prpr", 0)),  # 현재가
+            "change": float(output.get("bstp_nmix_prdy_vrss", 0)),  # 전일대비
+            "change_rate": float(output.get("prdy_vrss_sign", 0)),  # 등락률
+            "volume": int(output.get("acml_vol", 0)),  # 누적거래량
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        # 캐싱 (60초)
+        cache_manager.set(cache_key, response, ttl=60)
+
+        logger.info(f"✅ [KIS] 지수 조회 완료: {index_code} = {response['current_price']}")
+        return response
+
+    async def get_index_daily_price(
+        self,
+        index_code: str,
+        period: str = "D",  # D: 일별, W: 주별, M: 월별
+        start_date: Optional[str] = None,
+        days: int = 60,
+    ) -> Optional[pd.DataFrame]:
+        """
+        국내업종 일자별지수 조회 (OHLCV)
+
+        Args:
+            index_code: 지수 코드 (ex. "0001": KOSPI)
+            period: 기간 구분 (D: 일별, W: 주별, M: 월별)
+            start_date: 시작일 (YYYYMMDD), None이면 days 기준
+            days: 조회 일수 (start_date가 None일 때)
+
+        Returns:
+            DataFrame with columns: Date, Open, High, Low, Close, Volume
+
+        Raises:
+            KISAPIError: API 호출 실패 시
+        """
+        logger.info(f"📊 [KIS] 지수 일자별 조회: {index_code} (period={period}, days={days})")
+
+        # 캐시 확인
+        cache_key = f"kis_index_daily:{index_code}:{period}:{days}"
+        cached = cache_manager.get(cache_key)
+        if cached:
+            logger.debug(f"✅ [KIS] 지수 일자별 캐시 히트: {index_code}")
+            return pd.DataFrame(cached)
+
+        # 날짜 계산
+        if start_date is None:
+            start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
+
+        # API 호출
+        params = {
+            "FID_PERIOD_DIV_CODE": period,  # D: 일별
+            "FID_COND_MRKT_DIV_CODE": "U",  # 업종
+            "FID_INPUT_ISCD": index_code,
+            "FID_INPUT_DATE_1": start_date,
+        }
+
+        result = await self._api_call(
+            KIS_ENDPOINTS["index_daily_price"],
+            KIS_TR_IDS["index_daily_price"],
+            params
+        )
+
+        # output2 파싱 (일자별 데이터)
+        output2 = result.get("output2")
+        if not output2:
+            logger.error(f"❌ [KIS] 지수 일자별 데이터 없음: {index_code}")
+            return None
+
+        # DataFrame 변환
+        records = []
+        for item in output2:
+            try:
+                records.append({
+                    "Date": pd.to_datetime(item.get("stck_bsop_date", ""), format="%Y%m%d"),
+                    "Open": float(item.get("bstp_nmix_oprc", 0)),
+                    "High": float(item.get("bstp_nmix_hgpr", 0)),
+                    "Low": float(item.get("bstp_nmix_lwpr", 0)),
+                    "Close": float(item.get("bstp_nmix_prpr", 0)),
+                    "Volume": int(item.get("acml_vol", 0)),
+                })
+            except Exception as e:
+                logger.warning(f"⚠️ [KIS] 지수 데이터 파싱 오류: {item} - {e}")
+                continue
+
+        if not records:
+            logger.error(f"❌ [KIS] 유효한 지수 데이터 없음: {index_code}")
+            return None
+
+        df = pd.DataFrame(records)
+        df = df.sort_values("Date")
+        df = df.set_index("Date")
+
+        # 캐싱 (1시간)
+        cache_manager.set(
+            cache_key,
+            df.reset_index().to_dict("records"),
+            ttl=3600
+        )
+
+        logger.info(f"✅ [KIS] 지수 일자별 조회 완료: {index_code} ({len(df)}일)")
+        return df
 
 
 # 전역 인스턴스

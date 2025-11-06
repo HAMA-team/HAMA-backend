@@ -15,6 +15,9 @@ KIS_ENDPOINTS = {
     "account_balance": "/uapi/domestic-stock/v1/trading/inquire-account-balance",
     "stock_price": "/uapi/domestic-stock/v1/quotations/inquire-price",
     "order": "/uapi/domestic-stock/v1/trading/order-cash",
+    # 지수 조회 관련
+    "index_price": "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+    "index_daily_price": "/uapi/domestic-stock/v1/quotations/inquire-index-daily-price",
 }
 
 # KIS API TR ID (거래 ID)
@@ -32,4 +35,15 @@ KIS_TR_IDS = {
         "real": "TTTC0011U",
         "demo": "VTTC0011U",
     },
+    # 지수 조회 TR ID
+    "index_price": "FHPUP02100000",  # 국내업종 현재지수
+    "index_daily_price": "FHPUP02120000",  # 국내업종 일자별지수
+}
+
+# 지수 코드 매핑 (지수명 → KIS 코드)
+INDEX_CODES = {
+    "KOSPI": "0001",      # 코스피 지수
+    "KOSDAQ": "1001",     # 코스닥 지수
+    "KOSPI200": "2001",   # 코스피200
+    "KRX100": "1028",     # KRX100 (기존 매핑과 다를 수 있으니 확인 필요)
 }
