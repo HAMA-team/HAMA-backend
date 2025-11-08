@@ -31,7 +31,7 @@ async def query_intent_classifier_node(state: StrategyState) -> StrategyState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.common.intent_classifier import build_strategy_intent_classifier_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_default_agent_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)
@@ -116,7 +116,7 @@ async def planner_node(state: StrategyState) -> StrategyState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.common.planner import build_strategy_planner_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_default_agent_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)
@@ -375,7 +375,7 @@ async def buy_specialist_node(state: StrategyState) -> StrategyState:
 
     try:
         from src.prompts.strategy.specialists import build_buy_specialist_prompt
-        from src.utils.llm import get_llm
+        from src.utils.llm_factory import get_default_agent_llm as get_llm
 
         query = state.get("query", "")
         market_outlook = state.get("market_outlook")
@@ -443,7 +443,7 @@ async def sell_specialist_node(state: StrategyState) -> StrategyState:
 
     try:
         from src.prompts.strategy.specialists import build_sell_specialist_prompt
-        from src.utils.llm import get_llm
+        from src.utils.llm_factory import get_default_agent_llm as get_llm
 
         query = state.get("query", "")
         market_outlook = state.get("market_outlook")
@@ -508,7 +508,7 @@ async def risk_reward_specialist_node(state: StrategyState) -> StrategyState:
 
     try:
         from src.prompts.strategy.specialists import build_risk_reward_specialist_prompt
-        from src.utils.llm import get_llm
+        from src.utils.llm_factory import get_default_agent_llm as get_llm
 
         query = state.get("query", "")
 
@@ -633,7 +633,7 @@ async def blueprint_creation_node(state: StrategyState) -> StrategyState:
         )
 
         # LLM 호출하여 Dashboard 생성
-        from src.utils.llm import get_llm
+        from src.utils.llm_factory import get_default_agent_llm as get_llm
 
         llm = get_llm(temperature=0.3, max_tokens=3000)
         dashboard_response = await llm.ainvoke(dashboard_prompt)

@@ -34,7 +34,7 @@ async def generate_report_node(state: ReportGeneratorState) -> ReportGeneratorSt
     try:
         # Integrated Dashboard 프롬프트 생성
         from src.prompts.templates.integrated_dashboard import build_integrated_dashboard_prompt
-        from src.utils.llm import get_llm
+        from src.utils.llm_factory import get_default_agent_llm as get_llm
 
         llm = get_llm(temperature=0.3, max_tokens=4000)
 

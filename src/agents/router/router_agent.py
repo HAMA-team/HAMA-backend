@@ -52,8 +52,36 @@ class PersonalizationSettings(BaseModel):
     )
 
 
+class WorkerParams(BaseModel):
+    """워커 파라미터 (OpenAI Structured Output 호환)"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stock_code: Optional[str] = Field(
+        default=None, description="종목 코드 (예: '005930')"
+    )
+    stock_name: Optional[str] = Field(
+        default=None, description="종목명 (예: '삼성전자')"
+    )
+    index_name: Optional[str] = Field(
+        default=None, description="지수명 (예: '코스피', '코스닥')"
+    )
+
+    def __getitem__(self, item: str) -> Any:
+        """dict 호환을 위한 키 기반 접근 지원"""
+        if hasattr(self, item):
+            return getattr(self, item)
+        raise KeyError(item)
+
+    def get(self, item: str, default: Any = None) -> Any:
+        """dict.get과 동일한 동작 제공"""
+        return getattr(self, item, default)
+
+
 class RoutingDecision(BaseModel):
     """Router의 판단 결과"""
+
+    model_config = ConfigDict(extra="forbid")
 
     # 1. 질문 분석
     query_complexity: str = Field(
@@ -92,7 +120,7 @@ class RoutingDecision(BaseModel):
         default=None,
         description="단순 조회 워커: stock_price | index_price | None. agents_to_call이 빈 리스트이고 데이터 조회가 필요한 경우만 사용."
     )
-    worker_params: Optional[dict] = Field(
+    worker_params: Optional[WorkerParams] = Field(
         default=None,
         description="워커 파라미터 (stock_code, stock_name, index_name 등)"
     )
@@ -211,36 +239,15 @@ JSON 형식으로 출력하세요.
         ]
     )
 
-    # Router 전용 LLM 초기화 (OpenAI → Anthropic fallback)
-    router_provider = settings.ROUTER_MODEL_PROVIDER.lower()
+    # Router 전용 LLM 초기화 (Claude Sonnet 4.5 사용)
+    from src.utils.llm_factory import get_router_llm
 
-    llm = None
-    if router_provider == "openai":
-        try:
-            # max_completion_tokens: structured output + reasoning tokens 모두 포함
-            # o1 모델은 reasoning_tokens를 많이 사용하므로 충분한 여유 필요
-            llm = ChatOpenAI(
-                model=settings.ROUTER_MODEL,
-                temperature=0,
-                max_completion_tokens=2500,  # 증가: structured output(500) + reasoning(2000)
-                api_key=settings.OPENAI_API_KEY,
-            )
-            logger.info(f"🤖 [Router] OpenAI 모델 사용: {settings.ROUTER_MODEL}")
-        except Exception as e:
-            logger.warning(f"⚠️ [Router] OpenAI 초기화 실패, Anthropic으로 fallback: {e}")
-
-    if llm is None:  # OpenAI 실패 또는 anthropic 설정
-        try:
-            llm = ChatAnthropic(
-                model=settings.ROUTER_MODEL or "claude-3-5-sonnet-20241022",
-                temperature=0,
-                max_tokens=2000,  # structured output 고려
-                api_key=settings.ANTHROPIC_API_KEY,
-            )
-            logger.info(f"🤖 [Router] Anthropic 모델 사용: {settings.ROUTER_MODEL or 'claude-3-5-sonnet-20241022'}")
-        except Exception as e:
-            logger.error(f"❌ [Router] Anthropic 초기화 실패: {e}")
-            raise RuntimeError("Router LLM 초기화 실패 (OpenAI, Anthropic 모두 실패)")
+    try:
+        llm = get_router_llm(temperature=0, max_tokens=2000)
+        logger.info("🤖 [Router] Claude Sonnet 4.5 모델 사용 (claude-sonnet-4-5-20250929)")
+    except Exception as e:
+        logger.error(f"❌ [Router] Claude 초기화 실패: {e}")
+        raise RuntimeError("Router LLM 초기화 실패 (Claude Sonnet 4.5)")
 
     structured_llm = llm.with_structured_output(RoutingDecision)
     router_chain = router_prompt | structured_llm

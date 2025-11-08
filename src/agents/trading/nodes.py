@@ -13,7 +13,7 @@ from langgraph.types import interrupt
 
 from src.agents.trading.state import TradingState
 from src.services import OrderNotFoundError, PortfolioNotFoundError, trading_service
-from src.utils.llm_factory import get_llm
+from src.utils.llm_factory import get_default_agent_llm as get_llm
 from src.utils.json_parser import safe_json_parse
 from src.schemas.hitl_config import HITLConfig, PRESET_COPILOT
 

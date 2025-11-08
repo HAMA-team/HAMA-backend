@@ -33,7 +33,7 @@ async def query_intent_classifier_node(state: RiskState) -> RiskState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.risk.intent_classifier import build_risk_intent_classifier_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)
@@ -117,7 +117,7 @@ async def planner_node(state: RiskState) -> RiskState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.risk.intent_classifier import build_risk_planner_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)

@@ -14,7 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from src.agents.research.state import ResearchState
 from src.config.settings import settings
-from src.utils.llm_factory import get_llm
+from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse
 from src.utils.indicators import calculate_all_indicators
 from src.utils.stock_name_extractor import extract_stock_names_from_query

@@ -203,6 +203,96 @@ def get_gemini_llm(
     return _build_llm("google", model_name, float(temp), int(tokens), loop_token)
 
 
+def get_research_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> ChatAnthropic:
+    """Research Agent 전용 LLM (Claude Sonnet 4.5)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)
+
+
+def get_router_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> ChatAnthropic:
+    """Router Agent 전용 LLM (Claude Sonnet 4.5)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)
+
+
+def get_strategy_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> ChatAnthropic:
+    """Strategy Agent 전용 LLM (Claude Sonnet 4.5)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)
+
+
+def get_portfolio_risk_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> ChatAnthropic:
+    """Portfolio/Risk Agent 전용 LLM (Claude Haiku 4.5)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
+
+    if not settings.ANTHROPIC_API_KEY:
+        raise ValueError(
+            "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)
+
+
+def get_default_agent_llm(
+    temperature: Optional[float] = None,
+    max_tokens: Optional[int] = None,
+) -> ChatOpenAI:
+    """기본 에이전트 LLM (GPT-5-mini)"""
+    temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
+    tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
+    model_name = "gpt-5-mini"  # GPT-5-mini
+
+    if not settings.OPENAI_API_KEY:
+        raise ValueError(
+            "OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+        )
+
+    loop_token = _loop_token()
+    return _build_llm("openai", model_name, float(temp), int(tokens), loop_token)
+
+
 def initialize_semantic_cache():
     """
     RedisSemanticCache를 초기화하여 LLM 응답 캐싱을 활성화합니다.

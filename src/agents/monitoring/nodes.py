@@ -10,7 +10,7 @@ from src.agents.monitoring.state import MonitoringState
 from src.services import portfolio_service
 from src.services.news_crawler_service import get_news_service
 from src.repositories.news_repository import news_repository
-from src.utils.llm_factory import get_llm
+from src.utils.llm_factory import get_default_agent_llm as get_llm
 
 logger = logging.getLogger(__name__)
 

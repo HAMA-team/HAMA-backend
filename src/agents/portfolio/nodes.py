@@ -45,7 +45,7 @@ async def query_intent_classifier_node(state: PortfolioState) -> PortfolioState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.portfolio.intent_classifier import build_portfolio_intent_classifier_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)
@@ -139,7 +139,7 @@ async def planner_node(state: PortfolioState) -> PortfolioState:
 
     # Claude 4.x 프롬프트 사용
     from src.prompts.portfolio.intent_classifier import build_portfolio_planner_prompt
-    from src.utils.llm import get_llm
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
 
     try:
         llm = get_llm(temperature=0, max_tokens=1000)
@@ -267,7 +267,7 @@ async def analyze_query_node(state: PortfolioState) -> PortfolioState:
         return state
 
     # LLM으로 query 분석
-    from src.utils.llm_factory import get_llm
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
     from src.utils.json_parser import safe_json_parse
 
     llm = get_llm(max_tokens=300, temperature=0)
