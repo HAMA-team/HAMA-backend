@@ -31,37 +31,40 @@ def build_portfolio_intent_classifier_prompt(
         context["holdings_count"] = len(current_holdings)
         context["total_value"] = sum(h.get("value", 0) for h in current_holdings)
 
-    task = f"""사용자 쿼리를 분석하여 포트폴리오 작업 의도를 분류하세요.
+    task = f"""<role>당신은 포트폴리오 작업 의도를 분석하는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-분류 기준:
+<instructions>
+쿼리를 분석하여 의도 유형과 필요한 Specialist를 결정하세요.
 
-**1. Intent Type (의도 유형)**:
-- **view**: 단순 조회 (현재 포트폴리오 확인, 수익률 조회)
-- **analyze**: 분석 요청 (포트폴리오 건강도, 리스크 분석)
-- **optimize**: 최적화 요청 (더 나은 포트폴리오 구성 제안)
-- **rebalance**: 리밸런싱 요청 (실제 매매를 통한 조정)
+<intent_types>
+- view: 단순 조회 (현재 상태 확인)
+- analyze: 분석 요청 (건강도, 리스크)
+- optimize: 최적화 제안 (더 나은 구성)
+- rebalance: 리밸런싱 실행 (실제 매매)
+</intent_types>
 
-**2. Analysis Depth (분석 깊이)**:
-- **quick**: 간단한 요약만 (1-2개 지표)
-- **standard**: 표준 분석 (3-4개 지표)
-- **comprehensive**: 종합 분석 (5개 이상 지표)
+<depth_levels>
+- quick: 요약만 (1-2개 지표)
+- standard: 표준 분석 (3-4개 지표)
+- comprehensive: 종합 분석 (5개 이상)
+</depth_levels>
 
-**3. Focus Areas (집중 영역)**:
-선택 가능한 영역:
-- portfolio_snapshot: 포트폴리오 스냅샷
-- market_condition: 시장 상황 분석
-- optimization: 최적화 제안
-- constraints: 제약 조건 검증
-- rebalancing: 리밸런싱 계획
-- execution: 실행 계획
-
-**4. Required Specialists (필요한 Specialist)**:
-- market_condition_specialist: 시장 상황 분석
+<available_specialists>
+- market_condition_specialist: 시장 상황
 - optimization_specialist: 포트폴리오 최적화
 - constraint_validator: 제약 조건 검증
-- rebalance_planner: 리밸런싱 계획 수립"""
+- rebalance_planner: 리밸런싱 계획
+</available_specialists>
+
+<decision_rules>
+1. "보여줘", "확인" → view (specialists 불필요)
+2. "분석", "괜찮아?" → analyze (market + optimization)
+3. "최적화", "개선" → optimize (전체)
+4. "리밸런싱 해줘" → rebalance (전체 + 실행)
+</decision_rules>
+</instructions>"""
 
     output_format = """{
   "intent_type": "analyze",

@@ -13,7 +13,6 @@ from typing import Optional, Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 from pydantic import BaseModel, Field, ConfigDict
 
 from src.config.settings import settings
@@ -118,17 +117,17 @@ class RoutingDecision(BaseModel):
     # 7. 워커 직접 호출 (단순 데이터 조회)
     worker_action: Optional[str] = Field(
         default=None,
-        description="단순 조회 워커: stock_price | index_price | None. agents_to_call이 빈 리스트이고 데이터 조회가 필요한 경우만 사용."
+        description="단순 조회 워커 이름 (stock_price 또는 index_price). 데이터 조회가 필요하지 않으면 이 필드를 생략하세요."
     )
     worker_params: Optional[WorkerParams] = Field(
         default=None,
-        description="워커 파라미터 (stock_code, stock_name, index_name 등)"
+        description="워커 파라미터. worker_action이 있을 때만 필요합니다."
     )
 
     # 8. 직접 답변 (간단한 질문인 경우 Router가 직접 응답)
     direct_answer: Optional[str] = Field(
         default=None,
-        description="간단한 질문이면 Router가 직접 생성한 답변. agents_to_call이 빈 리스트이고 worker_action도 None일 때만 사용."
+        description="일반 질문/용어 정의인 경우 이 필드에 최종 답변을 작성하세요. agents_to_call이 빈 리스트이고 worker_action이 없을 때 필수입니다."
     )
 
     def __getitem__(self, item: str) -> Any:
@@ -149,6 +148,7 @@ class RoutingDecision(BaseModel):
 
     def values(self):
         return self.dict().values()
+
 
 
 async def route_query(
@@ -203,36 +203,75 @@ async def route_query(
         [
             (
                 "system",
-                """투자 질문을 분석하여 적절한 에이전트 또는 워커로 라우팅합니다.
+                """당신은 투자 질문을 분석하여 적절한 처리 방법을 결정하는 라우터입니다.
 
-**우선순위 1: 워커 직접 호출 (빠른 단순 조회)**
-agents_to_call = [], worker_action 설정:
-- "삼성전자 현재가?", "SK하이닉스 주가?" → worker_action="stock_price", worker_params={{"stock_code": "005930", "stock_name": "삼성전자"}}
-- "코스피 지수?", "코스닥 얼마야?" → worker_action="index_price", worker_params={{"index_name": "코스피"}}
+<user_context>
+투자 경험: {user_expertise}
+투자 성향: {investment_style}
+</user_context>
 
-**우선순위 2: 에이전트 호출 (분석/전략/실행)**
-- research: 종목 분석 요청 ("삼성전자 분석해줘", "재무제표 분석")
-- strategy: 투자 전략/타이밍 ("언제 사야해?", "매수 타이밍")
-- risk: 리스크 평가 ("위험도는?", "손실 가능성")
-- portfolio: 포트폴리오 조회/관리 ("보유 현황", "리밸런싱")
-- trading: 매매 실행 ("매수", "매도")
+<instructions>
+사용자 질문을 분석하여 다음 중 하나를 선택하세요:
 
-**우선순위 3: Router 직접 답변**
-agents_to_call = [], worker_action = None, direct_answer 생성:
-- 일반 질문/용어 정의 ("PER이 뭐야?", "안녕?")
+1. **워커 직접 호출** (단순 데이터 조회)
+   - 언제: 주가, 지수 같은 단일 데이터만 필요할 때
+   - 설정: agents_to_call=[], worker_action="stock_price" 또는 "index_price", worker_params 지정
+   - 예: "삼성전자 주가?"
 
-**종목명 추출:**
-질문에서 기업명을 추출하세요 (예: "lg 화학" → ["LG화학"]).
-종목이 없으면 None.
+2. **에이전트 호출** (분석/전략 수립)
+   - 언제: 종목 분석, 투자 전략, 리스크 평가 등이 필요할 때
+   - 설정: agents_to_call=["research", "strategy", ...], worker_action 생략
+   - 가능한 에이전트: research, strategy, risk, trading, portfolio
+   - 예: "삼성전자 분석해줘" → ["research"]
 
-**복잡도:**
-- simple: 단순 정보 조회 (현재가, 지수)
-- moderate: 분석 필요 (재무, 기술적 분석)
-- expert: 심층 분석 (전략 수립, 리스크 평가)
+3. **직접 답변** (일반 지식/용어 설명)
+   - 언제: 투자 관련 일반 지식, 용어 정의, 시스템 안내
+   - 설정: agents_to_call=[], direct_answer="답변 내용"
+   - 예: "PER이 뭐야?", "장 운영 시간은?"
 
-**사용자:** {user_expertise} 수준, {investment_style} 성향
+<thinking_process>
+다음 순서로 판단하세요:
 
-JSON 형식으로 출력하세요.
+1. 질문 의도 파악
+   - 데이터 조회? → 워커
+   - 분석/판단? → 에이전트
+   - 일반 지식? → 직접 답변
+
+2. 복잡도 결정
+   - simple: 단순 조회/정의
+   - moderate: 일반적 분석
+   - expert: 심층 분석 또는 의사결정
+
+3. 종목 추출
+   - 종목명이 언급되었는가?
+   - stock_names에 리스트로 저장
+
+4. 사용자 맞춤화
+   - 초보자 → 더 자세한 설명 필요 (include_explanations=true)
+   - 전문가 → 핵심만 제공 (technical_level="advanced")
+</thinking_process>
+
+<output_rules>
+- 필요 없는 필드는 JSON에서 완전히 생략 (null, "None" 사용 금지)
+- reasoning은 구체적이고 명확하게 작성
+- stock_names는 질문에서 실제 언급된 종목만 포함
+- depth_level은 복잡도와 일치시킬 것 (simple→brief, moderate→detailed, expert→comprehensive)
+</output_rules>
+</instructions>
+
+<examples>
+예시 1 - 워커 호출:
+입력: "삼성전자 주가 얼마야?"
+출력: {{"query_complexity": "simple", "user_intent": "quick_info", "stock_names": ["삼성전자"], "agents_to_call": [], "depth_level": "brief", "worker_action": "stock_price", "worker_params": {{"stock_name": "삼성전자"}}, "reasoning": "단순 주가 조회이므로 워커 직접 호출"}}
+
+예시 2 - 에이전트 호출:
+입력: "삼성전자 매수해도 될까?"
+출력: {{"query_complexity": "expert", "user_intent": "trading", "stock_names": ["삼성전자"], "agents_to_call": ["research", "strategy"], "depth_level": "comprehensive", "reasoning": "매수 판단을 위해 종목 분석 및 전략 수립 필요"}}
+
+예시 3 - 직접 답변:
+입력: "PER이 뭐야?"
+출력: {{"query_complexity": "simple", "user_intent": "definition", "stock_names": null, "agents_to_call": [], "depth_level": "brief", "direct_answer": "PER(주가수익비율)은 주가를 주당순이익으로 나눈 값으로, 주가가 1주당 수익의 몇 배로 거래되는지를 나타냅니다.", "reasoning": "용어 정의 질문이므로 직접 답변"}}
+</examples>
 """,
             ),
             ("human", "질문: {query}"),
@@ -244,7 +283,6 @@ JSON 형식으로 출력하세요.
 
     try:
         llm = get_router_llm(temperature=0, max_tokens=2000)
-        logger.info("🤖 [Router] Claude Sonnet 4.5 모델 사용 (claude-sonnet-4-5-20250929)")
     except Exception as e:
         logger.error(f"❌ [Router] Claude 초기화 실패: {e}")
         raise RuntimeError("Router LLM 초기화 실패 (Claude Sonnet 4.5)")

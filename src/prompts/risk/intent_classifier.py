@@ -29,26 +29,38 @@ def build_risk_intent_classifier_prompt(
     if portfolio_data:
         context["holdings_count"] = len(portfolio_data.get("holdings", []))
 
-    task = f"""사용자 쿼리를 분석하여 리스크 분석 의도를 분류하세요.
+    task = f"""<role>당신은 리스크 분석 의도를 분석하는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-분류 기준:
+<instructions>
+쿼리를 분석하여 분석 깊이와 필요한 Specialist를 결정하세요.
 
-**1. Analysis Depth (분석 깊이)**:
-- **quick**: 간단한 리스크 점수만 (1-2개 지표)
-- **standard**: 표준 리스크 분석 (집중도 + 시장 리스크)
-- **comprehensive**: 종합 리스크 분석 (모든 지표 + 시나리오 분석)
+<depth_levels>
+- quick: 리스크 점수만 (1-2개 지표)
+- standard: 표준 분석 (집중도 + 시장 리스크)
+- comprehensive: 종합 분석 (전체 + 시나리오)
+</depth_levels>
 
-**2. Focus Areas (집중 영역)**:
-- concentration: 집중도 리스크 (종목, 섹터, 산업 집중)
-- market: 시장 리스크 (VaR, 변동성, 베타)
-- scenario: 시나리오 분석 (최악의 경우, 스트레스 테스트)
+<focus_areas>
+- concentration: 집중도 리스크 (종목/섹터)
+- market: 시장 리스크 (VaR, 변동성)
+- scenario: 시나리오 분석 (최악의 경우)
+</focus_areas>
 
-**3. Required Specialists (필요한 Specialist)**:
-- concentration_specialist: 집중도 리스크 분석
+<available_specialists>
+- concentration_specialist: 집중도 분석
 - market_risk_specialist: 시장 리스크 분석
-- scenario_specialist: 시나리오 분석 (comprehensive만)"""
+- scenario_specialist: 시나리오 분석 (comprehensive만)
+</available_specialists>
+
+<decision_rules>
+1. "리스크가 얼마나?" → quick (concentration + market)
+2. "~비중이 너무 높아?" → standard (concentration만)
+3. "시장 폭락 시" → comprehensive (전체 + scenario)
+4. 보수적으로 판단 (의심스러우면 comprehensive)
+</decision_rules>
+</instructions>"""
 
     output_format = """{
   "depth": "standard",

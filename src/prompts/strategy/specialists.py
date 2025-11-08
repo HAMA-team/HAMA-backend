@@ -48,23 +48,36 @@ def build_buy_specialist_prompt(
     if fundamental_data:
         context["fundamental"] = fundamental_data
 
-    task = f"""사용자 쿼리를 분석하여 매수 점수(1-10점)를 산정하세요.
+    task = f"""<role>당신은 매수 점수를 산정하는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-평가 기준:
-1. **Valuation (가치평가)**: PER, PBR, 업종 대비 밸류에이션
-2. **Momentum (모멘텀)**: 주가 추세, 거래량, 기술적 지표
-3. **Quality (품질)**: ROE, 재무건전성, 성장성
-4. **Macro Fit (거시 적합성)**: 시장 사이클과 섹터 전략 부합도
-5. **Risk Factors (리스크)**: 업종 리스크, 개별 종목 리스크
+<instructions>
+다음 5가지 기준으로 종합 평가하여 매수 점수(1-10점)를 산정하세요.
 
-매수 점수 가이드:
-- 9-10점: 강력 매수 (Strong Buy) - 확신도 매우 높음
-- 7-8점: 매수 (Buy) - 긍정적 전망
-- 5-6점: 보유 (Hold) - 중립적 입장
-- 3-4점: 비중 축소 (Reduce) - 부정적 요소 존재
-- 1-2점: 매도 (Sell) - 투자 부적합"""
+<evaluation_criteria>
+1. Valuation (가치평가): PER, PBR, 업종 대비 밸류에이션
+2. Momentum (모멘텀): 주가 추세, 거래량, 기술적 지표
+3. Quality (품질): ROE, 재무건전성, 성장성
+4. Macro Fit (거시 적합성): 시장 사이클과 섹터 전략 부합도
+5. Risk Factors (리스크): 업종 리스크, 개별 종목 리스크
+</evaluation_criteria>
+
+<scoring_guide>
+9-10점: 강력 매수 (Strong Buy) - 모든 기준 우수
+7-8점: 매수 (Buy) - 긍정적 전망
+5-6점: 보유 (Hold) - 중립적 입장
+3-4점: 비중 축소 (Reduce) - 부정적 요소 다수
+1-2점: 매도 (Sell) - 투자 부적합
+</scoring_guide>
+
+<thinking_process>
+1. 각 기준별 점수 산정 (1-10점)
+2. 강점과 우려사항 구체적으로 식별
+3. 종합 점수 계산 (가중평균)
+4. 확신도 평가 (데이터 충분성)
+</thinking_process>
+</instructions>"""
 
     output_format = """{
   "buy_score": 8,
@@ -175,21 +188,35 @@ def build_sell_specialist_prompt(
     if market_outlook:
         context["market_cycle"] = market_outlook.get("cycle", "expansion")
 
-    task = f"""사용자 쿼리를 분석하여 매도 판단을 내리세요.
+    task = f"""<role>당신은 매도 판단을 내리는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-판단 기준:
-1. **수익률 달성도**: 목표 수익률 도달 여부
-2. **투자 논리 변화**: 매수 시점의 투자 논리가 여전히 유효한가?
-3. **시장 환경**: 시장 사이클 변화, 섹터 로테이션
-4. **기술적 신호**: 추세 전환, 지지선 이탈
-5. **리스크 증가**: 펀더멘털 악화, 악재 발생
+<instructions>
+다음 기준으로 매도 여부를 판단하세요.
 
-매도 판단 옵션:
-- **익절 (Take Profit)**: 목표가 도달, 투자 논리 완성
-- **손절 (Stop Loss)**: 투자 논리 훼손, 리스크 급증
-- **홀드 (Hold)**: 투자 논리 유효, 추가 상승 여력"""
+<decision_criteria>
+1. 수익률 달성도: 목표 수익률 도달 여부
+2. 투자 논리: 매수 시점의 논리가 여전히 유효한가?
+3. 시장 환경: 사이클 변화, 섹터 로테이션
+4. 기술적 신호: 추세 전환, 지지선 이탈
+5. 리스크 증가: 펀더멘털 악화, 악재 발생
+</decision_criteria>
+
+<decision_options>
+- 익절 (Take Profit): 목표가 도달, 논리 완성
+- 손절 (Stop Loss): 논리 훼손, 리스크 급증
+- 홀드 (Hold): 논리 유효, 추가 상승 여력
+</decision_options>
+
+<thinking_process>
+1. 현재 수익률 확인
+2. 매수 논리 재검토
+3. 시장/기술적 환경 평가
+4. 매도 결정 및 비율 제안
+5. 대안 전략 제시
+</thinking_process>
+</instructions>"""
 
     output_format = """{
   "decision": "익절",
@@ -279,26 +306,41 @@ def build_risk_reward_specialist_prompt(
     if volatility:
         context["volatility"] = f"{volatility:.2f}%"
 
-    task = f"""사용자 쿼리를 분석하여 손절가와 목표가를 계산하세요.
+    task = f"""<role>당신은 손절가와 목표가를 계산하는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-계산 기준:
-1. **기술적 분석**: 지지선/저항선, 피보나치, 이동평균선
-2. **변동성**: ATR(Average True Range), 일일 변동폭
-3. **Risk/Reward Ratio**: 최소 1:2 이상 권장
-4. **투자 스타일**: 단기/중기/장기 투자 성향
-5. **심리적 가격대**: 정수가, 52주 고점/저점
+<instructions>
+손절가와 목표가를 계산하여 Risk/Reward 비율을 제시하세요.
 
-손절가 설정 원칙:
+<calculation_factors>
+1. 기술적 분석: 지지선/저항선, 피보나치, 이동평균선
+2. 변동성: ATR, 일일 변동폭
+3. Risk/Reward Ratio: 최소 1:2 이상 권장
+4. 투자 스타일: 단기/중기/장기
+5. 심리적 가격대: 정수가, 52주 고저점
+</calculation_factors>
+
+<stop_loss_guide>
 - 보수적: -5% ~ -7%
 - 중립적: -8% ~ -12%
 - 공격적: -15% ~ -20%
+</stop_loss_guide>
 
-목표가 설정 원칙:
-- 1차 목표가: Risk/Reward 1:2
-- 2차 목표가: Risk/Reward 1:3
-- 최종 목표가: 기술적 저항선 돌파 시나리오"""
+<target_price_guide>
+- 1차 목표: Risk/Reward 1:2
+- 2차 목표: Risk/Reward 1:3
+- 최종 목표: 기술적 저항선 돌파
+</target_price_guide>
+
+<thinking_process>
+1. 현재가와 주요 지지/저항선 확인
+2. 변동성 기반 손절가 범위 산정
+3. Risk/Reward 1:2 이상 목표가 계산
+4. 단계별 익절 전략 수립
+5. 100원 단위 반올림 (심리가 고려)
+</thinking_process>
+</instructions>"""
 
     output_format = """{
   "stop_loss_price": 48000,

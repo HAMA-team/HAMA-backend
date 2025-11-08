@@ -31,38 +31,47 @@ def build_trading_intent_classifier_prompt(
         context["has_research"] = True
         context["research_consensus"] = research_result.get("consensus", "NEUTRAL")
 
-    task = f"""사용자 쿼리를 분석하여 매매 작업 의도를 분류하세요.
+    task = f"""<role>당신은 매매 작업 의도를 분석하는 전문가입니다.</role>
 
-쿼리: "{query}"
+<query>{query}</query>
 
-분류 기준:
+<instructions>
+쿼리를 분석하여 주문 유형, 분석 깊이, 필요한 정보를 추출하세요.
 
-**1. Order Type (주문 유형)**:
-- **buy**: 매수 주문
-- **sell**: 매도 주문
-- **unknown**: 불명확 (추가 정보 필요)
+<order_types>
+- buy: 매수 주문
+- sell: 매도 주문
+- unknown: 불명확
+</order_types>
 
-**2. Analysis Depth (분석 깊이)**:
-- **quick**: 즉시 실행 (분석 최소화, 명확한 주문)
-- **standard**: 표준 분석 (매수/매도 점수 산정)
-- **comprehensive**: 종합 분석 (전략 + 리스크/리워드 계산)
+<depth_levels>
+- quick: 즉시 실행 (명확한 주문, 분석 최소화)
+- standard: 표준 분석 (매수/매도 점수)
+- comprehensive: 종합 분석 (전략 + 리스크/리워드)
+</depth_levels>
 
-**3. Focus Areas (집중 영역)**:
-- trade_preparation: 거래 준비 (종목, 수량, 가격 추출)
-- buy_analysis: 매수 분석 (매수 점수, 근거)
-- sell_analysis: 매도 분석 (매도 근거, 타이밍)
-- risk_reward: 손절가/목표가 계산
-- execution: 주문 실행
+<available_specialists>
+- buy_specialist: 매수 점수 (1-10점)
+- sell_specialist: 매도 판단
+- risk_reward_specialist: 손절가/목표가
+</available_specialists>
 
-**4. Required Specialists (필요한 Specialist)**:
-- buy_specialist: 매수 점수 산정 (1-10점)
-- sell_specialist: 매도 판단 및 근거
-- risk_reward_specialist: 손절가/목표가 계산
+<extraction_rules>
+extracted_info에서 다음 정보를 추출하세요:
+- stock_code: 6자리 종목 코드 (예: "005930")
+- quantity: 수량 (숫자 또는 "all")
+- order_price: 지정가 (있는 경우만)
 
-**5. 정보 추출**:
-- stock_code: 종목 코드 추출 (예: "005930")
-- quantity: 수량 추출 (예: 10)
-- order_price: 지정가 추출 (예: 70000)"""
+추출 불가능하면 null 설정
+</extraction_rules>
+
+<decision_logic>
+1. "~주 매수" → quick (즉시 실행)
+2. "~사도 될까?" → comprehensive (분석 필요)
+3. "매수" → buy_specialist + risk_reward
+4. "매도" → sell_specialist
+</decision_logic>
+</instructions>"""
 
     output_format = """{
   "order_type": "buy",

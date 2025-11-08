@@ -47,108 +47,71 @@ def build_research_intent_classifier_prompt(
         context["대화 컨텍스트"] = f"이전 {len(conversation_history)}개 메시지 참조"
 
     # Task 정의
-    task = """사용자 쿼리를 분석하여 필요한 분석 깊이와 집중 영역을 결정하세요.
+    task = """<role>당신은 투자 분석 요청의 복잡도와 필요한 분석 영역을 판단하는 전문가입니다.</role>
 
-## 분석 기준
+<instructions>
+사용자 쿼리를 분석하여 분석 깊이(depth)와 집중 영역(focus_areas)을 결정하세요.
 
-### 1. 쿼리 의도 파악
+## 분석 깊이 결정
 
-쿼리를 다음 카테고리로 분류하세요:
+<depth_criteria>
+**quick**: 단일 정보 조회
+- 예: "현재가는?", "PER 얼마야?", "외국인 매수량은?"
+- 조건: 단일 데이터 포인트, 계산 불필요
 
-**단순 정보 조회** → quick
-- 현재가, 거래량, PER 같은 단일 정보 요청
-- "얼마야?", "몇 주야?", "언제야?" 형태
-- 예: "삼성전자 현재가", "코스피 지수 얼마?"
+**standard**: 일반적 분석
+- 예: "어때?", "분석해줘", "A vs B 비교"
+- 조건: 여러 지표 통합, 기본 해석 필요
 
-**일반 분석 요청** → standard
-- 종목에 대한 전반적 분석
-- "어때?", "분석해줘", "괜찮아?" 형태
-- 예: "삼성전자 어때?", "이 종목 분석해줘"
+**comprehensive**: 투자 의사결정
+- 예: "매수할까?", "지금 팔아야 할까?", "투자 전략 짜줘"
+- 조건: 다면적 분석, 미래 예측, 리스크 평가 필요
+</depth_criteria>
 
-**투자 의사결정** → comprehensive
-- 매수/매도/홀드 판단 필요
-- "할까?", "해도 될까?", "타이밍" 관련
-- 예: "삼성전자 매수할까?", "지금 팔아야 할까?"
+## 집중 영역 선택
 
-### 2. 복잡도 판단
+<focus_areas_mapping>
+사용 가능한 Worker:
+- data: 기본 데이터 (주가, 재무제표)
+- technical: 기술적 분석 (차트, 지표)
+- trading_flow: 수급 분석 (외국인/기관/개인)
+- information: 뉴스/공시 분석
+- macro: 거시경제 분석
+- bull/bear: 상승/하락 시나리오
+- insight: 최종 인사이트
 
-쿼리의 복잡도를 평가하세요:
-
-**Low Complexity (quick)**:
-- 단일 데이터 포인트 조회
-- 계산이 필요 없는 정보
-- 시간 제약 명시 (예: "빠르게", "간단히" - 하지만 이것만으로 판단하지 말 것)
-
-**Medium Complexity (standard)**:
-- 여러 데이터 통합 필요
-- 기본적인 분석 및 해석
-- 비교 요청 (예: "A vs B")
-
-**High Complexity (comprehensive)**:
-- 다면적 분석 (기술적 + 재무 + 수급)
-- 미래 예측 또는 판단
-- 리스크/리워드 평가
-
-### 3. 사용자 성향 반영
-
-사용자의 투자 경험 수준과 선호도를 고려하세요:
-
-**Beginner + 복잡한 쿼리**:
-- 자동으로 comprehensive 선호
-- 이유: 초보자는 상세한 설명과 교육이 필요
-
-**Expert + 간단한 쿼리**:
-- quick 가능
-- 이유: 전문가는 핵심만 빠르게 파악
-
-**최근 선택 패턴**:
-- 사용자가 최근에 comprehensive를 자주 선택했다면 → 기본값 상향
-- 사용자가 quick을 선호한다면 → 간결함 중시
-
-### 4. 암묵적 요구사항 파악
-
-사용자가 명시하지 않았지만 필요할 것으로 예상되는 정보를 식별하세요:
-
-예시:
-- "오를까?" → 목표가, 손절가, 매수 타이밍, 리스크 필요
-- "어때?" → 현재 평가, 강점/약점, 향후 전망 필요
-- "비교해줘" → 동종업계 벤치마크, 상대적 가치 필요
-
-### 5. Focus Areas 선택
-
-분석에 집중해야 할 영역을 선택하세요:
-
-Available Workers:
-- **data**: 원시 데이터 수집 (주가, 거래량, 재무제표)
-- **technical**: 기술적 분석 (차트, RSI, MACD, 이평선)
-- **trading_flow**: 수급 분석 (외국인, 기관, 개인 매매)
-- **information**: 뉴스, 공시, 이슈 분석
-- **macro**: 거시경제 분석 (금리, 환율, 경기)
-- **bull**: 강세 시나리오 (상승 요인)
-- **bear**: 약세 시나리오 (하락 요인)
-- **insight**: 최종 인사이트 통합
-
-Focus Areas 매핑 예시:
+쿼리별 매핑:
 - "차트 분석" → ["technical"]
-- "외국인 매수하고 있어?" → ["trading_flow"]
+- "외국인 매수 추세" → ["trading_flow"]
 - "매수할까?" → ["technical", "trading_flow", "information", "bull", "bear"]
 - "뉴스 있어?" → ["information"]
+</focus_areas_mapping>
 
-## 중요 원칙
+<thinking_process>
+다음 순서로 판단하세요:
 
-1. **키워드에만 의존하지 마세요**: "빠르게"라는 단어가 있어도 복잡한 질문이면 comprehensive 가능
-   - 예: "빠르게 투자 전략 짜줘" → standard (단순 조회 아님)
+1. **의도 파악**: 데이터 조회? 분석? 의사결정?
+2. **복잡도 평가**: 필요한 정보의 양과 분석 깊이
+3. **사용자 고려**: {expertise_level} 수준에 맞는 깊이 조정
+   - beginner → 더 상세한 분석 선호
+   - expert → 핵심만 간결하게
+4. **암묵적 요구 파악**: 명시하지 않았지만 필요한 정보
+   - "오를까?" → 목표가, 리스크, 타이밍
+   - "어때?" → 강점/약점, 전망
+</thinking_process>
 
-2. **전체 맥락을 고려하세요**: 단어 하나가 아니라 전체 문장의 의도를 파악
-
-3. **보수적으로 판단하세요**:
-   - 의사결정이 필요하면 comprehensive
-   - 애매하면 standard (quick은 명확할 때만)
-
-4. **confidence 점수를 정직하게**:
-   - 명확한 경우: 0.9-1.0
-   - 일반적 경우: 0.7-0.85
-   - 애매한 경우: 0.5-0.65
+<critical_rules>
+1. 키워드만 보지 말고 전체 맥락을 파악하세요
+   - "빠르게 전략 짜줘" → standard (단순 조회 아님)
+2. 의사결정 질문은 comprehensive
+   - "~할까?", "~해도 될까?" 형태
+3. 애매하면 standard (quick은 명확할 때만)
+4. confidence는 정직하게
+   - 명확: 0.9-1.0
+   - 일반: 0.7-0.85
+   - 애매: 0.5-0.65
+</critical_rules>
+</instructions>
 """
 
     # Output Format
@@ -262,43 +225,41 @@ def build_strategy_intent_classifier_prompt(
         "투자 경험 수준": expertise_level,
     }
 
-    task = """사용자가 필요로 하는 전략 분석 범위를 결정하세요.
+    task = """<role>당신은 투자 전략 요청의 범위를 판단하는 전문가입니다.</role>
 
-## 분석 범위 옵션
+<instructions>
+사용자가 필요로 하는 전략 Specialist를 선택하세요.
 
-다음 Specialist 중 필요한 것을 선택하세요:
+<available_specialists>
+1. market_specialist: 시장 사이클 분석 (Bull/Bear)
+2. sector_specialist: 섹터 로테이션 전략
+3. asset_specialist: 자산 배분 비율
+4. buy_specialist: 매수 점수 (1-10점)
+5. sell_specialist: 매도 판단 (익절/손절/홀드)
+6. risk_reward_specialist: 손절가/목표가 계산
+</available_specialists>
 
-1. **market_specialist**: 시장 사이클 분석 (Bull/Bear 판단)
-2. **sector_specialist**: 섹터 로테이션 전략
-3. **asset_specialist**: 자산 배분 비율 결정
-4. **buy_specialist**: 매수 점수 산정 (1-10점)
-5. **sell_specialist**: 매도 판단 (익절/손절/홀드)
-6. **risk_reward_specialist**: 손절가/목표가 계산
-
-## 쿼리 패턴별 매핑
-
+<query_mapping>
+쿼리 패턴별 Specialist 매핑:
 - "매수해도 될까?" → buy_specialist, risk_reward_specialist
 - "매수 점수만" → buy_specialist
 - "팔아야 할까?" → sell_specialist
-- "손절가 계산" → risk_reward_specialist
-- "투자 전략 짜줘" → market_specialist, sector_specialist, asset_specialist
+- "손절가는?" → risk_reward_specialist
+- "투자 전략 짜줘" → market, sector, asset
 - "시장 전망" → market_specialist
-- "포트폴리오 구성" → sector_specialist, asset_specialist
-- "종합 전략" → 전체 (6개 모두)
+- "포트폴리오 구성" → sector, asset
+- "종합 전략" → 전체 (6개)
+</query_mapping>
 
-## 판단 기준
-
-1. **의사결정 vs 정보 제공**:
-   - 의사결정 (매수/매도) → buy/sell_specialist + risk_reward
-   - 정보 제공 (시장 전망) → market_specialist
-
-2. **범위**:
-   - 특정 요청 → 해당 Specialist만
-   - 모호한 요청 ("전략 짜줘") → 여러 Specialist
-
-3. **사용자 경험**:
-   - Beginner → 더 많은 Specialist (설명 필요)
-   - Expert → 필요한 것만
+<decision_logic>
+1. 의사결정 요청 → buy/sell + risk_reward
+2. 정보 제공 → market/sector/asset
+3. 모호한 요청 → 여러 Specialist
+4. 사용자 수준 고려
+   - beginner → 더 많은 Specialist (교육 필요)
+   - expert → 필요한 것만
+</decision_logic>
+</instructions>
 """
 
     output_format = """{
