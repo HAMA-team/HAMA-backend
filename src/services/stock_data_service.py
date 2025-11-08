@@ -6,7 +6,6 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
-from pykrx import stock as krx_stock
 import FinanceDataReader as fdr
 
 from src.config.settings import settings
@@ -16,6 +15,7 @@ from src.repositories import (
     stock_indicator_repository,
 )
 from src.services.cache_manager import cache_manager
+from src.services.kis_service import kis_service
 from src.utils.indicators import calculate_all_indicators
 
 logger = logging.getLogger(__name__)
@@ -383,18 +383,41 @@ class StockDataService:
         start_str = start_date.strftime("%Y%m%d")
         end_str = end_date.strftime("%Y%m%d")
 
+        # 1순위: KIS API
         try:
-            # pykrx.stock.get_market_ohlcv() 사용
+            logger.info(f"📊 [KIS API] 주가 조회 시도: {stock_code}")
+            df = await kis_service.get_stock_daily_price(stock_code, start_str, end_str)
+
+            if df is not None and len(df) > 0:
+                # KIS API는 이미 표준 컬럼명 사용 (Open, High, Low, Close, Volume)
+                # 캐싱 (60초 TTL)
+                self.cache.set(
+                    cache_key,
+                    self._cache_prices_payload(df),
+                    ttl=settings.CACHE_TTL_MARKET_DATA,
+                )
+                await self._save_prices_to_db(stock_code, df)
+                await self._save_latest_indicators(stock_code, df)
+                logger.info(f"✅ 주가 데이터 조회 성공 (KIS API): {stock_code}")
+                return df
+
+        except Exception as e:
+            logger.warning(f"⚠️ KIS API 주가 조회 실패, FinanceDataReader fallback 시도: {stock_code} - {e}")
+
+        # 2순위: FinanceDataReader fallback
+        try:
+            logger.info(f"📊 [FinanceDataReader] 주가 조회 시도: {stock_code}")
             df = await asyncio.to_thread(
-                krx_stock.get_market_ohlcv,
+                fdr.DataReader,
+                stock_code,
                 start_str,
-                end_str,
-                stock_code
+                end_str
             )
 
             if df is not None and len(df) > 0:
-                # pykrx 컬럼명을 영어로 변경 (표준화)
-                df.columns = ["Open", "High", "Low", "Close", "Volume", "Change"]
+                # FinanceDataReader 컬럼명 표준화 (필요 시)
+                if "Change" in df.columns:
+                    df = df[["Open", "High", "Low", "Close", "Volume"]]
 
                 # 캐싱 (60초 TTL)
                 self.cache.set(
@@ -404,19 +427,19 @@ class StockDataService:
                 )
                 await self._save_prices_to_db(stock_code, df)
                 await self._save_latest_indicators(stock_code, df)
-                print(f"✅ 주가 데이터 조회 성공 (pykrx): {stock_code}")
+                logger.info(f"✅ 주가 데이터 조회 성공 (FinanceDataReader): {stock_code}")
                 return df
             else:
-                print(f"⚠️ 주가 데이터 없음: {stock_code}")
+                logger.warning(f"⚠️ 주가 데이터 없음: {stock_code}")
                 return None
 
         except Exception as e:
-            print(f"❌ 주가 데이터 조회 실패 (pykrx): {stock_code}, {e}")
+            logger.error(f"❌ 주가 데이터 조회 실패 (모든 소스): {stock_code}, {e}")
             return None
 
     async def get_stock_listing(self, market: str = "KOSPI") -> Optional[pd.DataFrame]:
         """
-        종목 리스트 조회 (pykrx 기본, FinanceDataReader fallback)
+        종목 리스트 조회 (FinanceDataReader 사용)
 
         Args:
             market: 시장 (KOSPI, KOSDAQ, KONEX)
@@ -430,7 +453,7 @@ class StockDataService:
         # 캐시 확인
         cached = self.cache.get(cache_key)
         if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
+            logger.info(f"✅ 캐시 히트: {cache_key}")
             cached_df = pd.DataFrame(cached)
             return cached_df
 
@@ -444,75 +467,7 @@ class StockDataService:
             )
             return db_listing
 
-        pykrx_error: Optional[Exception] = None
-        pykrx_df: Optional[pd.DataFrame] = None
-
-        # pykrx 호출
-        try:
-            today_str = datetime.now().strftime("%Y%m%d")
-
-            ticker_list = await asyncio.to_thread(
-                krx_stock.get_market_ticker_list,
-                today_str,
-                market=market
-            )
-
-            if ticker_list:
-                data = []
-                for ticker in ticker_list:
-                    try:
-                        name = await asyncio.to_thread(
-                            krx_stock.get_market_ticker_name,
-                            ticker
-                        )
-
-                        # None이거나 DataFrame 타입이면 건너뛰기
-                        if name is None or isinstance(name, pd.DataFrame):
-                            logger.warning(f"⚠️ [pykrx] 종목명 조회 실패: {ticker} (결과: {type(name).__name__})")
-                            continue
-
-                        # 문자열로 변환 시도
-                        name_str = str(name).strip()
-                        if not name_str or name_str == "None":
-                            logger.warning(f"⚠️ [pykrx] 종목명이 비어있음: {ticker}")
-                            continue
-
-                        data.append(
-                            {
-                                "Code": ticker,
-                                "Name": name_str,
-                                "Market": market,
-                            }
-                        )
-                    except Exception as name_error:
-                        # 개별 종목 오류는 로그만 남기고 계속 진행
-                        logger.warning(f"⚠️ [pykrx] 종목명 조회 오류: {ticker} - {name_error}")
-                        continue
-
-                if data:
-                    pykrx_df = pd.DataFrame(data)
-                    logger.info(f"✅ [pykrx] 종목 리스트 생성: {len(data)}/{len(ticker_list)}개")
-                else:
-                    logger.warning(f"⚠️ [pykrx] 유효한 종목 데이터 없음: {market}")
-                    pykrx_df = None
-            else:
-                print(f"⚠️ pykrx 종목 리스트 없음: {market}")
-
-        except Exception as e:
-            pykrx_error = e
-            print(f"❌ 종목 리스트 조회 실패 (pykrx): {market}, {e}")
-
-        if pykrx_df is not None and not pykrx_df.empty:
-            self.cache.set(
-                cache_key,
-                self._cache_listing_payload(pykrx_df),
-                ttl=86400,
-            )
-            await self._save_listing_to_db(market, pykrx_df)
-            print(f"✅ 종목 리스트 조회 성공 (pykrx): {market}, {len(pykrx_df)}개")
-            return pykrx_df
-
-        # pykrx가 실패하거나 빈 결과일 때 FinanceDataReader로 대체
+        # FinanceDataReader로 종목 리스트 조회
         fdr_df = await self._listing_from_fdr(market)
         if fdr_df is not None and not fdr_df.empty:
             self.cache.set(
@@ -521,13 +476,10 @@ class StockDataService:
                 ttl=86400,
             )
             await self._save_listing_to_db(market, fdr_df)
-
-            fallback_reason = "pykrx 결과 없음"
-            if pykrx_error:
-                fallback_reason = f"pykrx 오류: {pykrx_error}"
-            print(f"✅ 종목 리스트 조회 성공 (FinanceDataReader 대체, {fallback_reason}): {market}, {len(fdr_df)}개")
+            logger.info(f"✅ 종목 리스트 조회 성공 (FinanceDataReader): {market}, {len(fdr_df)}개")
             return fdr_df
 
+        logger.warning(f"⚠️ 종목 리스트 조회 실패: {market}")
         return None
 
     async def get_stock_by_name(self, name: str, market: str = "KOSPI") -> Optional[str]:
@@ -634,12 +586,12 @@ class StockDataService:
         self, index_name: str = "KOSPI", days: int = 60, max_retries: int = 3
     ) -> Optional[pd.DataFrame]:
         """
-        시장 지수 데이터 조회 (KIS API 사용, pykrx fallback)
+        시장 지수 데이터 조회 (KIS API 사용, FinanceDataReader fallback)
 
         Args:
             index_name: 지수 이름 ("KOSPI", "KOSDAQ", "KOSPI200")
             days: 조회 기간 (일)
-            max_retries: 최대 재시도 횟수 (pykrx fallback 시)
+            max_retries: 최대 재시도 횟수 (미사용, 호환성 유지)
 
         Returns:
             DataFrame: 지수 데이터 (Open, High, Low, Close, Volume)
@@ -660,18 +612,16 @@ class StockDataService:
         # 캐시 확인 (1시간 TTL)
         cached = self.cache.get(cache_key)
         if cached is not None:
-            print(f"✅ [Index] 캐시 히트: {cache_key}")
+            logger.info(f"✅ [Index] 캐시 히트: {cache_key}")
             cached_df = pd.DataFrame(cached)
             if "Date" in cached_df.columns:
                 cached_df["Date"] = pd.to_datetime(cached_df["Date"])
                 cached_df = cached_df.set_index("Date")
             return cached_df
 
-        # 1차 시도: KIS API
+        # 1순위: KIS API
         try:
-            from src.services.kis_service import kis_service
-
-            print(f"📊 [Index] KIS API로 지수 조회: {index_name} ({index_code})")
+            logger.info(f"📊 [Index] KIS API로 지수 조회: {index_name} ({index_code})")
             df = await kis_service.get_index_daily_price(
                 index_code=index_code,
                 period="D",
@@ -685,299 +635,173 @@ class StockDataService:
                     df.reset_index().to_dict("records"),
                     ttl=settings.CACHE_TTL_MARKET_INDEX
                 )
-                print(f"✅ [Index] 지수 데이터 조회 성공 (KIS API): {index_name} ({len(df)}일)")
+                logger.info(f"✅ [Index] 지수 데이터 조회 성공 (KIS API): {index_name} ({len(df)}일)")
                 return df
-            else:
-                print(f"⚠️ [Index] KIS API에서 지수 데이터 없음: {index_name}")
 
         except Exception as e:
-            logger.warning(f"⚠️ [Index] KIS API 조회 실패, pykrx로 fallback: {e}")
+            logger.warning(f"⚠️ [Index] KIS API 조회 실패, FinanceDataReader fallback 시도: {e}")
 
-        # 2차 시도: pykrx fallback
-        print(f"📊 [Index] pykrx fallback 시도: {index_name}")
+        # 2순위: FinanceDataReader fallback
+        try:
+            logger.info(f"📊 [Index] FinanceDataReader로 지수 조회: {index_name}")
 
-        # pykrx 티커 코드 매핑 (KIS와 다름)
-        pykrx_ticker_map = {
-            "KOSPI": "1001",
-            "KOSDAQ": "2001",
-            "KOSPI200": "2001",  # KOSPI200은 코드가 같음
-            "KRX100": "1028",
-        }
+            # FinanceDataReader 티커 코드 매핑
+            fdr_ticker_map = {
+                "KOSPI": "KS11",      # 코스피 지수
+                "KOSDAQ": "KQ11",     # 코스닥 지수
+                "KOSPI200": "KS200",  # 코스피200
+                "KRX100": "KRX100",   # KRX100
+            }
 
-        ticker = pykrx_ticker_map.get(index_name.upper())
-        if not ticker:
-            raise ValueError(f"pykrx에서 지원하지 않는 지수: {index_name}")
+            fdr_ticker = fdr_ticker_map.get(index_name.upper())
+            if not fdr_ticker:
+                raise ValueError(f"FinanceDataReader에서 지원하지 않는 지수: {index_name}")
 
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
 
-        start_str = start_date.strftime("%Y%m%d")
-        end_str = end_date.strftime("%Y%m%d")
+            start_str = start_date.strftime("%Y-%m-%d")
+            end_str = end_date.strftime("%Y-%m-%d")
 
-        for attempt in range(max_retries):
-            try:
-                # pykrx.stock.get_index_ohlcv() 사용
-                df = await asyncio.to_thread(
-                    krx_stock.get_index_ohlcv,
-                    start_str,
-                    end_str,
-                    ticker
+            df = await asyncio.to_thread(
+                fdr.DataReader,
+                fdr_ticker,
+                start_str,
+                end_str
+            )
+
+            if df is not None and len(df) > 0:
+                # FinanceDataReader는 이미 표준 컬럼명 사용 (Open, High, Low, Close, Volume)
+                # Change 컬럼 제거 (있다면)
+                if "Change" in df.columns:
+                    df = df[["Open", "High", "Low", "Close", "Volume"]]
+
+                # 캐싱 (1시간 TTL)
+                self.cache.set(
+                    cache_key,
+                    df.reset_index().to_dict("records"),
+                    ttl=settings.CACHE_TTL_MARKET_INDEX
                 )
+                logger.info(f"✅ [Index] 지수 데이터 조회 성공 (FinanceDataReader): {index_name} ({len(df)}일)")
+                return df
+            else:
+                logger.warning(f"⚠️ [Index] 지수 데이터 없음: {index_name}")
+                return None
 
-                if df is not None and len(df) > 0:
-                    # pykrx 컬럼명을 영어로 변경 (표준화)
-                    df.columns = ["Open", "High", "Low", "Close", "Volume"]
-
-                    # 캐싱 (1시간 TTL)
-                    self.cache.set(
-                        cache_key,
-                        df.reset_index().to_dict("records"),
-                        ttl=settings.CACHE_TTL_MARKET_INDEX
-                    )
-                    print(f"✅ [Index] 지수 데이터 조회 성공 (pykrx fallback): {index_name} ({len(df)}일)")
-                    return df
-                else:
-                    print(f"⚠️ [Index] 지수 데이터 없음 (pykrx): {index_name}")
-                    return None
-
-            except Exception as e:
-                error_msg = str(e)
-                is_rate_limit = "429" in error_msg or "Too Many Requests" in error_msg
-
-                if is_rate_limit and attempt < max_retries - 1:
-                    # Exponential backoff: 1초 → 2초 → 4초
-                    wait_time = 2 ** attempt
-                    print(f"⚠️ [Index] Rate Limit 감지 ({attempt + 1}/{max_retries}), {wait_time}초 대기...")
-                    await asyncio.sleep(wait_time)
-                    continue
-                else:
-                    # 최종 실패
-                    error_detail = f"{index_name}, attempt {attempt + 1}/{max_retries}, {error_msg}"
-                    print(f"❌ [Index] 지수 데이터 조회 실패 (pykrx): {error_detail}")
-
-                    if attempt == max_retries - 1:
-                        logger.error(f"❌ [Index] {index_name} 데이터 조회 최종 실패")
-                        return None
-
-        return None
+        except Exception as e:
+            logger.error(f"❌ [Index] 지수 데이터 조회 실패 (모든 소스): {index_name}, {e}")
+            return None
 
 
     async def get_fundamental_data(
         self, stock_code: str, date: str = None
     ) -> Optional[Dict[str, Any]]:
         """
-        펀더멘털 데이터 조회 (pykrx 사용)
+        펀더멘털 데이터 조회 (KIS API 사용)
 
         Args:
             stock_code: 종목 코드
-            date: 조회 날짜 (YYYYMMDD), 기본값은 오늘
+            date: 조회 날짜 (YYYYMMDD), 미사용 (호환성 유지)
 
         Returns:
             dict: {
                 "PER": 주가수익비율,
                 "PBR": 주가순자산비율,
-                "EPS": 주당순이익,
-                "DIV": 배당수익률,
-                "DPS": 주당배당금,
-                "BPS": 주당순자산가치
+                "EPS": None (KIS API 미제공),
+                "DIV": None (KIS API 미제공),
+                "DPS": None (KIS API 미제공),
+                "BPS": None (KIS API 미제공)
             }
         """
-        if not date:
-            date = datetime.now().strftime("%Y%m%d")
-
         # 캐시 키
-        cache_key = f"fundamental:{stock_code}:{date}"
+        cache_key = f"fundamental:{stock_code}"
 
         # 캐시 확인
         cached = self.cache.get(cache_key)
         if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
+            logger.info(f"✅ 캐시 히트: {cache_key}")
             return cached
 
         try:
-            # pykrx.stock.get_market_fundamental() 사용
-            df = await asyncio.to_thread(
-                krx_stock.get_market_fundamental,
-                date,
-                date,
-                stock_code
-            )
+            # KIS API로 현재가 조회 (PER/PBR 포함)
+            price_data = await kis_service.get_stock_price(stock_code)
 
-            if df is not None and len(df) > 0:
-                # DataFrame을 dict로 변환
-                row = df.iloc[0]
+            if price_data:
                 fundamental = {
-                    "PER": float(row.get("PER", 0)) if pd.notna(row.get("PER")) else None,
-                    "PBR": float(row.get("PBR", 0)) if pd.notna(row.get("PBR")) else None,
-                    "EPS": float(row.get("EPS", 0)) if pd.notna(row.get("EPS")) else None,
-                    "DIV": float(row.get("DIV", 0)) if pd.notna(row.get("DIV")) else None,
-                    "DPS": float(row.get("DPS", 0)) if pd.notna(row.get("DPS")) else None,
-                    "BPS": float(row.get("BPS", 0)) if pd.notna(row.get("BPS")) else None,
+                    "PER": price_data.get("per"),  # KIS API 제공
+                    "PBR": price_data.get("pbr"),  # KIS API 제공
+                    "EPS": None,  # KIS API 미제공
+                    "DIV": None,  # KIS API 미제공 (배당수익률)
+                    "DPS": None,  # KIS API 미제공 (주당배당금)
+                    "BPS": None,  # KIS API 미제공 (주당순자산가치)
                 }
 
-                # 캐싱 (1일 TTL)
-                self.cache.set(cache_key, fundamental, ttl=86400)
-                print(f"✅ 펀더멘털 데이터 조회 성공 (pykrx): {stock_code}")
+                # 캐싱 (1시간 TTL - 펀더멘털은 자주 변하지 않음)
+                self.cache.set(cache_key, fundamental, ttl=3600)
+                logger.info(f"✅ 펀더멘털 데이터 조회 성공 (KIS API): {stock_code}")
                 return fundamental
             else:
-                print(f"⚠️ 펀더멘털 데이터 없음: {stock_code}")
+                logger.warning(f"⚠️ 펀더멘털 데이터 없음: {stock_code}")
                 return None
 
         except Exception as e:
-            import traceback
-            print(f"❌ 펀더멘털 데이터 조회 실패 (pykrx): {stock_code}")
-            print(f"   에러 타입: {type(e).__name__}")
-            print(f"   에러 메시지: {str(e)}")
-            print(f"   호출 인자: date={date}, stock_code={stock_code}")
-            traceback.print_exc()
+            logger.error(f"❌ 펀더멘털 데이터 조회 실패 (KIS API): {stock_code} - {e}")
             return None
 
     async def get_market_cap_data(
         self, stock_code: str, date: str = None
     ) -> Optional[Dict[str, Any]]:
         """
-        시가총액 및 거래 데이터 조회 (pykrx 사용)
+        시가총액 및 거래 데이터 조회 (KIS API 사용)
 
         Args:
             stock_code: 종목 코드
-            date: 조회 날짜 (YYYYMMDD), 기본값은 오늘
+            date: 조회 날짜 (YYYYMMDD), 미사용 (호환성 유지)
 
         Returns:
             dict: {
                 "market_cap": 시가총액 (원),
                 "trading_volume": 거래량,
-                "trading_value": 거래대금 (원),
-                "shares_outstanding": 상장주식수
+                "trading_value": None (KIS API 미제공),
+                "shares_outstanding": None (KIS API 미제공)
             }
         """
-        if not date:
-            date = datetime.now().strftime("%Y%m%d")
-
         # 캐시 키
-        cache_key = f"market_cap:{stock_code}:{date}"
+        cache_key = f"market_cap:{stock_code}"
 
         # 캐시 확인
         cached = self.cache.get(cache_key)
         if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
+            logger.info(f"✅ 캐시 히트: {cache_key}")
             return cached
 
         try:
-            # pykrx.stock.get_market_cap() 사용
-            df = await asyncio.to_thread(
-                krx_stock.get_market_cap,
-                date,
-                date,
-                stock_code
-            )
+            # KIS API로 현재가 조회 (시가총액, 거래량 포함)
+            price_data = await kis_service.get_stock_price(stock_code)
 
-            if df is not None and len(df) > 0:
-                # DataFrame을 dict로 변환
-                row = df.iloc[0]
+            if price_data:
                 market_cap_data = {
-                    "market_cap": int(row.get("시가총액", 0)) if pd.notna(row.get("시가총액")) else None,
-                    "trading_volume": int(row.get("거래량", 0)) if pd.notna(row.get("거래량")) else None,
-                    "trading_value": int(row.get("거래대금", 0)) if pd.notna(row.get("거래대금")) else None,
-                    "shares_outstanding": int(row.get("상장주식수", 0)) if pd.notna(row.get("상장주식수")) else None,
-                }
-
-                # 캐싱 (1일 TTL)
-                self.cache.set(cache_key, market_cap_data, ttl=86400)
-                print(f"✅ 시가총액 데이터 조회 성공 (pykrx): {stock_code}")
-                return market_cap_data
-            else:
-                print(f"⚠️ 시가총액 데이터 없음: {stock_code}")
-                return None
-
-        except Exception as e:
-            import traceback
-            print(f"❌ 시가총액 데이터 조회 실패 (pykrx): {stock_code}")
-            print(f"   에러 타입: {type(e).__name__}")
-            print(f"   에러 메시지: {str(e)}")
-            print(f"   호출 인자: date={date}, stock_code={stock_code}")
-            traceback.print_exc()
-            return None
-
-    async def get_investor_trading(
-        self, stock_code: str, days: int = 30
-    ) -> Optional[Dict[str, Any]]:
-        """
-        투자주체별 매매 동향 조회 (pykrx 사용)
-
-        Args:
-            stock_code: 종목 코드
-            days: 조회 기간 (일)
-
-        Returns:
-            dict: {
-                "foreign_net": 외국인 순매수 (최근),
-                "institution_net": 기관 순매수 (최근),
-                "individual_net": 개인 순매수 (최근),
-                "foreign_trend": "순매수" | "순매도" | "중립",
-                "institution_trend": "순매수" | "순매도" | "중립",
-            }
-        """
-        # 캐시 키
-        cache_key = f"investor_trading:{stock_code}:{days}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-
-        start_str = start_date.strftime("%Y%m%d")
-        end_str = end_date.strftime("%Y%m%d")
-
-        try:
-            # pykrx.stock.get_market_trading_value_by_date() 사용
-            df = await asyncio.to_thread(
-                krx_stock.get_market_trading_value_by_date,
-                start_str,
-                end_str,
-                stock_code
-            )
-
-            if df is not None and len(df) > 0:
-                # 최근 데이터 추출
-                latest = df.iloc[-1]
-
-                foreign_net = int(latest.get("외국인순매수", 0)) if pd.notna(latest.get("외국인순매수")) else 0
-                institution_net = int(latest.get("기관순매수", 0)) if pd.notna(latest.get("기관순매수")) else 0
-                individual_net = int(latest.get("개인순매수", 0)) if pd.notna(latest.get("개인순매수")) else 0
-
-                # 추세 판단 (최근 7일 평균)
-                recent_df = df.tail(7)
-                foreign_avg = recent_df.get("외국인순매수", pd.Series([0])).mean()
-                institution_avg = recent_df.get("기관순매수", pd.Series([0])).mean()
-
-                investor_data = {
-                    "foreign_net": foreign_net,
-                    "institution_net": institution_net,
-                    "individual_net": individual_net,
-                    "foreign_trend": "순매수" if foreign_avg > 0 else "순매도" if foreign_avg < 0 else "중립",
-                    "institution_trend": "순매수" if institution_avg > 0 else "순매도" if institution_avg < 0 else "중립",
+                    "market_cap": price_data.get("market_cap"),  # KIS API 제공
+                    "trading_volume": price_data.get("volume"),  # KIS API 제공
+                    "trading_value": None,  # KIS API 미제공 (거래대금)
+                    "shares_outstanding": None,  # KIS API 미제공 (상장주식수)
                 }
 
                 # 캐싱 (1시간 TTL)
-                self.cache.set(cache_key, investor_data, ttl=3600)
-                print(f"✅ 투자주체별 매매 조회 성공 (pykrx): {stock_code}")
-                return investor_data
+                self.cache.set(cache_key, market_cap_data, ttl=3600)
+                logger.info(f"✅ 시가총액 데이터 조회 성공 (KIS API): {stock_code}")
+                return market_cap_data
             else:
-                print(f"⚠️ 투자주체별 매매 데이터 없음: {stock_code}")
+                logger.warning(f"⚠️ 시가총액 데이터 없음: {stock_code}")
                 return None
 
         except Exception as e:
-            import traceback
-            print(f"❌ 투자주체별 매매 조회 실패 (pykrx): {stock_code}")
-            print(f"   에러 타입: {type(e).__name__}")
-            print(f"   에러 메시지: {str(e)}")
-            print(f"   호출 인자: start={start_str}, end={end_str}, stock_code={stock_code}")
-            traceback.print_exc()
+            logger.error(f"❌ 시가총액 데이터 조회 실패 (KIS API): {stock_code} - {e}")
             return None
+
+    # get_investor_trading() 메서드 제거됨 (2025-01-08)
+    # KIS API에서 투자자별 매매 동향 데이터를 제공하지 않아 제거
+    # Phase 2에서 크롤링 또는 외부 API로 재구현 예정
 
 
 # 싱글톤 인스턴스

@@ -68,11 +68,13 @@ def _build_llm(
     )
 
     if provider == "anthropic":
+        # Claude 프롬프트 캐싱 활성화
         return ChatAnthropic(
             model=model_name,
             temperature=temperature,
             max_tokens=max_tokens,
             api_key=settings.ANTHROPIC_API_KEY,
+            default_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
         )
 
     if provider == "google":
@@ -207,10 +209,10 @@ def get_research_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> ChatAnthropic:
-    """Research Agent 전용 LLM (Claude Sonnet 4.5)"""
+    """Research Agent 전용 LLM (Claude Haiku 4.5 - 프롬프트 캐싱 활성화)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
-    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+    model_name = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
 
     if not settings.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -225,10 +227,10 @@ def get_router_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> ChatAnthropic:
-    """Router Agent 전용 LLM (Claude Sonnet 4.5)"""
+    """Router Agent 전용 LLM (Claude Haiku 4.5 - 프롬프트 캐싱 활성화)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
-    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+    model_name = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
 
     if not settings.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -243,10 +245,10 @@ def get_strategy_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> ChatAnthropic:
-    """Strategy Agent 전용 LLM (Claude Sonnet 4.5)"""
+    """Strategy Agent 전용 LLM (Claude Haiku 4.5 - 프롬프트 캐싱 활성화)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
-    model_name = "claude-sonnet-4-5-20250929"  # Claude Sonnet 4.5
+    model_name = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5
 
     if not settings.ANTHROPIC_API_KEY:
         raise ValueError(
@@ -261,7 +263,7 @@ def get_portfolio_risk_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
 ) -> ChatAnthropic:
-    """Portfolio/Risk Agent 전용 LLM (Claude Haiku 4.5)"""
+    """Portfolio/Risk Agent 전용 LLM (Claude Haiku 4.5 - 프롬프트 캐싱 활성화)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
     model_name = "claude-haiku-4-5-20251001"  # Claude Haiku 4.5

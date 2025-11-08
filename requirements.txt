@@ -27,8 +27,8 @@ anthropic==0.71.0  # Updated from 0.69.0
 
 # Data APIs
 dart-fss==0.4.14
-finance-datareader==0.9.50  # pykrx로 대체
-pykrx>=1.0.46  # KRX 공식 데이터 소스
+finance-datareader==0.9.50  # KIS API 보조 데이터 소스 (fallback)
+# pykrx - 안정성 문제로 제거됨 (KIS API로 대체)
 # pykis - 한국투자증권 (Phase 2에서 추가 예정)
 
 # Data Processing

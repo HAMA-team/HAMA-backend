@@ -507,7 +507,7 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
         technical_indicators = calculate_all_indicators(price_df)
         fundamental_data = await stock_data_service.get_fundamental_data(stock_code)
         market_cap_data = await stock_data_service.get_market_cap_data(stock_code)
-        investor_trading_data = await stock_data_service.get_investor_trading(stock_code, days=30)
+        # investor_trading_data 제거됨 (KIS API 미지원)
 
         try:
             market_df = await stock_data_service.get_market_index("KOSPI", days=30)
@@ -533,13 +533,10 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             "closing": price_data["latest_close"],
             "per": fundamental_data.get("PER") if fundamental_data else None,
             "pbr": fundamental_data.get("PBR") if fundamental_data else None,
-            "foreign_trend": investor_trading_data.get("foreign_trend")
-            if investor_trading_data
-            else None,
         }
         summary = (
             f"{stock_code} 데이터 확보 완료 (종가 {cols['closing']:,}원, PER {cols['per']}, "
-            f"PBR {cols['pbr']}, 외국인 {cols['foreign_trend']})"
+            f"PBR {cols['pbr']})"
         )
 
         message = AIMessage(
@@ -558,7 +555,7 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             "market_index_data": market_data,
             "fundamental_data": fundamental_data,
             "market_cap_data": market_cap_data,
-            "investor_trading_data": investor_trading_data,
+            # investor_trading_data 제거됨 (KIS API 미지원)
             "technical_indicators": technical_indicators,
             "messages": [message],
             "request_id": request_id,
@@ -591,16 +588,14 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
     market = state.get("market_index_data") or {}
     fundamental = state.get("fundamental_data") or {}
     market_cap = state.get("market_cap_data") or {}
-    investor = state.get("investor_trading_data") or {}
     price = state.get("price_data") or {}
 
-    prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요. 
+    prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요.
 
 종목코드: {stock_code}
-현재가: {price.get('latest_close')} 
-시가총액: {market_cap.get('market_cap')} 
-펀더멘털: {_dumps(fundamental)} 
-투자주체: {_dumps(investor)} 
+현재가: {price.get('latest_close')}
+시가총액: {market_cap.get('market_cap')}
+펀더멘털: {_dumps(fundamental)}
 기술적 지표: {_dumps(technical)} 
 시장 지수: {_dumps(market)} 
 
@@ -687,15 +682,13 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
     technical = state.get("technical_indicators") or {}
     market = state.get("market_index_data") or {}
     fundamental = state.get("fundamental_data") or {}
-    investor = state.get("investor_trading_data") or {}
     price = state.get("price_data") or {}
 
     prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 리스크 시나리오를 제시하세요.
 
-종목코드: {stock_code} 
-현재가: {price.get('latest_close')} 
-펀더멘털: {_dumps(fundamental)} 
-투자주체: {_dumps(investor)} 
+종목코드: {stock_code}
+현재가: {price.get('latest_close')}
+펀더멘털: {_dumps(fundamental)}
 기술적 지표: {_dumps(technical)} 
 시장 지수: {_dumps(market)} 
 
@@ -903,7 +896,7 @@ async def insight_worker_node(state: ResearchState) -> ResearchState:
         "technical": state.get("technical_indicators", {}),
         "bull": state.get("bull_analysis"),
         "bear": state.get("bear_analysis"),
-        "investor": state.get("investor_trading_data"),
+        # "investor": investor_trading_data 제거됨 (KIS API 미지원)
         "macro": state.get("macro_analysis"),
     }
 
@@ -1135,18 +1128,19 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
     logger.info("💹 [Research/TradingFlowAnalyst] 거래 동향 분석 시작: %s", stock_code)
 
     # 데이터 추출
+    # investor_trading_data는 KIS API 미지원으로 항상 None
     investor_data = state.get("investor_trading_data") or {}
     price_data = state.get("price_data") or {}
 
     if not investor_data:
-        logger.warning("⚠️ [Research/TradingFlowAnalyst] 투자자 거래 데이터 부족")
+        logger.warning("⚠️ [Research/TradingFlowAnalyst] 투자자 거래 데이터 부족 (KIS API 미지원)")
         return _task_complete(
             state,
             task,
-            "투자자 거래 데이터 부족으로 분석 생략",
+            "투자자 거래 데이터 미지원으로 분석 생략",
             {
                 "trading_flow_analysis": None,
-                "messages": [AIMessage(content="투자자 거래 데이터가 부족하여 분석을 생략합니다.")],
+                "messages": [AIMessage(content="투자자 거래 데이터는 현재 제공되지 않습니다.")],
             },
         )
 
@@ -1407,7 +1401,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     price_data = state.get("price_data") or {}
     technical_indicators = state.get("technical_indicators") or {}
     fundamental = state.get("fundamental_data") or {}
-    investor = state.get("investor_trading_data") or {}
+    # investor = state.get("investor_trading_data") or {}  # pykrx 제거로 인해 사용 불가
     market_cap = state.get("market_cap_data") or {}
     stock_code = state.get("stock_code") or "N/A"
 
@@ -1507,16 +1501,8 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
             bull_conf = min(bull_conf + 1, 5)
             bear_conf = max(bear_conf - 1, 1)
 
-    foreign_trend = investor.get("foreign_trend", "보합")
-    institution_trend = investor.get("institution_trend", "보합")
-
-    investor_sentiment = "중립"
-    if foreign_trend == "매수" and institution_trend == "매수":
-        investor_sentiment = "긍정"
-        bull_conf = min(bull_conf + 1, 5)
-    elif foreign_trend == "매도" and institution_trend == "매도":
-        investor_sentiment = "부정"
-        bear_conf = min(bear_conf + 1, 5)
+    # foreign_trend, institution_trend 제거 (investor_trading_data 더 이상 사용 불가)
+    # investor_sentiment 계산 로직 제거
 
     total_conf = max(bull_conf + bear_conf, 1)
     target_price = int((bull_target * bull_conf + bear_target * bear_conf) / total_conf)
@@ -1549,13 +1535,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         "valuation": valuation_status,
     }
 
-    investor_summary = {
-        "foreign_trend": foreign_trend,
-        "institution_trend": institution_trend,
-        "foreign_net": investor.get("foreign_net"),
-        "institution_net": investor.get("institution_net"),
-        "sentiment": investor_sentiment,
-    }
+    # investor_summary 제거 (investor_trading_data 더 이상 사용 불가)
 
     market_cap_trillion = (
         market_cap.get("market_cap", 0) / 1e12 if market_cap.get("market_cap") else None
@@ -1615,7 +1595,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         "macro_summary": macro_summary,
         # 기존 요약
         "fundamental_summary": fundamental_summary,
-        "investor_summary": investor_summary,
+        # "investor_summary": investor_summary,  # 제거됨
         "market_cap_trillion": market_cap_trillion,
         "summary": (
             f"{stock_code} - {recommendation} (목표가: {target_price:,}원, "
@@ -1683,10 +1663,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
             f"### Bull Case (확신도: {bull_conf}/5)\n"
             + "\n".join([f"- {factor}" for factor in bull.get("positive_factors", [])[:3]]) + "\n\n"
             f"### Bear Case (확신도: {bear_conf}/5)\n"
-            + "\n".join([f"- {factor}" for factor in bear.get("risk_factors", [])[:3]]) + "\n\n"
-            f"## 📈 투자주체 동향\n"
-            f"- 외국인: {foreign_trend}\n"
-            f"- 기관: {institution_trend}\n"
+            + "\n".join([f"- {factor}" for factor in bear.get("risk_factors", [])[:3]]) + "\n"
         )
 
     message = AIMessage(content=dashboard_content)

@@ -82,7 +82,16 @@ def _format_agent_results(agent_results: dict) -> str:
     # Research Agent 결과
     if "research" in agent_results:
         research = agent_results["research"]
-        if research.get("summary"):
+        # Research Agent는 messages 필드에 AIMessage로 대시보드를 반환
+        if research.get("messages"):
+            # 마지막 메시지의 content 추출
+            last_message = research["messages"][-1]
+            if hasattr(last_message, "content"):
+                response_parts.append(last_message.content)
+            elif isinstance(last_message, dict) and last_message.get("content"):
+                response_parts.append(last_message["content"])
+        # Fallback: summary 필드 확인
+        elif research.get("summary"):
             response_parts.append("## 📊 종목 분석\n")
             response_parts.append(research["summary"])
 
@@ -240,8 +249,9 @@ async def stream_multi_agent_execution(
                     }
                 )
 
-                # SSE 이벤트 전송
-                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': routing_decision.worker_params}, ensure_ascii=False)}\n\n"
+                # SSE 이벤트 전송 (WorkerParams를 dict로 변환)
+                worker_params_dict = routing_decision.worker_params.model_dump() if routing_decision.worker_params else {}
+                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': worker_params_dict}, ensure_ascii=False)}\n\n"
                 yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
                 yield f"event: master_complete\ndata: {json.dumps({'message': worker_message, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
                 yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"

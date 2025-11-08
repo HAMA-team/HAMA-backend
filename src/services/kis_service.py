@@ -451,6 +451,91 @@ class KISService:
         logger.info(f"✅ Stock price fetched: {stock_code} = {response['current_price']:,}원")
         return response
 
+    async def get_stock_daily_price(
+        self,
+        stock_code: str,
+        start_date: str,
+        end_date: str,
+        period: str = "D"
+    ) -> Optional[pd.DataFrame]:
+        """
+        국내주식 일자별 시세 조회 (OHLCV)
+
+        Args:
+            stock_code: 종목코드 (ex. "005930")
+            start_date: 시작일자 (YYYYMMDD)
+            end_date: 종료일자 (YYYYMMDD)
+            period: 기간 분류 코드 (D: 일봉, W: 주봉, M: 월봉, Y: 년봉)
+
+        Returns:
+            pd.DataFrame with columns: Date, Open, High, Low, Close, Volume
+            또는 None (조회 실패 시)
+        """
+        logger.info(f"📊 [KIS] 일자별 주가 조회: {stock_code} ({start_date} ~ {end_date})")
+
+        # 캐싱 (60초 TTL)
+        cache_key = f"kis_daily_price:{stock_code}:{start_date}:{end_date}:{period}"
+        cached = cache_manager.get(cache_key)
+        if cached is not None:
+            logger.debug(f"✅ 캐시 히트: {cache_key}")
+            return cached
+
+        tr_id = KIS_TR_IDS["stock_daily_price"]
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",  # 시장 분류 코드 (J: 주식)
+            "FID_INPUT_ISCD": stock_code,  # 종목코드
+            "FID_INPUT_DATE_1": start_date,  # 시작일자
+            "FID_INPUT_DATE_2": end_date,  # 종료일자
+            "FID_PERIOD_DIV_CODE": period,  # 기간 분류 코드
+            "FID_ORG_ADJ_PRC": "0",  # 수정주가 원주가 가격 구분 (0: 수정주가, 1: 원주가)
+        }
+
+        try:
+            result = await self._api_call(
+                KIS_ENDPOINTS["stock_daily_price"],
+                tr_id,
+                params,
+                method="GET"
+            )
+
+            output = result.get("output2", [])  # output2가 일자별 데이터 리스트
+
+            if not output:
+                logger.warning(f"⚠️ [KIS] 일자별 주가 데이터 없음: {stock_code}")
+                return None
+
+            # DataFrame 생성
+            data = []
+            for item in output:
+                data.append({
+                    "Date": item.get("stck_bsop_date", ""),  # 주식 영업 일자
+                    "Open": int(item.get("stck_oprc", 0)),  # 시가
+                    "High": int(item.get("stck_hgpr", 0)),  # 최고가
+                    "Low": int(item.get("stck_lwpr", 0)),  # 최저가
+                    "Close": int(item.get("stck_clpr", 0)),  # 종가
+                    "Volume": int(item.get("acml_vol", 0)),  # 누적 거래량
+                })
+
+            df = pd.DataFrame(data)
+
+            # Date를 datetime으로 변환하고 인덱스로 설정
+            df["Date"] = pd.to_datetime(df["Date"], format="%Y%m%d")
+            df.set_index("Date", inplace=True)
+
+            # 날짜 오름차순 정렬
+            df.sort_index(inplace=True)
+
+            # 캐싱 (60초 TTL)
+            cache_manager.set(cache_key, df, ttl=60)
+
+            logger.info(f"✅ [KIS] 일자별 주가 조회 완료: {stock_code} ({len(df)}일)")
+            return df
+
+        except Exception as e:
+            logger.error(f"❌ [KIS] 일자별 주가 조회 실패: {stock_code} - {e}")
+            return None
+
     # ==================== 주문 실행 ====================
 
     async def place_order(

@@ -1,7 +1,7 @@
 """
-pykrx 통합 및 기술적 지표 테스트
+Stock Data Service 통합 테스트 (KIS API + FinanceDataReader)
 
-Research Agent의 pykrx 전환과 기술적 지표 계산을 검증합니다.
+Research Agent의 KIS API 및 FinanceDataReader 통합과 기술적 지표 계산을 검증합니다.
 """
 import pytest
 
@@ -10,9 +10,9 @@ from src.utils.indicators import calculate_all_indicators
 
 
 @pytest.mark.asyncio
-async def test_pykrx_stock_price():
-    """pykrx를 사용한 주가 데이터 조회 테스트"""
-    print("\n=== Test 1: pykrx 주가 데이터 조회 ===")
+async def test_stock_price():
+    """KIS API + FinanceDataReader를 사용한 주가 데이터 조회 테스트"""
+    print("\n=== Test 1: 주가 데이터 조회 (KIS API/FDR) ===")
 
     stock_code = "005930"  # 삼성전자
     df = await stock_data_service.get_stock_price(stock_code, days=30)
@@ -117,15 +117,15 @@ async def test_stock_listing():
 
 @pytest.mark.asyncio
 async def test_fundamental_data():
-    """펀더멘털 데이터 조회 테스트"""
-    print("\n=== Test 5: 펀더멘털 데이터 조회 (PER/PBR/EPS) ===")
+    """펀더멘털 데이터 조회 테스트 (KIS API)"""
+    print("\n=== Test 5: 펀더멘털 데이터 조회 (KIS API) ===")
 
     stock_code = "005930"  # 삼성전자
     fundamental = await stock_data_service.get_fundamental_data(stock_code)
 
     # 펀더멘털 데이터는 API 의존성이 높으므로 None일 경우 스킵
     if fundamental is None:
-        pytest.skip("펀더멘털 데이터 조회 실패 (pykrx API 이슈) - 스킵")
+        pytest.skip("펀더멘털 데이터 조회 실패 (KIS API 이슈) - 스킵")
 
     # 필수 필드 확인
     expected_keys = ["PER", "PBR", "EPS", "DIV", "DPS", "BPS"]
@@ -133,63 +133,53 @@ async def test_fundamental_data():
         assert key in fundamental, f"펀더멘털 데이터에 {key} 필드 없음"
 
     print(f"✅ 펀더멘털 데이터 조회 성공: {stock_code}")
-    print(f"   - PER: {fundamental['PER']}배")
-    print(f"   - PBR: {fundamental['PBR']}배")
-    print(f"   - EPS: {fundamental['EPS']:,}원")
-    print(f"   - 배당수익률: {fundamental['DIV']}%")
-    print(f"   - DPS: {fundamental['DPS']:,}원")
-    print(f"   - BPS: {fundamental['BPS']:,}원")
+    print(f"   - PER: {fundamental['PER']}배" if fundamental['PER'] else "   - PER: N/A")
+    print(f"   - PBR: {fundamental['PBR']}배" if fundamental['PBR'] else "   - PBR: N/A")
+    # EPS, DIV, DPS, BPS는 KIS API에서 제공하지 않음 (None 예상)
+    print(f"   - EPS: {fundamental['EPS']:,}원" if fundamental['EPS'] else "   - EPS: N/A (KIS API 미지원)")
+    print(f"   - 배당수익률: {fundamental['DIV']}%" if fundamental['DIV'] else "   - DIV: N/A (KIS API 미지원)")
+    print(f"   - DPS: {fundamental['DPS']:,}원" if fundamental['DPS'] else "   - DPS: N/A (KIS API 미지원)")
+    print(f"   - BPS: {fundamental['BPS']:,}원" if fundamental['BPS'] else "   - BPS: N/A (KIS API 미지원)")
 
 
 @pytest.mark.asyncio
 async def test_market_cap_data():
-    """시가총액 및 거래 데이터 조회 테스트"""
-    print("\n=== Test 6: 시가총액 및 거래 데이터 조회 ===")
+    """시가총액 및 거래 데이터 조회 테스트 (KIS API)"""
+    print("\n=== Test 6: 시가총액 및 거래 데이터 조회 (KIS API) ===")
 
     stock_code = "005930"  # 삼성전자
     market_cap = await stock_data_service.get_market_cap_data(stock_code)
 
     # 시가총액 데이터는 API 의존성이 높으므로 None일 경우 스킵
     if market_cap is None:
-        pytest.skip("시가총액 데이터 조회 실패 (pykrx API 이슈) - 스킵")
+        pytest.skip("시가총액 데이터 조회 실패 (KIS API 이슈) - 스킵")
 
     # 필수 필드 확인
     expected_keys = ["market_cap", "trading_volume", "trading_value", "shares_outstanding"]
     for key in expected_keys:
         assert key in market_cap, f"시가총액 데이터에 {key} 필드 없음"
 
-    market_cap_trillion = market_cap["market_cap"] / 1e12
-
     print(f"✅ 시가총액 데이터 조회 성공: {stock_code}")
-    print(f"   - 시가총액: {market_cap_trillion:.2f}조원")
-    print(f"   - 거래량: {market_cap['trading_volume']:,}주")
-    print(f"   - 거래대금: {market_cap['trading_value'] / 1e8:,.0f}억원")
-    print(f"   - 상장주식수: {market_cap['shares_outstanding']:,}주")
 
+    # market_cap과 trading_volume은 항상 존재해야 함
+    if market_cap["market_cap"]:
+        market_cap_trillion = market_cap["market_cap"] / 1e12
+        print(f"   - 시가총액: {market_cap_trillion:.2f}조원")
+    else:
+        print(f"   - 시가총액: N/A")
 
-@pytest.mark.asyncio
-async def test_investor_trading():
-    """투자주체별 매매 동향 테스트"""
-    print("\n=== Test 7: 투자주체별 매매 동향 조회 ===")
+    if market_cap["trading_volume"]:
+        print(f"   - 거래량: {market_cap['trading_volume']:,}주")
+    else:
+        print(f"   - 거래량: N/A")
 
-    stock_code = "005930"  # 삼성전자
-    investor = await stock_data_service.get_investor_trading(stock_code, days=30)
+    # trading_value와 shares_outstanding은 KIS API에서 제공하지 않음 (None 예상)
+    if market_cap["trading_value"]:
+        print(f"   - 거래대금: {market_cap['trading_value'] / 1e8:,.0f}억원")
+    else:
+        print(f"   - 거래대금: N/A (KIS API 미지원)")
 
-    assert investor is not None, "투자주체별 데이터 조회 실패"
-
-    # 필수 필드 확인
-    expected_keys = ["foreign_net", "institution_net", "individual_net", "foreign_trend", "institution_trend"]
-    for key in expected_keys:
-        assert key in investor, f"투자주체별 데이터에 {key} 필드 없음"
-
-    # 데이터 품질 검증: 모든 값이 0이면 경고
-    total_trading = abs(investor['foreign_net']) + abs(investor['institution_net']) + abs(investor['individual_net'])
-    if total_trading == 0:
-        print(f"⚠️ 경고: 투자주체별 매매 금액이 모두 0원입니다. 데이터가 올바르지 않을 수 있습니다.")
-        print(f"   - 캐시된 잘못된 데이터일 가능성이 있습니다.")
-        pytest.skip("투자주체별 데이터가 모두 0원 - 데이터 품질 이슈로 스킵")
-
-    print(f"✅ 투자주체별 매매 동향 조회 성공: {stock_code}")
-    print(f"   - 외국인 순매수: {investor['foreign_net'] / 1e8:,.0f}억원 (추세: {investor['foreign_trend']})")
-    print(f"   - 기관 순매수: {investor['institution_net'] / 1e8:,.0f}억원 (추세: {investor['institution_trend']})")
-    print(f"   - 개인 순매수: {investor['individual_net'] / 1e8:,.0f}억원")
+    if market_cap["shares_outstanding"]:
+        print(f"   - 상장주식수: {market_cap['shares_outstanding']:,}주")
+    else:
+        print(f"   - 상장주식수: N/A (KIS API 미지원)")
