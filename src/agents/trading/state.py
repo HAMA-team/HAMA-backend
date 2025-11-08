@@ -1,9 +1,9 @@
 """
 Trading Agent State 정의
 
-매매 실행을 위한 State
+매매 실행을 위한 State (ReAct 패턴)
 """
-from typing import TypedDict, Optional, List, Annotated
+from typing import TypedDict, Optional, List, Annotated, Literal
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -13,12 +13,15 @@ from src.schemas.hitl_config import HITLConfig
 
 class TradingState(TypedDict):
     """
-    Trading Agent 서브그래프 State
+    Trading Agent 서브그래프 State (ReAct 패턴)
 
     Flow:
-    1. prepare_trade: 거래 준비 (부작용)
-    2. approval_trade: HITL 승인 (interrupt)
-    3. execute_trade: 거래 실행 (부작용)
+    1. Intent Classifier: 매매 의도 분석 및 정보 추출
+    2. Planner: Specialist 선택
+    3. Task Router: 작업 선택
+    4. Specialists: 매매 분석 (buy/sell/risk_reward)
+    5. Approval: HITL 승인
+    6. Execute: 거래 실행
     """
 
     # Supervisor 패턴 호환성
@@ -47,6 +50,28 @@ class TradingState(TypedDict):
     # Research 결과 (Buy/Sell Specialist가 참조)
     research_result: Optional[dict]
     """Research Agent의 consensus 결과"""
+
+    # ReAct 제어 필드
+    analysis_depth: Optional[Literal["quick", "standard", "comprehensive"]]
+    """분석 깊이"""
+
+    focus_areas: Optional[List[str]]
+    """집중 영역 리스트"""
+
+    depth_reason: Optional[str]
+    """분석 깊이 결정 근거"""
+
+    pending_tasks: Optional[List[dict]]
+    """실행 대기 중인 작업 큐"""
+
+    completed_tasks: Optional[List[dict]]
+    """완료된 작업 리스트"""
+
+    current_task: Optional[dict]
+    """현재 실행 중인 작업"""
+
+    task_notes: Optional[List[str]]
+    """작업 진행 노트"""
 
     # 매매 정보 (LLM이 추출해야 할 정보)
     stock_code: Optional[str]

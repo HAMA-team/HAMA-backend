@@ -1,4 +1,7 @@
-"""Risk Agent 노드 함수들."""
+"""Risk Agent 노드 함수들.
+
+ReAct 패턴: Intent Classifier → Planner → Task Router → Specialists → Final Assessment
+"""
 import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,6 +15,205 @@ from src.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== ReAct Pattern Nodes ====================
+
+async def query_intent_classifier_node(state: RiskState) -> RiskState:
+    """
+    Query Intent Classifier (쿼리 의도 분석기) - LLM 완전 판단 기반
+
+    리스크 분석 의도를 분석하여 분석 깊이와 집중 영역 결정
+    """
+    query = state.get("query", "")
+    user_profile = state.get("portfolio_profile") or {}
+    portfolio_data = state.get("portfolio_data") or {}
+
+    logger.info("🎯 [Risk/IntentClassifier] 쿼리 의도 분석 시작: %s", query[:50] if query else "쿼리 없음")
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.risk.intent_classifier import build_risk_intent_classifier_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Intent Classifier 프롬프트 생성
+        prompt = build_risk_intent_classifier_prompt(
+            query=query or "포트폴리오 리스크 분석",
+            user_profile=user_profile,
+            portfolio_data=portfolio_data,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        intent = parse_llm_json(response.content)
+
+        # 결과 추출
+        final_depth = intent.get("depth", "standard")
+        focus_areas = intent.get("focus_areas", ["concentration", "market"])
+        specialists = intent.get("specialists", [])
+        reasoning = intent.get("reasoning", "LLM 기반 분류")
+
+        logger.info(
+            "✅ [Risk/IntentClassifier] LLM 판단 완료: %s | 집중 영역: %s",
+            final_depth,
+            focus_areas,
+        )
+
+        depth_reason = reasoning
+
+    except Exception as exc:
+        logger.warning("⚠️ [Risk/IntentClassifier] LLM 분류 실패, fallback 사용: %s", exc)
+
+        # Fallback: 기본값
+        final_depth = "standard"
+        focus_areas = ["concentration", "market"]
+        specialists = ["concentration_specialist", "market_risk_specialist"]
+        depth_reason = "표준 리스크 분석"
+
+    logger.info(
+        "📋 [Risk/IntentClassifier] 최종 결정: %s | Specialists: %s",
+        final_depth,
+        specialists,
+    )
+
+    message = AIMessage(
+        content=(
+            f"리스크 분석 깊이: {final_depth}\\n"
+            f"집중 영역: {', '.join(focus_areas)}\\n"
+            f"이유: {depth_reason}"
+        )
+    )
+
+    return {
+        "analysis_depth": final_depth,
+        "focus_areas": focus_areas,
+        "depth_reason": depth_reason,
+        "messages": [message],
+    }
+
+
+async def planner_node(state: RiskState) -> RiskState:
+    """
+    Smart Planner - 분석 깊이에 따라 동적으로 Specialist 선택
+
+    Intent Classifier가 결정한 analysis_depth와 focus_areas를 기반으로
+    필요한 Specialist만 선택하여 비용과 시간을 최적화합니다.
+    """
+    query = state.get("query", "")
+    analysis_depth = state.get("analysis_depth", "standard")
+    focus_areas = state.get("focus_areas") or []
+
+    logger.info(
+        "🧠 [Risk/Planner] Smart Planner 시작 | 깊이: %s | 집중 영역: %s",
+        analysis_depth,
+        focus_areas,
+    )
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.risk.intent_classifier import build_risk_planner_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Planner 프롬프트 생성
+        prompt = build_risk_planner_prompt(
+            query=query or "포트폴리오 리스크 분석",
+            analysis_depth=analysis_depth,
+            focus_areas=focus_areas,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        plan = parse_llm_json(response.content)
+
+        # 결과 추출
+        specialists = plan.get("specialists", [])
+        execution_order = plan.get("execution_order", "sequential")
+        reasoning = plan.get("reasoning", "")
+        estimated_time = plan.get("estimated_time", "20")
+
+        logger.info(
+            "✅ [Risk/Planner] 계획 수립 완료: %s개 Specialist | 실행 방식: %s | 예상 시간: %s초",
+            len(specialists),
+            execution_order,
+            estimated_time,
+        )
+
+    except Exception as exc:
+        logger.warning("⚠️ [Risk/Planner] 계획 수립 실패, fallback 사용: %s", exc)
+
+        # Fallback: depth 기반 기본 계획
+        if analysis_depth == "quick":
+            specialists = ["collect_data", "concentration_specialist", "final_assessment"]
+        elif analysis_depth == "comprehensive":
+            specialists = ["collect_data", "concentration_specialist", "market_risk_specialist", "final_assessment"]
+        else:  # standard
+            specialists = ["collect_data", "concentration_specialist", "market_risk_specialist", "final_assessment"]
+
+        execution_order = "sequential"
+        reasoning = "Fallback 기본 계획"
+
+    # pending_tasks 생성
+    pending_tasks = [
+        {
+            "id": f"task_{i}",
+            "specialist": specialist,
+            "status": "pending",
+            "description": f"{specialist} 실행",
+        }
+        for i, specialist in enumerate(specialists)
+    ]
+
+    logger.info("📋 [Risk/Planner] %s개 작업 생성: %s", len(pending_tasks), specialists)
+
+    message = AIMessage(
+        content=f"리스크 분석 계획: {len(specialists)}개 Specialist 실행 ({execution_order})\\n이유: {reasoning}"
+    )
+
+    return {
+        "pending_tasks": pending_tasks,
+        "completed_tasks": [],
+        "task_notes": [f"계획 수립: {len(specialists)}개 Specialist"],
+        "messages": [message],
+    }
+
+
+async def task_router_node(state: RiskState) -> RiskState:
+    """
+    Task Router - 다음 작업 선택
+
+    pending_tasks에서 다음 작업을 가져와 current_task로 설정합니다.
+    """
+    pending_tasks = list(state.get("pending_tasks") or [])
+
+    if not pending_tasks:
+        logger.info("✅ [Risk/TaskRouter] 모든 작업 완료, final_assessment로 이동")
+        return {"current_task": None}
+
+    # 다음 작업 선택
+    current_task = pending_tasks.pop(0)
+    specialist = current_task.get("specialist")
+
+    logger.info("🔀 [Risk/TaskRouter] 다음 작업 선택: %s", specialist)
+
+    return {
+        "current_task": current_task,
+        "pending_tasks": pending_tasks,
+    }
+
+
+# ==================== Original Nodes ====================
 
 
 async def collect_portfolio_data_node(state: RiskState) -> dict:

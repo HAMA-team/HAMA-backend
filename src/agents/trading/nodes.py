@@ -1,3 +1,8 @@
+"""
+Trading Agent 노드 함수들
+
+ReAct 패턴: Intent Classifier → Planner → Task Router → Specialists → Approval → Execute
+"""
 from __future__ import annotations
 
 import logging
@@ -13,6 +18,225 @@ from src.utils.json_parser import safe_json_parse
 from src.schemas.hitl_config import HITLConfig, PRESET_COPILOT
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== ReAct Pattern Nodes ====================
+
+async def query_intent_classifier_node(state: TradingState) -> TradingState:
+    """
+    Query Intent Classifier (쿼리 의도 분석기) - LLM 완전 판단 기반
+
+    매매 요청을 분석하여 order_type, 분석 깊이, 정보 추출
+    """
+    query = state.get("query", "")
+    user_profile = state.get("research_result") or {}
+
+    logger.info("🎯 [Trading/IntentClassifier] 쿼리 의도 분석 시작: %s", query[:50])
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.trading.intent_classifier import build_trading_intent_classifier_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Intent Classifier 프롬프트 생성
+        prompt = build_trading_intent_classifier_prompt(
+            query=query,
+            user_profile=user_profile,
+            research_result=user_profile,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        intent = parse_llm_json(response.content)
+
+        # 결과 추출
+        order_type = intent.get("order_type", "buy")
+        final_depth = intent.get("depth", "standard")
+        focus_areas = intent.get("focus_areas", [])
+        specialists = intent.get("specialists", [])
+        extracted_info = intent.get("extracted_info", {})
+        reasoning = intent.get("reasoning", "LLM 기반 분류")
+
+        logger.info(
+            "✅ [Trading/IntentClassifier] LLM 판단 완료: %s | %s | 종목: %s",
+            order_type,
+            final_depth,
+            extracted_info.get("stock_code"),
+        )
+
+        depth_reason = reasoning
+
+        # 추출된 정보를 state에 반영
+        stock_code = extracted_info.get("stock_code")
+        quantity = extracted_info.get("quantity")
+        order_price = extracted_info.get("order_price")
+
+    except Exception as exc:
+        logger.warning("⚠️ [Trading/IntentClassifier] LLM 분류 실패, fallback 사용: %s", exc)
+
+        # Fallback: 기본값
+        order_type = "buy"
+        final_depth = "standard"
+        focus_areas = ["trade_preparation", "buy_analysis"]
+        specialists = ["buy_specialist"]
+        depth_reason = "기본 매수 분석"
+        stock_code = None
+        quantity = None
+        order_price = None
+
+    logger.info(
+        "📋 [Trading/IntentClassifier] 최종 결정: %s | %s | Specialists: %s",
+        order_type,
+        final_depth,
+        specialists,
+    )
+
+    message = AIMessage(
+        content=(
+            f"매매 유형: {order_type}\\n"
+            f"분석 깊이: {final_depth}\\n"
+            f"이유: {depth_reason}"
+        )
+    )
+
+    return {
+        "order_type": order_type,
+        "analysis_depth": final_depth,
+        "focus_areas": focus_areas,
+        "depth_reason": depth_reason,
+        "stock_code": stock_code,
+        "quantity": quantity,
+        "order_price": order_price,
+        "messages": [message],
+    }
+
+
+async def planner_node(state: TradingState) -> TradingState:
+    """
+    Smart Planner - 주문 유형과 분석 깊이에 따라 동적으로 Specialist 선택
+
+    Intent Classifier가 결정한 order_type과 analysis_depth를 기반으로
+    필요한 Specialist만 선택하여 비용과 시간을 최적화합니다.
+    """
+    query = state.get("query", "")
+    order_type = state.get("order_type", "buy")
+    analysis_depth = state.get("analysis_depth", "standard")
+    stock_code = state.get("stock_code")
+
+    logger.info(
+        "🧠 [Trading/Planner] Smart Planner 시작 | 주문: %s | 깊이: %s",
+        order_type,
+        analysis_depth,
+    )
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.trading.intent_classifier import build_trading_planner_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Planner 프롬프트 생성
+        prompt = build_trading_planner_prompt(
+            query=query,
+            order_type=order_type,
+            analysis_depth=analysis_depth,
+            stock_code=stock_code,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        plan = parse_llm_json(response.content)
+
+        # 결과 추출
+        specialists = plan.get("specialists", [])
+        execution_order = plan.get("execution_order", "sequential")
+        reasoning = plan.get("reasoning", "")
+        estimated_time = plan.get("estimated_time", "10")
+
+        logger.info(
+            "✅ [Trading/Planner] 계획 수립 완료: %s개 Specialist | 실행 방식: %s | 예상 시간: %s초",
+            len(specialists),
+            execution_order,
+            estimated_time,
+        )
+
+    except Exception as exc:
+        logger.warning("⚠️ [Trading/Planner] 계획 수립 실패, fallback 사용: %s", exc)
+
+        # Fallback: order_type + depth 기반 기본 계획
+        if analysis_depth == "quick":
+            specialists = ["prepare_trade", "execute_trade"]
+        elif order_type == "buy":
+            specialists = ["prepare_trade", "buy_specialist", "risk_reward_specialist", "approval_trade", "execute_trade"]
+        elif order_type == "sell":
+            specialists = ["prepare_trade", "sell_specialist", "approval_trade", "execute_trade"]
+        else:
+            specialists = ["prepare_trade", "approval_trade", "execute_trade"]
+
+        execution_order = "sequential"
+        reasoning = "Fallback 기본 계획"
+
+    # pending_tasks 생성
+    pending_tasks = [
+        {
+            "id": f"task_{i}",
+            "specialist": specialist,
+            "status": "pending",
+            "description": f"{specialist} 실행",
+        }
+        for i, specialist in enumerate(specialists)
+    ]
+
+    logger.info("📋 [Trading/Planner] %s개 작업 생성: %s", len(pending_tasks), specialists)
+
+    message = AIMessage(
+        content=f"매매 작업 계획: {len(specialists)}개 Specialist 실행 ({execution_order})\\n이유: {reasoning}"
+    )
+
+    return {
+        "pending_tasks": pending_tasks,
+        "completed_tasks": [],
+        "task_notes": [f"계획 수립: {len(specialists)}개 Specialist"],
+        "messages": [message],
+    }
+
+
+async def task_router_node(state: TradingState) -> TradingState:
+    """
+    Task Router - 다음 작업 선택
+
+    pending_tasks에서 다음 작업을 가져와 current_task로 설정합니다.
+    """
+    pending_tasks = list(state.get("pending_tasks") or [])
+
+    if not pending_tasks:
+        logger.info("✅ [Trading/TaskRouter] 모든 작업 완료")
+        return {"current_task": None}
+
+    # 다음 작업 선택
+    current_task = pending_tasks.pop(0)
+    specialist = current_task.get("specialist")
+
+    logger.info("🔀 [Trading/TaskRouter] 다음 작업 선택: %s", specialist)
+
+    return {
+        "current_task": current_task,
+        "pending_tasks": pending_tasks,
+    }
+
+
+# ==================== Original Nodes ====================
 
 
 async def prepare_trade_node(state: TradingState) -> dict:
