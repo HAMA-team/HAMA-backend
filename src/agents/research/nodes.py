@@ -192,114 +192,100 @@ def _task_complete(
 
 async def query_intent_classifier_node(state: ResearchState) -> ResearchState:
     """
-    Query Intent Classifier (쿼리 의도 분석기)
+    Query Intent Classifier (쿼리 의도 분석기) - LLM 완전 판단 기반
 
     사용자 쿼리와 UserProfile을 분석하여 적절한 분석 깊이를 결정합니다.
+    키워드 의존성을 제거하고 LLM이 전체 맥락을 이해하여 판단합니다.
 
     분석 요소:
-    1. 쿼리 키워드: "빠르게", "간단히" → quick / "상세히", "종합" → comprehensive
-    2. UserProfile.preferred_depth: brief → quick 우선 / comprehensive → comprehensive 우선
-    3. 쿼리 복잡도: 단일 질문 → quick / 의사결정 → comprehensive
-    4. Focus Areas: 특정 영역 요청 시 해당 worker 우선
+    1. LLM 기반 쿼리 복잡도 판단 (키워드 없이 전체 문맥 이해)
+    2. 사용자 성향 반영 (투자 경험, 선호 깊이, 최근 선택 패턴)
+    3. Focus Areas 자동 추출 (LLM이 필요한 분석 영역 판단)
+    4. 암묵적 요구사항 파악
     """
     query = state.get("query", "")
     user_profile = state.get("user_profile") or {}
 
-    logger.info("🎯 [Research/IntentClassifier] 쿼리 의도 분석 시작: %s", query[:50])
+    logger.info("🎯 [Research/IntentClassifier] 쿼리 의도 분석 시작 (LLM 판단): %s", query[:50])
 
-    # 1. 간단한 규칙 기반 분류 (빠른 판단)
-    keyword_depth = classify_depth_by_keywords(query)
-    focus_workers = extract_focus_areas(query)
-
-    # 2. UserProfile 반영
-    preferred_depth = user_profile.get("preferred_depth", "detailed")
+    # UserProfile 추출
     expertise_level = user_profile.get("expertise_level", "intermediate")
+    preferred_depth = user_profile.get("preferred_depth", "detailed")
+    recent_depth_choices = user_profile.get("recent_depth_choices", [])
 
-    # preferred_depth 매핑
-    profile_depth_map = {
-        "brief": "quick",
-        "detailed": "standard",
-        "comprehensive": "comprehensive",
-    }
-    profile_depth = profile_depth_map.get(preferred_depth, "standard")
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.common.intent_classifier import build_research_intent_classifier_prompt
 
-    # 3. LLM 기반 최종 판단 (복잡한 케이스)
-    # 키워드가 명확하지 않고, 의사결정 관련 쿼리인 경우 LLM 호출
-    should_use_llm = (
-        keyword_depth == "standard"  # 명확한 키워드 없음
-        and any(keyword in query.lower() for keyword in ["할까", "해도 될까", "어떨까", "판단", "결정"])
-    )
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
 
-    if should_use_llm:
-        try:
-            llm = get_llm(temperature=0, max_tokens=800)
+        # Claude 4.x 최적화 프롬프트 생성
+        prompt = build_research_intent_classifier_prompt(
+            query=query,
+            user_profile={
+                "expertise_level": expertise_level,
+                "preferred_depth": preferred_depth,
+                "recent_depth_choices": recent_depth_choices,
+            },
+        )
 
-            prompt = f"""당신은 쿼리 의도 분석 전문가입니다.
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
 
-사용자 쿼리: {query}
-사용자 성향:
-- 선호 분석 깊이: {preferred_depth}
-- 전문성: {expertise_level}
+        # JSON 파싱 (프롬프트 유틸리티 사용)
+        from src.prompts import parse_llm_json
 
-다음 중 적절한 분석 깊이를 선택하세요:
+        intent = parse_llm_json(response.content)
 
-1. **quick** (빠른 분석, 10-20초):
-   - 현재가, 간단한 정보 확인
-   - 초보 투자자 또는 간단한 확인
-   - 예: "삼성전자 현재가?", "가격만 알려줘"
+        # 결과 추출
+        final_depth = intent.get("depth", "standard")
+        confidence = intent.get("confidence", 0.5)
+        reasoning = intent.get("reasoning", "LLM 기반 분류")
+        llm_focus_areas = intent.get("focus_areas", [])
+        implicit_needs = intent.get("implicit_needs", "")
 
-2. **standard** (표준 분석, 30-45초):
-   - 일반적인 투자 판단
-   - 중급 투자자의 일상적 분석
-   - 예: "삼성전자 분석해줘", "기술적으로 어때?"
+        # Focus areas를 worker 이름으로 매핑
+        focus_workers = []
+        worker_mapping = {
+            "data": ["data"],
+            "technical": ["technical"],
+            "trading_flow": ["trading_flow"],
+            "information": ["information"],
+            "macro": ["macro"],
+            "bull": ["bull"],
+            "bear": ["bear"],
+            "insight": ["insight"],
+        }
 
-3. **comprehensive** (종합 분석, 60-90초):
-   - 신중한 의사결정 필요
-   - 매수/매도 판단, 장기 투자 결정
-   - 예: "삼성전자 매수해도 될까?", "상세히 분석해줘"
+        for area in llm_focus_areas:
+            if area in worker_mapping:
+                focus_workers.extend(worker_mapping[area])
 
-JSON 형식으로 답변:
-{{
-  "depth": "quick" | "standard" | "comprehensive",
-  "reason": "선택 이유 (1-2문장)",
-  "focus_areas": ["기술적 분석", "수급"] // 쿼리에서 요청한 특정 영역
-}}
-"""
+        focus_workers = list(set(focus_workers))  # 중복 제거
 
-            response = await llm.ainvoke(prompt)
-            intent = safe_json_parse(response.content, "QueryIntentClassifier")
+        logger.info(
+            "✅ [Research/IntentClassifier] LLM 판단 완료: %s (확신도: %.2f) | 집중 영역: %s",
+            final_depth,
+            confidence,
+            focus_workers or "자동 선택",
+        )
 
-            final_depth = intent.get("depth", "standard")
-            depth_reason = intent.get("reason", "LLM 기반 분류")
-            llm_focus_areas = intent.get("focus_areas", [])
+        depth_reason = f"{reasoning} (확신도: {confidence:.0%})"
+        if implicit_needs:
+            depth_reason += f" | 암묵적 요구: {implicit_needs}"
 
-            # LLM이 제안한 focus areas를 worker 이름으로 변환
-            for area in llm_focus_areas:
-                area_lower = area.lower()
-                if "기술" in area_lower or "차트" in area_lower:
-                    focus_workers.append("technical")
-                elif "수급" in area_lower or "거래" in area_lower:
-                    focus_workers.append("trading_flow")
-                elif "뉴스" in area_lower or "정보" in area_lower:
-                    focus_workers.append("information")
-                elif "거시" in area_lower or "경제" in area_lower:
-                    focus_workers.append("macro")
+    except Exception as exc:
+        logger.warning("⚠️ [Research/IntentClassifier] LLM 분류 실패, fallback 사용: %s", exc)
 
-            focus_workers = list(set(focus_workers))  # 중복 제거
-
-        except Exception as exc:
-            logger.warning("⚠️ [Research/IntentClassifier] LLM 분류 실패, 규칙 기반 사용: %s", exc)
-            final_depth = keyword_depth if keyword_depth != "standard" else profile_depth
-            depth_reason = "키워드 및 프로파일 기반 분류"
-
-    else:
-        # 키워드가 명확한 경우: 키워드 우선, 없으면 프로파일 사용
-        if keyword_depth != "standard":
-            final_depth = keyword_depth
-            depth_reason = f"쿼리 키워드 기반 ({keyword_depth})"
-        else:
-            final_depth = profile_depth
-            depth_reason = f"사용자 프로파일 기반 ({profile_depth})"
+        # Fallback: UserProfile 기반 기본값
+        profile_depth_map = {
+            "brief": "quick",
+            "detailed": "standard",
+            "comprehensive": "comprehensive",
+        }
+        final_depth = profile_depth_map.get(preferred_depth, "standard")
+        focus_workers = []
+        depth_reason = f"사용자 프로파일 기본값 ({preferred_depth})"
 
     # 최종 유효성 검증
     if final_depth not in ANALYSIS_DEPTH_LEVELS:
@@ -309,7 +295,7 @@ JSON 형식으로 답변:
     depth_config = ANALYSIS_DEPTH_LEVELS[final_depth]
 
     logger.info(
-        "✅ [Research/IntentClassifier] 분석 깊이 결정: %s (%s) | 집중 영역: %s",
+        "📋 [Research/IntentClassifier] 최종 결정: %s (%s) | 집중 영역: %s",
         final_depth,
         depth_config["name"],
         focus_workers or "없음",
@@ -1648,14 +1634,62 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     per_text = f"PER {per:.1f}배" if per is not None else "PER N/A"
     pbr_text = f"PBR {pbr:.2f}배" if pbr is not None else "PBR N/A"
 
-    message = AIMessage(
-        content=(
-            f"추천: {recommendation} (목표가 {target_price:,}원, 현재가 {current_price:,}원). "
-            f"상승여력 {consensus['upside_potential']}, 신뢰도 {confidence}/5. "
-            f"펀더멘털: {per_text}, {pbr_text} ({valuation_status}). "
-            f"투자주체: 외국인 {foreign_trend}, 기관 {institution_trend}."
+    # Investment Dashboard 생성 (Claude 4.x 프롬프트 사용)
+    from src.prompts.templates.investment_dashboard import build_dashboard_prompt
+    from src.prompts import add_formatting_guidelines
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=3000)
+
+        # 분석 결과 정리
+        analysis_results = {
+            "Bull Analysis": bull.get("analysis", "N/A"),
+            "Bear Analysis": bear.get("analysis", "N/A"),
+            "Technical Analysis": technical_analysis.get("analysis", "N/A"),
+            "Trading Flow Analysis": trading_flow_analysis.get("analysis", "N/A"),
+            "Information Analysis": information_analysis.get("analysis", "N/A"),
+            "Macro Analysis": macro_analysis.get("analysis", {}).get("summary", "N/A") if macro_analysis else "N/A",
+        }
+
+        # Dashboard 프롬프트 생성
+        dashboard_prompt = build_dashboard_prompt(
+            stock_name=f"{stock_code} (종목코드: {stock_code})",
+            analysis_results=analysis_results,
         )
-    )
+
+        # LLM 호출하여 Dashboard 생성
+        dashboard_response = await llm.ainvoke(dashboard_prompt)
+        dashboard_content = dashboard_response.content
+
+        logger.info("✅ [Research/Synthesis] Investment Dashboard 생성 완료")
+
+    except Exception as exc:
+        logger.warning("⚠️ [Research/Synthesis] Dashboard 생성 실패, 기본 포맷 사용: %s", exc)
+
+        # Fallback: 기존 간단한 텍스트 포맷
+        dashboard_content = (
+            f"# {stock_code} 투자 분석 요약\n\n"
+            f"## 💭 투자 의견\n"
+            f"**추천**: {recommendation}\n"
+            f"**목표가**: {target_price:,}원 (현재가: {current_price:,}원)\n"
+            f"**상승여력**: {consensus['upside_potential']}\n"
+            f"**신뢰도**: {confidence}/5\n\n"
+            f"## 📊 핵심 지표\n"
+            f"- 펀더멘털: {per_text}, {pbr_text} ({valuation_status})\n"
+            f"- 기술적 추세: {tech_trend} (강도: {tech_trend_strength}/5)\n"
+            f"- 수급 전망: {supply_outlook}\n"
+            f"- 시장 센티먼트: {market_sentiment}\n\n"
+            f"## 🎯 투자 시나리오\n"
+            f"### Bull Case (확신도: {bull_conf}/5)\n"
+            + "\n".join([f"- {factor}" for factor in bull.get("positive_factors", [])[:3]]) + "\n\n"
+            f"### Bear Case (확신도: {bear_conf}/5)\n"
+            + "\n".join([f"- {factor}" for factor in bear.get("risk_factors", [])[:3]]) + "\n\n"
+            f"## 📈 투자주체 동향\n"
+            f"- 외국인: {foreign_trend}\n"
+            f"- 기관: {institution_trend}\n"
+        )
+
+    message = AIMessage(content=dashboard_content)
 
     notes = list(state.get("task_notes") or [])
     notes.append(f"최종 의견 {recommendation} (신뢰도 {confidence})")
@@ -1665,7 +1699,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
         {
             "id": "synthesis",
             "worker": "synthesis",
-            "description": "최종 의견 통합",
+            "description": "최종 의견 통합 (Investment Dashboard)",
             "status": "done",
             "summary": consensus["summary"],
         }
