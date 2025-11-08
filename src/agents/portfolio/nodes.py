@@ -1,6 +1,8 @@
 """Portfolio Agent 노드 함수들
 
 포트폴리오 스냅샷 → 최적화 → 리밸런싱 계획 → 승인 (HITL) → 실행
+
+ReAct 패턴: Intent Classifier → Planner → Task Router → Specialists → Summary
 """
 from __future__ import annotations
 
@@ -25,6 +27,220 @@ from src.services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== ReAct Pattern Nodes ====================
+
+async def query_intent_classifier_node(state: PortfolioState) -> PortfolioState:
+    """
+    Query Intent Classifier (쿼리 의도 분석기) - LLM 완전 판단 기반
+
+    포트폴리오 작업 의도를 분석하여 view/analyze/optimize/rebalance 결정
+    """
+    query = state.get("query", "")
+    user_profile = state.get("portfolio_profile") or {}
+    current_holdings = state.get("current_holdings") or []
+
+    logger.info("🎯 [Portfolio/IntentClassifier] 쿼리 의도 분석 시작: %s", query[:50])
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.portfolio.intent_classifier import build_portfolio_intent_classifier_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Intent Classifier 프롬프트 생성
+        prompt = build_portfolio_intent_classifier_prompt(
+            query=query,
+            user_profile=user_profile,
+            current_holdings=current_holdings,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        intent = parse_llm_json(response.content)
+
+        # 결과 추출
+        intent_type = intent.get("intent_type", "view")
+        final_depth = intent.get("depth", "standard")
+        focus_areas = intent.get("focus_areas", [])
+        specialists = intent.get("specialists", [])
+        view_only = intent.get("view_only", True)
+        reasoning = intent.get("reasoning", "LLM 기반 분류")
+
+        logger.info(
+            "✅ [Portfolio/IntentClassifier] LLM 판단 완료: %s | %s | view_only: %s",
+            intent_type,
+            final_depth,
+            view_only,
+        )
+
+        depth_reason = reasoning
+
+    except Exception as exc:
+        logger.warning("⚠️ [Portfolio/IntentClassifier] LLM 분류 실패, fallback 사용: %s", exc)
+
+        # Fallback: 기본값
+        intent_type = "view"
+        final_depth = "quick"
+        focus_areas = ["portfolio_snapshot"]
+        specialists = []
+        view_only = True
+        depth_reason = "기본 조회"
+
+    logger.info(
+        "📋 [Portfolio/IntentClassifier] 최종 결정: %s | %s | Specialists: %s",
+        intent_type,
+        final_depth,
+        specialists,
+    )
+
+    message = AIMessage(
+        content=(
+            f"포트폴리오 작업: {intent_type}\\n"
+            f"분석 깊이: {final_depth}\\n"
+            f"이유: {depth_reason}\\n"
+            f"실행 Specialists: {', '.join(specialists) if specialists else '없음'}"
+        )
+    )
+
+    return {
+        "intent_type": intent_type,
+        "analysis_depth": final_depth,
+        "focus_areas": focus_areas,
+        "depth_reason": depth_reason,
+        "view_only": view_only,
+        "messages": [message],
+    }
+
+
+async def planner_node(state: PortfolioState) -> PortfolioState:
+    """
+    Smart Planner - 작업 의도에 따라 동적으로 Specialist 선택
+
+    Intent Classifier가 결정한 intent_type과 analysis_depth를 기반으로
+    필요한 Specialist만 선택하여 비용과 시간을 최적화합니다.
+    """
+    query = state.get("query", "")
+    intent_type = state.get("intent_type", "view")
+    analysis_depth = state.get("analysis_depth", "quick")
+    focus_areas = state.get("focus_areas") or []
+
+    logger.info(
+        "🧠 [Portfolio/Planner] Smart Planner 시작 | 의도: %s | 깊이: %s",
+        intent_type,
+        analysis_depth,
+    )
+
+    # Claude 4.x 프롬프트 사용
+    from src.prompts.portfolio.intent_classifier import build_portfolio_planner_prompt
+    from src.utils.llm import get_llm
+
+    try:
+        llm = get_llm(temperature=0, max_tokens=1000)
+
+        # Planner 프롬프트 생성
+        prompt = build_portfolio_planner_prompt(
+            query=query,
+            intent_type=intent_type,
+            analysis_depth=analysis_depth,
+            focus_areas=focus_areas,
+        )
+
+        # LLM 호출
+        response = await llm.ainvoke(prompt)
+
+        # JSON 파싱
+        from src.prompts import parse_llm_json
+
+        plan = parse_llm_json(response.content)
+
+        # 결과 추출
+        specialists = plan.get("specialists", [])
+        execution_order = plan.get("execution_order", "sequential")
+        reasoning = plan.get("reasoning", "")
+        estimated_time = plan.get("estimated_time", "10")
+
+        logger.info(
+            "✅ [Portfolio/Planner] 계획 수립 완료: %s개 Specialist | 실행 방식: %s | 예상 시간: %s초",
+            len(specialists),
+            execution_order,
+            estimated_time,
+        )
+
+    except Exception as exc:
+        logger.warning("⚠️ [Portfolio/Planner] 계획 수립 실패, fallback 사용: %s", exc)
+
+        # Fallback: intent_type 기반 기본 계획
+        if intent_type == "view":
+            specialists = ["collect_portfolio", "summary_generator"]
+        elif intent_type == "analyze":
+            specialists = ["collect_portfolio", "market_condition_specialist", "summary_generator"]
+        elif intent_type == "optimize":
+            specialists = ["collect_portfolio", "market_condition_specialist", "optimization_specialist", "summary_generator"]
+        elif intent_type == "rebalance":
+            specialists = ["collect_portfolio", "market_condition_specialist", "optimization_specialist", "constraint_validator", "rebalance_planner", "summary_generator"]
+        else:
+            specialists = ["collect_portfolio", "summary_generator"]
+
+        execution_order = "sequential"
+        reasoning = "Fallback 기본 계획"
+
+    # pending_tasks 생성
+    pending_tasks = [
+        {
+            "id": f"task_{i}",
+            "specialist": specialist,
+            "status": "pending",
+            "description": f"{specialist} 실행",
+        }
+        for i, specialist in enumerate(specialists)
+    ]
+
+    logger.info("📋 [Portfolio/Planner] %s개 작업 생성: %s", len(pending_tasks), specialists)
+
+    message = AIMessage(
+        content=f"포트폴리오 작업 계획: {len(specialists)}개 Specialist 실행 ({execution_order})\\n이유: {reasoning}"
+    )
+
+    return {
+        "pending_tasks": pending_tasks,
+        "completed_tasks": [],
+        "task_notes": [f"계획 수립: {len(specialists)}개 Specialist"],
+        "messages": [message],
+    }
+
+
+async def task_router_node(state: PortfolioState) -> PortfolioState:
+    """
+    Task Router - 다음 작업 선택
+
+    pending_tasks에서 다음 작업을 가져와 current_task로 설정합니다.
+    """
+    pending_tasks = list(state.get("pending_tasks") or [])
+
+    if not pending_tasks:
+        logger.info("✅ [Portfolio/TaskRouter] 모든 작업 완료, summary로 이동")
+        return {"current_task": None}
+
+    # 다음 작업 선택
+    current_task = pending_tasks.pop(0)
+    specialist = current_task.get("specialist")
+
+    logger.info("🔀 [Portfolio/TaskRouter] 다음 작업 선택: %s", specialist)
+
+    return {
+        "current_task": current_task,
+        "pending_tasks": pending_tasks,
+    }
+
+
+# ==================== Original Nodes ====================
 
 
 async def analyze_query_node(state: PortfolioState) -> PortfolioState:

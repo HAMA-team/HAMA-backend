@@ -29,7 +29,7 @@ class RebalanceInstruction(TypedDict, total=False):
 
 
 class PortfolioState(TypedDict, total=False):
-    """Portfolio Agent 서브그래프 State"""
+    """Portfolio Agent 서브그래프 State (ReAct 패턴)"""
 
     messages: Annotated[List[BaseMessage], add_messages]
 
@@ -63,6 +63,31 @@ class PortfolioState(TypedDict, total=False):
 
     execution_results: Optional[List[dict]]
     """리밸런싱 실행 결과"""
+
+    # ReAct 제어 필드
+    intent_type: Optional[Literal["view", "analyze", "optimize", "rebalance"]]
+    """작업 의도 유형"""
+
+    analysis_depth: Optional[Literal["quick", "standard", "comprehensive"]]
+    """분석 깊이"""
+
+    focus_areas: Optional[List[str]]
+    """집중 영역 리스트"""
+
+    depth_reason: Optional[str]
+    """분석 깊이 결정 근거"""
+
+    pending_tasks: Optional[List[dict]]
+    """실행 대기 중인 작업 큐"""
+
+    completed_tasks: Optional[List[dict]]
+    """완료된 작업 리스트"""
+
+    current_task: Optional[dict]
+    """현재 실행 중인 작업"""
+
+    task_notes: Optional[List[str]]
+    """작업 진행 노트"""
 
     # 현재 포트폴리오 스냅샷
     portfolio_id: Optional[str]
