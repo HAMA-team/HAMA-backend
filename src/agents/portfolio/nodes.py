@@ -56,32 +56,25 @@ async def analyze_query_node(state: PortfolioState) -> PortfolioState:
 
     llm = get_llm(max_tokens=300, temperature=0)
 
-    analysis_prompt = f"""다음 질문을 분석하세요:
+    analysis_prompt = f"""질문에서 특정 종목 보유 현황 조회인지 판단하고 종목명을 추출하세요.
 
 질문: "{query}"
 
-이 질문이 **특정 종목의 보유 수량/정보 조회**인지 판단하세요.
-
-**특정 종목 조회 예시**:
-- "삼성전자 몇 주 있어?"
-- "나 LG화학 있니?"
-- "하이닉스 보유 현황"
-
-**전체 포트폴리오 조회 예시**:
-- "내 포트폴리오 보여줘"
-- "전체 자산 알려줘"
-- "리밸런싱 해줘"
-
-JSON 형식으로 답변하세요:
+JSON 형식:
 {{
   "is_specific_stock_query": true | false,
   "stock_name": "종목명" | null,
   "reasoning": "판단 근거"
 }}
 
+예시:
+- "나 lg 화학 몇 주 있지?" → {{"is_specific_stock_query": true, "stock_name": "LG화학"}}
+- "삼성전자 있어?" → {{"is_specific_stock_query": true, "stock_name": "삼성전자"}}
+- "내 포트폴리오 보여줘" → {{"is_specific_stock_query": false, "stock_name": null}}
+
 규칙:
-- 특정 종목명이 명확히 언급되면 is_specific_stock_query: true
-- 종목명은 정규화된 형태로 반환 (예: "하이닉스" → "SK하이닉스", "LG 화학" → "LG화학")
+- 종목명은 정확한 상장 기업명으로 정규화 (예: "lg 화학" → "LG화학", "하이닉스" → "SK하이닉스")
+- 띄어쓰기 제거
 """
 
     try:

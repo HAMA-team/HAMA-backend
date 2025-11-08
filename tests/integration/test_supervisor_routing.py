@@ -34,57 +34,6 @@ class TestSupervisorRouting:
 
     @pytest.mark.asyncio
     @pytest.mark.skipif(not settings.OPENAI_API_KEY, reason="OpenAI API 키 필요")
-    async def test_general_question_routes_to_general(self):
-        """
-        일반 질문 라우팅 테스트
-
-        질문: "PER이 뭐야?"
-        예상: general_agent 호출
-        """
-        print("\n[Test] 일반 질문 → General Agent")
-
-        app = build_graph(automation_level=2)
-
-        initial_state = {
-            "messages": [HumanMessage(content="PER이 뭐야?")],
-            "user_id": str(uuid4()),
-            "conversation_id": str(uuid4()),
-            "automation_level": 2,
-            "query": "PER이 뭐야?",
-            "agent_results": {},
-            "agents_to_call": [],
-            "agents_called": [],
-        }
-
-        config = {"configurable": {"thread_id": str(uuid4())}}
-
-        result = await app.ainvoke(initial_state, config)
-
-        # 검증: messages에서 AI 응답 확인
-        messages = result.get("messages", [])
-        ai_responses = [msg for msg in messages if hasattr(msg, "tool_calls") and msg.tool_calls]
-
-        print(f"  📊 응답 메시지 수: {len(messages)}")
-
-        if ai_responses:
-            tool_calls = ai_responses[0].tool_calls
-            agent_names = [call["name"] for call in tool_calls]
-            print(f"  🤖 호출된 에이전트: {agent_names}")
-
-            # Tool call 이름 정규화 (transfer_to_xxx_agent → xxx_agent)
-            normalized_names = [
-                name.replace("transfer_to_", "")
-                for name in agent_names
-            ]
-
-            # 검증: general_agent가 호출되어야 함
-            assert "general_agent" in normalized_names, "General Agent가 호출되어야 함"
-            print("  ✅ General Agent 라우팅 성공")
-        else:
-            print("  ⚠️  Tool call 없음 - LLM이 직접 응답했을 수 있음")
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(not settings.OPENAI_API_KEY, reason="OpenAI API 키 필요")
     async def test_stock_analysis_routes_to_research_strategy_risk(self):
         """
         종목 분석 라우팅 테스트
@@ -418,7 +367,6 @@ if __name__ == "__main__":
         tester = TestSupervisorRouting()
 
         tests = [
-            ("일반 질문 → General Agent", tester.test_general_question_routes_to_general),
             ("종목 분석 → Research+Strategy+Risk", tester.test_stock_analysis_routes_to_research_strategy_risk),
             ("매매 요청 → Trading Agent", tester.test_trade_request_routes_to_trading),
             ("포트폴리오 → Portfolio+Risk", tester.test_portfolio_rebalance_routes_correctly),

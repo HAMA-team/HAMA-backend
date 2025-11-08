@@ -180,25 +180,6 @@ def mock_llm_routing_trading():
 
 
 @pytest.fixture
-def mock_llm_routing_general():
-    """
-    General Agent로 라우팅하는 Mock LLM
-
-    "PER이 뭐야?" → general_agent 선택
-    """
-    mock = MagicMock()
-    mock.ainvoke = AsyncMock(return_value=AIMessage(
-        content="",
-        tool_calls=[{
-            "name": "general_agent",
-            "args": {"query": "PER 설명"},
-            "id": "call_003"
-        }]
-    ))
-    return mock
-
-
-@pytest.fixture
 def mock_llm_routing_multi_agents():
     """
     여러 에이전트 병렬 호출하는 Mock LLM

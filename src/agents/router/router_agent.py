@@ -71,7 +71,7 @@ class RoutingDecision(BaseModel):
 
     # 3. 에이전트 선택
     agents_to_call: list[str] = Field(
-        description="호출할 에이전트 리스트: research, strategy, risk, trading, portfolio, general"
+        description="호출할 에이전트 리스트: research, strategy, risk, trading, portfolio (간단한 질문은 빈 리스트)"
     )
 
     # 4. 답변 깊이 수준
@@ -86,6 +86,22 @@ class RoutingDecision(BaseModel):
 
     # 6. 근거
     reasoning: str = Field(description="판단 근거")
+
+    # 7. 워커 직접 호출 (단순 데이터 조회)
+    worker_action: Optional[str] = Field(
+        default=None,
+        description="단순 조회 워커: stock_price | index_price | None. agents_to_call이 빈 리스트이고 데이터 조회가 필요한 경우만 사용."
+    )
+    worker_params: Optional[dict] = Field(
+        default=None,
+        description="워커 파라미터 (stock_code, stock_name, index_name 등)"
+    )
+
+    # 8. 직접 답변 (간단한 질문인 경우 Router가 직접 응답)
+    direct_answer: Optional[str] = Field(
+        default=None,
+        description="간단한 질문이면 Router가 직접 생성한 답변. agents_to_call이 빈 리스트이고 worker_action도 None일 때만 사용."
+    )
 
     def __getitem__(self, item: str) -> Any:
         """dict 호환을 위한 키 기반 접근 지원"""
@@ -132,12 +148,12 @@ async def route_query(
     # 빈 쿼리 검증
     query = query.strip()
     if not query:
-        logger.warning("⚠️ [Router] 빈 질문 감지 - 기본 라우팅 반환")
+        logger.warning("⚠️ [Router] 빈 질문 감지 - Supervisor가 직접 처리")
         return RoutingDecision(
             query_complexity="simple",
             user_intent="general_inquiry",
             stock_names=None,
-            agents_to_call=["general"],
+            agents_to_call=[],
             depth_level="brief",
             personalization=PersonalizationSettings(
                 adjust_for_expertise=True,
@@ -145,7 +161,7 @@ async def route_query(
                 use_analogies=True,
                 technical_level="basic",
             ),
-            reasoning="빈 질문이므로 general agent로 라우팅",
+            reasoning="빈 질문이므로 Supervisor가 직접 처리",
         )
 
     # 사용자 프로파일 기본값
@@ -159,83 +175,39 @@ async def route_query(
         [
             (
                 "system",
-                """당신은 투자 질문을 분석하는 Router입니다.
+                """투자 질문을 분석하여 적절한 에이전트 또는 워커로 라우팅합니다.
 
-**임무:**
-1. 질문의 복잡도를 판단하세요 (simple/moderate/expert)
-2. **질문에서 종목명을 추출하세요** (예: "SK하이닉스", "삼성전자") - 종목이 없으면 None
-3. 필요한 에이전트를 선택하세요 (research/strategy/risk/trading/portfolio/general)
-4. 답변 깊이 수준을 결정하세요 (brief/detailed/comprehensive)
-5. 사용자 프로파일을 고려하여 개인화 설정을 결정하세요
+**우선순위 1: 워커 직접 호출 (빠른 단순 조회)**
+agents_to_call = [], worker_action 설정:
+- "삼성전자 현재가?", "SK하이닉스 주가?" → worker_action="stock_price", worker_params={{"stock_code": "005930", "stock_name": "삼성전자"}}
+- "코스피 지수?", "코스닥 얼마야?" → worker_action="index_price", worker_params={{"index_name": "코스피"}}
 
-**종목명 추출 규칙:**
-- 종목명만 추출하세요 (예: "SK하이닉스", "삼성전자", "네이버")
-- 띄어쓰기를 정규화하세요 (예: "sk 하이닉스" → "SK하이닉스")
-- 종목명이 아닌 단어는 제외하세요 (예: "전망", "분석", "매수", "어때" 등)
-- 한국 상장 기업명만 추출하세요
-- 종목명이 없으면 None을 반환하세요
+**우선순위 2: 에이전트 호출 (분석/전략/실행)**
+- research: 종목 분석 요청 ("삼성전자 분석해줘", "재무제표 분석")
+- strategy: 투자 전략/타이밍 ("언제 사야해?", "매수 타이밍")
+- risk: 리스크 평가 ("위험도는?", "손실 가능성")
+- portfolio: 포트폴리오 조회/관리 ("보유 현황", "리밸런싱")
+- trading: 매매 실행 ("매수", "매도")
 
-**종목명 추출 예시:**
-- "sk 하이닉스 전망 분석해줘" → ["SK하이닉스"]
-- "삼성전자와 SK하이닉스 비교해줘" → ["삼성전자", "SK하이닉스"]
-- "PER이 뭐야?" → None
-- "코스피 지수는?" → None
+**우선순위 3: Router 직접 답변**
+agents_to_call = [], worker_action = None, direct_answer 생성:
+- 일반 질문/용어 정의 ("PER이 뭐야?", "안녕?")
 
-**사용자 프로파일:**
-- 투자 경험: {user_expertise}
-- 투자 성향: {investment_style}
-- 선호 섹터: {preferred_sectors}
-- 평균 매매 횟수: {avg_trades_per_day}
-- 기술적 이해도: {technical_level}
+**종목명 추출:**
+질문에서 기업명을 추출하세요 (예: "lg 화학" → ["LG화학"]).
+종목이 없으면 None.
 
-**질문 복잡도 판단 기준:**
-- simple: 단순 정보 조회
-  예: "PER이 뭐야?", "삼성전자 현재가는?", "코스피 지수는?"
-- moderate: 분석 필요
-  예: "삼성전자 분석해줘", "지금 매수 타이밍인가?", "내 포트폴리오 괜찮아?"
-- expert: 심층 분석
-  예: "삼성전자 DCF 밸류에이션", "포트폴리오 최적화", "리스크 민감도 분석"
+**복잡도:**
+- simple: 단순 정보 조회 (현재가, 지수)
+- moderate: 분석 필요 (재무, 기술적 분석)
+- expert: 심층 분석 (전략 수립, 리스크 평가)
 
-**에이전트 선택 가이드:**
-- general: 용어 정의, 일반 질문 ("PER이 뭐야?", "투자 전략이란?")
-- research: 종목 분석 ("삼성전자 분석", "반도체 업종 전망")
-- strategy: 투자 전략, 타이밍 ("지금 매수해야 할까?", "시장 사이클은?")
-- risk: 리스크 평가 ("내 포트폴리오 리스크는?", "변동성 분석")
-- portfolio: 포트폴리오 관리 ("리밸런싱 해줘", "포트폴리오 구성")
-- trading: 매매 실행 ("삼성전자 10주 매수", "전량 매도")
+**사용자:** {user_expertise} 수준, {investment_style} 성향
 
-**답변 깊이 수준:**
-- brief: 핵심만 (1-2문장, 초보자용)
-  예: 초보자의 간단한 질문, 빠른 정보 확인
-- detailed: 상세 설명 (근거 포함, 중급자용)
-  예: 중급자의 분석 요청, 일반적인 투자 질문
-- comprehensive: 전문가 수준 (모든 지표, 계산 과정, 대안 포함)
-  예: 전문가의 심층 분석 요청, DCF/포트폴리오 최적화
-
-**개인화 원칙:**
-- 초보자 (beginner):
-  * adjust_for_expertise: True
-  * include_explanations: True
-  * use_analogies: True
-  * technical_level: "basic"
-
-- 중급자 (intermediate):
-  * adjust_for_expertise: True
-  * include_explanations: False (핵심만)
-  * focus_on_metrics: ["PER", "PBR", "ROE"] (주요 지표)
-  * sector_comparison: True (선호 섹터 비교)
-
-- 전문가 (expert):
-  * adjust_for_expertise: False (원데이터)
-  * include_explanations: False
-  * show_formulas: True (계산식)
-  * include_sensitivity: True (민감도 분석)
-
-**출력 형식:**
-JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
+JSON 형식으로 출력하세요.
 """,
             ),
-            ("human", "질문: {query}\n\n이전 대화:\n{conversation_history}"),
+            ("human", "질문: {query}"),
         ]
     )
 
@@ -245,12 +217,15 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
     llm = None
     if router_provider == "openai":
         try:
+            # max_completion_tokens: structured output + reasoning tokens 모두 포함
+            # o1 모델은 reasoning_tokens를 많이 사용하므로 충분한 여유 필요
             llm = ChatOpenAI(
                 model=settings.ROUTER_MODEL,
                 temperature=0,
+                max_completion_tokens=2500,  # 증가: structured output(500) + reasoning(2000)
                 api_key=settings.OPENAI_API_KEY,
             )
-            logger.info("🤖 [Router] OpenAI 모델 사용")
+            logger.info(f"🤖 [Router] OpenAI 모델 사용: {settings.ROUTER_MODEL}")
         except Exception as e:
             logger.warning(f"⚠️ [Router] OpenAI 초기화 실패, Anthropic으로 fallback: {e}")
 
@@ -259,9 +234,10 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
             llm = ChatAnthropic(
                 model=settings.ROUTER_MODEL or "claude-3-5-sonnet-20241022",
                 temperature=0,
+                max_tokens=2000,  # structured output 고려
                 api_key=settings.ANTHROPIC_API_KEY,
             )
-            logger.info("🤖 [Router] Anthropic 모델 사용")
+            logger.info(f"🤖 [Router] Anthropic 모델 사용: {settings.ROUTER_MODEL or 'claude-3-5-sonnet-20241022'}")
         except Exception as e:
             logger.error(f"❌ [Router] Anthropic 초기화 실패: {e}")
             raise RuntimeError("Router LLM 초기화 실패 (OpenAI, Anthropic 모두 실패)")
@@ -269,26 +245,12 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
     structured_llm = llm.with_structured_output(RoutingDecision)
     router_chain = router_prompt | structured_llm
 
-    # 대화 히스토리 포맷팅
-    history_text = "\n".join(
-        [
-            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
-            for msg in conversation_history[-3:]  # 최근 3턴만
-        ]
-    )
-    if not history_text:
-        history_text = "(없음)"
-
     logger.info(f"🧭 [Router] 질문 분석 시작: {query[:50]}...")
 
     prompt_inputs = {
         "query": query,
         "user_expertise": user_expertise,
         "investment_style": investment_style,
-        "preferred_sectors": ", ".join(preferred_sectors) if preferred_sectors else "없음",
-        "avg_trades_per_day": avg_trades_per_day,
-        "technical_level": technical_level,
-        "conversation_history": history_text,
     }
 
     try:
@@ -302,8 +264,50 @@ JSON으로 RoutingDecision 스키마에 맞게 출력하세요.
         logger.info(f"  - 의도: {result.user_intent}")
         logger.info(f"  - 종목명: {result.stock_names}")
         logger.info(f"  - 에이전트: {result.agents_to_call}")
+        logger.info(f"  - 워커: {result.worker_action} (params: {result.worker_params})")
         logger.info(f"  - 깊이: {result.depth_level}")
         logger.info(f"  - 근거: {result.reasoning}")
+
+        # 간단한 질문이면 Router가 직접 답변 생성 (워커 호출이 없는 경우만)
+        if not result.agents_to_call and not result.worker_action:
+            logger.info("💬 [Router] 간단한 질문 - 직접 답변 생성")
+
+            # 간단한 답변용 LLM (structured output 없음, 빠른 모델)
+            simple_llm = ChatOpenAI(
+                model="gpt-4o-mini",  # 빠르고 저렴한 모델
+                temperature=0.7,
+                max_completion_tokens=500,  # 간단한 답변용
+                api_key=settings.OPENAI_API_KEY,
+            )
+
+            simple_prompt = ChatPromptTemplate.from_messages([
+                ("system", """당신은 친절한 투자 도우미입니다.
+사용자의 간단한 질문에 명확하고 간결하게 답변하세요.
+
+답변 원칙:
+- 1-3문장으로 핵심만 전달
+- 전문 용어는 쉽게 풀어서 설명
+- 투자 관련 질문이 아니어도 친절하게 답변
+- 한국어로 자연스럽게 작성"""),
+                ("human", "{query}")
+            ])
+
+            simple_chain = simple_prompt | simple_llm
+
+            try:
+                if config is not None:
+                    answer_msg = await simple_chain.ainvoke({"query": query}, config=config)
+                else:
+                    answer_msg = await simple_chain.ainvoke({"query": query})
+
+                direct_answer = answer_msg.content
+                result.direct_answer = direct_answer
+                logger.info(f"✅ [Router] 직접 답변: {direct_answer[:100]}...")
+            except Exception as e:
+                logger.error(f"❌ [Router] 직접 답변 생성 실패: {e}")
+                result.direct_answer = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
+        elif result.worker_action:
+            logger.info(f"⚡ [Router] 워커 호출: {result.worker_action}")
 
         return result
 

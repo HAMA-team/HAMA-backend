@@ -16,8 +16,11 @@ from langchain_core.messages import HumanMessage
 from src.agents.router import route_query
 from src.services.stock_data_service import stock_data_service
 from src.services.user_profile_service import user_profile_service
+from src.services import chat_history_service
 from src.models.database import get_db_context
 from src.utils.stock_name_extractor import extract_stock_names_from_query
+from src.config.settings import settings
+from src.workers.market_data import get_stock_price, get_index_price
 
 logger = logging.getLogger(__name__)
 
@@ -143,16 +146,141 @@ async def stream_multi_agent_execution(
 
         yield f"event: user_profile\ndata: {json.dumps({'profile_loaded': True}, ensure_ascii=False)}\n\n"
 
+        # 2.5. 대화 세션 초기화 및 사용자 메시지 저장
+        conversation_uuid = uuid.UUID(conversation_id)
+        demo_user_uuid = settings.demo_user_uuid
+
+        await chat_history_service.upsert_session(
+            conversation_id=conversation_uuid,
+            user_id=demo_user_uuid,
+            automation_level=automation_level,
+        )
+        await chat_history_service.append_message(
+            conversation_id=conversation_uuid,
+            role="user",
+            content=message,
+        )
+
+        # 2.6. 대화 히스토리 조회 (최근 5개 메시지)
+        conversation_history = []
+        try:
+            history_data = await chat_history_service.get_history(
+                conversation_id=conversation_uuid,
+                limit=10  # 최근 10개 메시지 (user + assistant 쌍 5개)
+            )
+            if history_data and "messages" in history_data:
+                # 최신 메시지 제외 (방금 저장한 user 메시지)
+                messages = history_data["messages"][:-1]
+                conversation_history = [
+                    {"role": msg.role, "content": msg.content}
+                    for msg in messages[-6:]  # 최근 3턴 (6개 메시지)
+                ]
+                logger.info(f"📜 [MultiAgentStream] 대화 히스토리 로드: {len(conversation_history)}개")
+        except Exception as e:
+            logger.warning(f"⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: {e}")
+
         # 3. Router 판단 (어떤 에이전트를 호출할지)
         routing_decision = await route_query(
             query=message,
             user_profile=user_profile,
-            conversation_history=[]
+            conversation_history=conversation_history
         )
 
         agents_to_call = list(dict.fromkeys(routing_decision.agents_to_call))
-        if not agents_to_call:
-            agents_to_call = ["general"]
+
+        # 워커 직접 호출 (단순 데이터 조회)
+        if routing_decision.worker_action:
+            logger.info(f"⚡ [MultiAgentStream] Worker 호출: {routing_decision.worker_action}")
+
+            try:
+                worker_result = None
+
+                # stock_price 워커 호출
+                if routing_decision.worker_action == "stock_price":
+                    params = routing_decision.worker_params or {}
+                    stock_code = params.get("stock_code")
+                    stock_name = params.get("stock_name")
+
+                    if not stock_code:
+                        # stock_name으로 코드 검색
+                        if stock_name:
+                            for market in ("KOSPI", "KOSDAQ", "KONEX"):
+                                code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+                                if code:
+                                    stock_code = code
+                                    break
+
+                    if stock_code:
+                        worker_result = await get_stock_price(stock_code, stock_name)
+                    else:
+                        worker_result = {
+                            "error": "종목 코드를 찾을 수 없습니다.",
+                            "message": f"죄송합니다. '{stock_name}' 종목을 찾을 수 없습니다."
+                        }
+
+                # index_price 워커 호출
+                elif routing_decision.worker_action == "index_price":
+                    params = routing_decision.worker_params or {}
+                    index_name = params.get("index_name", "코스피")
+                    worker_result = await get_index_price(index_name)
+
+                # 워커 결과 메시지 추출
+                worker_message = worker_result.get("message", "데이터를 가져왔습니다.") if worker_result else "데이터를 가져오는 중 오류가 발생했습니다."
+
+                # Assistant 메시지 저장
+                await chat_history_service.append_message(
+                    conversation_id=conversation_uuid,
+                    role="assistant",
+                    content=worker_message,
+                    metadata={
+                        "source": "worker",
+                        "worker_action": routing_decision.worker_action,
+                        "worker_result": worker_result,
+                        "reasoning": routing_decision.reasoning
+                    }
+                )
+
+                # SSE 이벤트 전송
+                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': routing_decision.worker_params}, ensure_ascii=False)}\n\n"
+                yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
+                yield f"event: master_complete\ndata: {json.dumps({'message': worker_message, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+
+                logger.info(f"✅ [MultiAgentStream] Worker 완료: {routing_decision.worker_action}")
+                return
+
+            except Exception as e:
+                logger.error(f"❌ [MultiAgentStream] Worker 실행 실패: {e}")
+                error_message = f"죄송합니다. 데이터를 가져오는 중 오류가 발생했습니다: {str(e)}"
+
+                await chat_history_service.append_message(
+                    conversation_id=conversation_uuid,
+                    role="assistant",
+                    content=error_message,
+                    metadata={"source": "worker_error", "error": str(e)}
+                )
+
+                yield f"event: error\ndata: {json.dumps({'error': str(e), 'message': error_message}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+                return
+
+        # Router가 직접 답변한 경우 바로 반환
+        if routing_decision.direct_answer:
+            logger.info("💬 [MultiAgentStream] Router 직접 답변 사용")
+
+            # Assistant 메시지 저장
+            await chat_history_service.append_message(
+                conversation_id=conversation_uuid,
+                role="assistant",
+                content=routing_decision.direct_answer,
+                metadata={"source": "router_direct", "reasoning": routing_decision.reasoning}
+            )
+
+            yield f"event: master_routing\ndata: {json.dumps({'agents': [], 'depth_level': routing_decision.depth_level, 'stock_names': None, 'direct_answer': True}, ensure_ascii=False)}\n\n"
+            yield f"event: master_complete\ndata: {json.dumps({'message': routing_decision.direct_answer, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
+            logger.info("✅ [MultiAgentStream] Router 직접 답변으로 완료")
+            return
 
         resolved_stock_code: Optional[str] = None
         clarification_message: Optional[str] = None
@@ -190,7 +318,8 @@ async def stream_multi_agent_execution(
                         "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
                         "종목명이나 티커(예: 128940)를 알려주시면 분석을 도와드릴게요."
                     )
-                agents_to_call = ["general"]
+                # Supervisor가 직접 처리하도록 agents_to_call 비움
+                agents_to_call = []
 
         yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level, 'stock_names': stock_names}, ensure_ascii=False)}\n\n"
 
@@ -240,32 +369,6 @@ async def stream_multi_agent_execution(
 
                 consensus = final_result.get("consensus", {})
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'recommendation': consensus.get('recommendation'), 'target_price': consensus.get('target_price'), 'confidence': consensus.get('confidence')}}, ensure_ascii=False)}\n\n"
-
-            elif agent_name == "general":
-                from src.agents.general.graph import build_general_subgraph
-
-                if clarification_message:
-                    answer = clarification_message
-                    agent_results[agent_name] = {
-                        "answer": answer,
-                        "sources": [],
-                    }
-                    yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': answer}}, ensure_ascii=False)}\n\n"
-                    continue
-
-                agent = build_general_subgraph()
-                input_state = {
-                    "messages": [HumanMessage(content=message)],
-                    "query": message,
-                    "request_id": conversation_id,
-                    "answer": None,
-                    "sources": [],
-                }
-
-                result = await agent.ainvoke(input_state)
-                agent_results[agent_name] = result
-
-                yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'answer': result.get('answer')}}, ensure_ascii=False)}\n\n"
 
             elif agent_name == "strategy":
                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': 'analyze_market', 'status': 'running'}, ensure_ascii=False)}\n\n"
@@ -495,7 +598,8 @@ async def stream_multi_agent_execution(
                 }
 
                 try:
-                    # 노드 실행 이벤트 스트리밍
+                    # 노드 실행 이벤트 스트리밍 + 최종 결과 캡처 (중복 실행 방지)
+                    result = None
                     async for event in agent.astream_events(input_state, version="v2"):
                         event_type = event["event"]
 
@@ -507,9 +611,15 @@ async def stream_multi_agent_execution(
                             node_name = event.get("name", "")
                             if node_name and node_name != "LangGraph":
                                 yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'complete', 'message': f'{node_name} 완료'}, ensure_ascii=False)}\n\n"
+                            # 최종 결과 캡처 (LangGraph의 마지막 on_chain_end)
+                            if node_name == "LangGraph":
+                                result = event.get("data", {}).get("output")
 
-                    # 최종 결과
-                    result = await agent.ainvoke(input_state)
+                    # astream_events에서 결과를 못 얻은 경우 fallback (중복 실행 최소화)
+                    if result is None:
+                        logger.warning("⚠️ [Portfolio] astream_events에서 결과 미캡처, ainvoke로 재실행")
+                        result = await agent.ainvoke(input_state)
+
                     agent_results[agent_name] = result
 
                     portfolio_report = result.get("portfolio_report", {})
@@ -559,20 +669,25 @@ async def stream_multi_agent_execution(
         yield f"event: master_aggregating\ndata: {json.dumps({'message': '분석 결과를 종합하고 있습니다...'}, ensure_ascii=False)}\n\n"
 
         # 6. 최종 응답 생성
-        # Portfolio/General Agent는 이미 완성된 답변을 가지고 있으므로 직접 사용
+        # Portfolio Agent는 이미 완성된 답변을 가지고 있으므로 직접 사용
         if "portfolio" in agent_results and agent_results["portfolio"].get("summary"):
             final_response = agent_results["portfolio"]["summary"]
             logger.info("✅ [MultiAgentStream] Portfolio Agent 결과 직접 사용")
-        elif "general" in agent_results and agent_results["general"].get("answer"):
-            final_response = agent_results["general"]["answer"]
-            logger.info("✅ [MultiAgentStream] General Agent 결과 직접 사용")
         else:
-            # 개인화 없이 agent_results 직접 포맷팅
+            # agent_results 직접 포맷팅
             final_response = _format_agent_results(agent_results)
             logger.info("✅ [MultiAgentStream] Agent 결과 직접 포맷팅")
 
         # 최종 답변 로그 출력 (디버깅용)
         logger.info("📝 [MultiAgentStream] 최종 답변: %s", final_response[:200] if len(final_response) > 200 else final_response)
+
+        # 6.5. Assistant 메시지 저장
+        await chat_history_service.append_message(
+            conversation_id=conversation_uuid,
+            role="assistant",
+            content=final_response,
+            metadata={"agents_called": agents_to_call, "agent_results": list(agent_results.keys())}
+        )
 
         # 7. 완료
         yield f"event: master_complete\ndata: {json.dumps({'message': final_response, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"

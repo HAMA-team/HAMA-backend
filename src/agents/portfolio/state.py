@@ -37,6 +37,12 @@ class PortfolioState(TypedDict, total=False):
     request_id: str
     user_id: Optional[str]
     hitl_config: HITLConfig
+    query: Optional[str]
+    """사용자 질문 (특정 종목 조회용)"""
+    stock_code: Optional[str]
+    """조회할 특정 종목 코드 (analyze_query_node에서 추출)"""
+    stock_code_filter: Optional[str]
+    """필터링된 종목 코드 (collect_portfolio_node에서 사용)"""
     risk_profile: Optional[str]
     horizon: Optional[str]
     preferences: Optional[dict]
@@ -45,6 +51,18 @@ class PortfolioState(TypedDict, total=False):
 
     portfolio_profile: Optional[dict]
     """사용자 프로필 / 투자 성향 캡처"""
+
+    automation_level: Optional[int]
+    """자동화 레벨 (1: Pilot, 2: Copilot, 3: Advisor)"""
+
+    strategy_result: Optional[dict]
+    """Strategy Agent 결과 (리밸런싱 시 참고)"""
+
+    agent_results: Optional[dict]
+    """다른 에이전트 결과 (MasterState 공유용)"""
+
+    execution_results: Optional[List[dict]]
+    """리밸런싱 실행 결과"""
 
     # 현재 포트폴리오 스냅샷
     portfolio_id: Optional[str]
