@@ -66,7 +66,7 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3)
-    stream_thinking: bool = Field(default=False, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
+    stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
 def _format_agent_results(agent_results: dict) -> str:
@@ -129,7 +129,7 @@ async def stream_multi_agent_execution(
     user_id: str,
     conversation_id: str,
     automation_level: int,
-    stream_thinking: bool = False
+    stream_thinking: bool = True
 ) -> AsyncGenerator[str, None]:
     """
     멀티 에이전트 실행을 SSE로 스트리밍
@@ -242,8 +242,82 @@ async def stream_multi_agent_execution(
                     index_name = params.get("index_name", "코스피")
                     worker_result = await get_index_price(index_name)
 
-                # 워커 결과 메시지 추출
-                worker_message = worker_result.get("message", "데이터를 가져왔습니다.") if worker_result else "데이터를 가져오는 중 오류가 발생했습니다."
+                # Worker 결과를 LLM으로 친근하게 변환
+                worker_message_raw = worker_result.get("message", "데이터를 가져왔습니다.") if worker_result else "데이터를 가져오는 중 오류가 발생했습니다."
+
+                # SSE 이벤트 전송 (WorkerParams를 dict로 변환)
+                worker_params_dict = routing_decision.worker_params.model_dump() if routing_decision.worker_params else {}
+                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': worker_params_dict}, ensure_ascii=False)}\n\n"
+                yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
+
+                # LLM으로 답변 개선 (더 친근하고 맥락있게)
+                yield f"event: agent_llm_start\ndata: {json.dumps({'agent': 'master', 'model': 'gpt-4o-mini', 'message': '답변을 생성하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+                try:
+                    from langchain_openai import ChatOpenAI
+                    from langchain_core.prompts import ChatPromptTemplate
+
+                    # 대화 히스토리 조회 (최근 1개 메시지만 - 맥락 파악용)
+                    recent_context = ""
+                    try:
+                        history_data = await chat_history_service.get_history(
+                            conversation_id=conversation_uuid,
+                            limit=4  # 최근 2턴
+                        )
+                        if history_data and "messages" in history_data:
+                            # 최신 메시지 제외 (방금 저장한 user 메시지)
+                            messages = history_data["messages"][:-1]
+                            if messages:
+                                last_msg = messages[-1]
+                                recent_context = f"[이전 답변] {last_msg.content[:150]}..."
+                    except Exception as e:
+                        logger.debug(f"대화 히스토리 조회 실패: {e}")
+
+                    enhancer_llm = ChatOpenAI(
+                        model="gpt-4o-mini",
+                        temperature=0.7,
+                        max_completion_tokens=300,
+                        api_key=settings.OPENAI_API_KEY,
+                    )
+
+                    enhancer_prompt = ChatPromptTemplate.from_messages([
+                        ("system", """당신은 투자 정보를 친근하고 이해하기 쉽게 전달하는 AI 어시스턴트입니다.
+
+주어진 데이터를 바탕으로 사용자에게 자연스럽고 도움이 되는 답변을 생성하세요.
+
+<guidelines>
+1. **친근한 톤**: "~입니다", "~해요" 같은 부드러운 어투 사용
+2. **맥락 제공**: 단순 숫자 나열이 아닌, 의미 있는 해석 포함
+3. **간결함**: 핵심 정보를 명확히 전달 (3-4문장)
+4. **추가 인사이트**: 가능하면 간단한 해석이나 조언 추가
+</guidelines>
+
+<data>
+{worker_data}
+</data>
+
+{context_block}
+
+위 데이터를 바탕으로 사용자에게 친근하고 유용한 답변을 생성하세요."""),
+                        ("human", "사용자 질문: {query}")
+                    ])
+
+                    context_block = f"\n<recent_context>\n{recent_context}\n</recent_context>" if recent_context else ""
+
+                    enhancer_chain = enhancer_prompt | enhancer_llm
+                    enhanced_response = await enhancer_chain.ainvoke({
+                        "query": message,
+                        "worker_data": worker_message_raw,
+                        "context_block": context_block
+                    })
+
+                    worker_message = enhanced_response.content
+
+                except Exception as e:
+                    logger.warning(f"⚠️ [MultiAgentStream] LLM 답변 개선 실패, 원본 사용: {e}")
+                    worker_message = worker_message_raw
+
+                yield f"event: agent_llm_end\ndata: {json.dumps({'agent': 'master', 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
                 # Assistant 메시지 저장
                 await chat_history_service.append_message(
@@ -258,10 +332,6 @@ async def stream_multi_agent_execution(
                     }
                 )
 
-                # SSE 이벤트 전송 (WorkerParams를 dict로 변환)
-                worker_params_dict = routing_decision.worker_params.model_dump() if routing_decision.worker_params else {}
-                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': worker_params_dict}, ensure_ascii=False)}\n\n"
-                yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
                 yield f"event: master_complete\ndata: {json.dumps({'message': worker_message, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
                 yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
@@ -889,3 +959,191 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/sessions")
+async def get_chat_sessions(
+    limit: int = 20,
+    offset: int = 0,
+):
+    """
+    대화 세션 목록 조회
+
+    Args:
+        limit: 조회할 세션 수 (기본값: 20)
+        offset: 건너뛸 세션 수 (기본값: 0)
+
+    Returns:
+        {
+            "sessions": [
+                {
+                    "conversation_id": "uuid",
+                    "title": "첫 메시지 내용",
+                    "last_message": "마지막 메시지",
+                    "created_at": "2025-01-09T10:00:00",
+                    "updated_at": "2025-01-09T10:30:00",
+                    "message_count": 10
+                }
+            ],
+            "total": 100,
+            "limit": 20,
+            "offset": 0
+        }
+    """
+    try:
+        # Demo 사용자 UUID
+        demo_user_uuid = settings.demo_user_uuid
+
+        # 세션 목록 조회 (전체 조회 후 offset 적용)
+        all_sessions = await chat_history_service.list_sessions(
+            user_id=demo_user_uuid,
+            limit=limit + offset  # offset만큼 더 가져옴
+        )
+
+        # offset 적용하여 슬라이싱
+        sessions_slice = all_sessions[offset:offset + limit]
+
+        # API 응답 형식으로 포맷팅
+        formatted_sessions = []
+        for session_data in sessions_slice:
+            first_msg = session_data.get("first_user_message")
+            last_msg = session_data.get("last_message")
+            chat_session = session_data.get("session")
+
+            formatted_sessions.append({
+                "conversation_id": str(session_data["conversation_id"]),
+                "title": first_msg.content[:50] if first_msg and first_msg.content else "새 대화",
+                "last_message": last_msg.content[:100] if last_msg and last_msg.content else "",
+                "created_at": chat_session.created_at.isoformat() if chat_session and hasattr(chat_session, "created_at") else None,
+                "updated_at": chat_session.last_message_at.isoformat() if chat_session and hasattr(chat_session, "last_message_at") and chat_session.last_message_at else None,
+                "message_count": session_data.get("message_count", 0)
+            })
+
+        return {
+            "sessions": formatted_sessions,
+            "total": len(all_sessions),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [ChatSessions] 세션 목록 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "sessions": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset
+        }
+
+
+@router.get("/sessions/{conversation_id}")
+async def get_chat_session(conversation_id: str):
+    """
+    특정 대화 세션의 메시지 조회
+
+    Args:
+        conversation_id: 대화 ID (UUID)
+
+    Returns:
+        {
+            "conversation_id": "uuid",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "안녕하세요",
+                    "created_at": "2025-01-09T10:00:00"
+                },
+                {
+                    "role": "assistant",
+                    "content": "안녕하세요! 무엇을 도와드릴까요?",
+                    "created_at": "2025-01-09T10:00:05"
+                }
+            ]
+        }
+    """
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+        history = await chat_history_service.get_history(
+            conversation_id=conversation_uuid,
+            limit=100  # 최근 100개 메시지
+        )
+
+        if not history:
+            return {
+                "conversation_id": conversation_id,
+                "messages": []
+            }
+
+        # 메시지 포맷팅
+        messages = []
+        for msg in history.get("messages", []):
+            messages.append({
+                "role": msg.role,
+                "content": msg.content,
+                "created_at": msg.created_at.isoformat() if hasattr(msg, "created_at") else None
+            })
+
+        return {
+            "conversation_id": conversation_id,
+            "messages": messages
+        }
+
+    except ValueError:
+        logger.error(f"❌ [ChatSession] 잘못된 UUID 형식: {conversation_id}")
+        return {
+            "conversation_id": conversation_id,
+            "messages": [],
+            "error": "Invalid conversation ID format"
+        }
+    except Exception as e:
+        logger.error(f"❌ [ChatSession] 세션 조회 실패: {e}")
+        return {
+            "conversation_id": conversation_id,
+            "messages": [],
+            "error": str(e)
+        }
+
+
+@router.delete("/sessions/{conversation_id}")
+async def delete_chat_session(conversation_id: str):
+    """
+    대화 세션 삭제
+
+    Args:
+        conversation_id: 대화 ID (UUID)
+
+    Returns:
+        {
+            "success": true,
+            "conversation_id": "uuid",
+            "message": "세션이 삭제되었습니다."
+        }
+    """
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+
+        # 세션 삭제 (delete_history 사용)
+        await chat_history_service.delete_history(conversation_id=conversation_uuid)
+
+        return {
+            "success": True,
+            "conversation_id": conversation_id,
+            "message": "세션이 삭제되었습니다."
+        }
+
+    except ValueError:
+        logger.error(f"❌ [DeleteSession] 잘못된 UUID 형식: {conversation_id}")
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": "Invalid conversation ID format"
+        }
+    except Exception as e:
+        logger.error(f"❌ [DeleteSession] 세션 삭제 실패: {e}")
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": str(e)
+        }
