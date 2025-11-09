@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.api.routes import chat, dashboard, portfolio, stocks, multi_agent_stream, artifacts, approvals, news
+from src.api.routes import dashboard, portfolio, stocks, multi_agent_stream, artifacts, approvals, news
 from src.api.routes import settings as settings_router
 from src.api.middleware.logging import RequestLoggingMiddleware
 from src.api.error_handlers import setup_error_handlers
@@ -125,7 +125,6 @@ except SQLAlchemyError:
 # Include routers
 api_prefix = f"/api/{settings.API_VERSION}"
 
-app.include_router(chat.router, prefix=f"{api_prefix}/chat", tags=["chat"])
 app.include_router(multi_agent_stream.router, prefix=f"{api_prefix}/chat", tags=["chat"])  # 멀티 에이전트 스트리밍
 app.include_router(dashboard.router, prefix=f"{api_prefix}/dashboard", tags=["dashboard"])
 app.include_router(portfolio.router, prefix=f"{api_prefix}/portfolio", tags=["portfolio"])

@@ -19,6 +19,7 @@ from src.services.user_profile_service import user_profile_service
 from src.services import chat_history_service
 from src.models.database import get_db_context
 from src.utils.stock_name_extractor import extract_stock_names_from_query
+from src.utils.hitl_compat import automation_level_to_hitl_config
 from src.config.settings import settings
 from src.workers.market_data import get_stock_price, get_index_price
 
@@ -65,6 +66,7 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3)
+    stream_thinking: bool = Field(default=False, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
 def _format_agent_results(agent_results: dict) -> str:
@@ -126,7 +128,8 @@ async def stream_multi_agent_execution(
     message: str,
     user_id: str,
     conversation_id: str,
-    automation_level: int
+    automation_level: int,
+    stream_thinking: bool = False
 ) -> AsyncGenerator[str, None]:
     """
     멀티 에이전트 실행을 SSE로 스트리밍
@@ -137,7 +140,9 @@ async def stream_multi_agent_execution(
     - agent_start: 서브 에이전트 시작
     - agent_node: 에이전트 내부 노드 실행
     - agent_llm_start: LLM 호출 시작
-    - agent_llm_stream: LLM 응답 스트리밍
+    - agent_thinking: LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+    - agent_tool_call: Tool 호출 시작 (향후 대비)
+    - agent_tool_result: Tool 실행 결과 (향후 대비)
     - agent_llm_end: LLM 호출 완료
     - agent_complete: 서브 에이전트 완료
     - master_aggregating: Master가 결과 집계 중
@@ -372,8 +377,26 @@ async def stream_multi_agent_execution(
                     elif event_type == "on_chat_model_start":
                         model = event.get("name", "LLM")
                         yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
-                    # elif event_type == "on_chat_model_stream":
-                    #     ...
+                    elif event_type == "on_chat_model_stream":
+                        # LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+                        if stream_thinking:
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk and hasattr(chunk, "content") and chunk.content:
+                                yield f"event: agent_thinking\ndata: {json.dumps({'agent': agent_name, 'content': chunk.content}, ensure_ascii=False)}\n\n"
+                    elif event_type == "on_tool_start":
+                        # Tool 호출 추적 (향후 ReAct Agent 지원)
+                        if stream_thinking:
+                            tool_name = event.get("name", "")
+                            tool_input = event.get("data", {}).get("input", {})
+                            yield f"event: agent_tool_call\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'input': tool_input}, ensure_ascii=False)}\n\n"
+                            logger.info(f"🔧 [Tool Call] {agent_name} - {tool_name}")
+                    elif event_type == "on_tool_end":
+                        # Tool 실행 결과 (향후 ReAct Agent 지원)
+                        if stream_thinking:
+                            tool_name = event.get("name", "")
+                            tool_output = event.get("data", {}).get("output")
+                            yield f"event: agent_tool_result\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'output': tool_output}, ensure_ascii=False)}\n\n"
+                            logger.info(f"✅ [Tool Result] {agent_name} - {tool_name}")
                     elif event_type == "on_chat_model_end":
                         yield f"event: agent_llm_end\ndata: {json.dumps({'agent': agent_name, 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
@@ -399,6 +422,9 @@ async def stream_multi_agent_execution(
                 if not resolved_stock_code:
                     raise ValueError("매매를 위한 종목 코드를 추출하지 못했습니다.")
 
+                # automation_level을 hitl_config로 변환
+                hitl_config = automation_level_to_hitl_config(automation_level)
+
                 # 원문(query)을 그대로 Trading Agent에 전달
                 # Trading Agent 내부에서 LLM으로 매수/매도, 수량 분석
                 input_state = {
@@ -406,7 +432,8 @@ async def stream_multi_agent_execution(
                     "stock_code": resolved_stock_code,
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
-                    "automation_level": automation_level,
+                    "hitl_config": hitl_config,  # hitl_config 사용
+                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                     "query": message,
                     # order_type, quantity는 Trading Agent에서 LLM으로 추출
                 }
@@ -417,8 +444,8 @@ async def stream_multi_agent_execution(
                     # 모든 automation level에서 Trading 서브그래프 사용
                     agent = build_trading_subgraph().compile()
 
-                    # automation_level에 따라 처리 방식 분기
-                    if automation_level == 1:
+                    # hitl_config의 trade 설정에 따라 처리 방식 분기
+                    if hitl_config.phases.trade == "conditional" or hitl_config.phases.trade is False:
                         # Pilot 모드: Trading 서브그래프 완전 실행 (자동 승인)
                         result = await agent.ainvoke(input_state)
 
@@ -454,12 +481,16 @@ async def stream_multi_agent_execution(
                                 from src.agents.portfolio.graph import build_portfolio_subgraph
                                 portfolio_agent = build_portfolio_subgraph().compile()
 
+                                # automation_level을 hitl_config로 변환
+                                hitl_config_fallback = automation_level_to_hitl_config(automation_level)
+
                                 # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
                                 portfolio_input = {
                                     "messages": [HumanMessage(content=message)],
                                     "user_id": user_id,
                                     "portfolio_id": None,
-                                    "automation_level": automation_level,
+                                    "hitl_config": hitl_config_fallback,  # hitl_config 사용
+                                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                                     "query": message,  # Portfolio Agent가 query 분석
                                     "view_only": True,
                                 }
@@ -600,12 +631,16 @@ async def stream_multi_agent_execution(
 
                 agent = build_portfolio_subgraph().compile()
 
+                # automation_level을 hitl_config로 변환
+                hitl_config = automation_level_to_hitl_config(automation_level)
+
                 # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
                 input_state = {
                     "messages": [HumanMessage(content=message)],
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
-                    "automation_level": automation_level,
+                    "hitl_config": hitl_config,  # hitl_config 사용
+                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                     "query": message,  # Portfolio Agent가 query 분석
                     "view_only": True,  # 조회 전용 모드
                 }
@@ -627,6 +662,31 @@ async def stream_multi_agent_execution(
                             # 최종 결과 캡처 (LangGraph의 마지막 on_chain_end)
                             if node_name == "LangGraph":
                                 result = event.get("data", {}).get("output")
+                        elif event_type == "on_chat_model_stream":
+                            # LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+                            if stream_thinking:
+                                chunk = event.get("data", {}).get("chunk")
+                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                    yield f"event: agent_thinking\ndata: {json.dumps({'agent': agent_name, 'content': chunk.content}, ensure_ascii=False)}\n\n"
+                        elif event_type == "on_tool_start":
+                            # Tool 호출 추적 (Portfolio Agent는 ReAct 패턴 사용)
+                            if stream_thinking:
+                                tool_name = event.get("name", "")
+                                tool_input = event.get("data", {}).get("input", {})
+                                yield f"event: agent_tool_call\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'input': tool_input}, ensure_ascii=False)}\n\n"
+                                logger.info(f"🔧 [Tool Call] {agent_name} - {tool_name}")
+                        elif event_type == "on_tool_end":
+                            # Tool 실행 결과
+                            if stream_thinking:
+                                tool_name = event.get("name", "")
+                                tool_output = event.get("data", {}).get("output")
+                                yield f"event: agent_tool_result\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'output': tool_output}, ensure_ascii=False)}\n\n"
+                                logger.info(f"✅ [Tool Result] {agent_name} - {tool_name}")
+                        elif event_type == "on_chat_model_start":
+                            model = event.get("name", "LLM")
+                            yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
+                        elif event_type == "on_chat_model_end":
+                            yield f"event: agent_llm_end\ndata: {json.dumps({'agent': agent_name, 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
                     # astream_events에서 결과를 못 얻은 경우 fallback (중복 실행 최소화)
                     if result is None:
@@ -818,7 +878,8 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             message=request.message,
             user_id=user_id,
             conversation_id=conversation_id,
-            automation_level=request.automation_level
+            automation_level=request.automation_level,
+            stream_thinking=request.stream_thinking
         ),
         media_type="text/event-stream",
         headers={

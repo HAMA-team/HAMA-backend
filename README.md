@@ -465,18 +465,19 @@ HAMA-backend/
 │   │   ├── trading/         ✅ 서브그래프 (매매 실행)
 │   │   ├── portfolio/       ✅ 서브그래프 (포트폴리오)
 │   │   ├── general/         ✅ 서브그래프 (일반 QA)
-│   │   ├── router/          ✅ 라우터 에이전트
-│   │   └── graph_master.py  ✅ Supervisor (마스터 에이전트)
+│   │   ├── router/          ✅ 라우터 에이전트 (쿼리 분석 및 에이전트 선택)
+│   │   └── thinking_trace.py ✅ LLM 사고 과정 추적 유틸리티
 │   ├── api/
 │   │   └── routes/
-│   │       ├── chat.py              ✅ 대화 API + HITL
-│   │       ├── approvals.py         ✅ 승인 요청 처리
+│   │       ├── multi_agent_stream.py ✅ 멀티 에이전트 스트리밍 (메인 엔드포인트, Thinking Trace 지원)
+│   │       ├── approvals.py         ✅ 승인 요청 처리 (HITL)
 │   │       ├── settings.py          ✅ 자동화 레벨 설정
 │   │       ├── portfolio.py         ✅ 포트폴리오 관리
-│   │       ├── multi_agent_stream.py ✅ 스트리밍
 │   │       ├── onboarding.py        ✅ 온보딩
 │   │       ├── stocks.py            ✅ 종목 정보
-│   │       └── dashboard.py         ✅ 대시보드
+│   │       ├── dashboard.py         ✅ 대시보드
+│   │       ├── news.py              ✅ 뉴스 검색
+│   │       └── artifacts.py         ✅ AI 생성 콘텐츠 관리
 │   ├── services/            # 데이터 서비스
 │   │   ├── stock_data_service.py     ✅ pykrx
 │   │   ├── kis_service.py            ✅ 한국투자증권 API
