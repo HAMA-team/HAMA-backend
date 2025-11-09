@@ -185,6 +185,9 @@ async def stream_multi_agent_execution(
                     for msg in messages[-6:]  # 최근 3턴 (6개 메시지)
                 ]
                 logger.info(f"📜 [MultiAgentStream] 대화 히스토리 로드: {len(conversation_history)}개")
+                # 디버깅: 대화 히스토리 내용 출력
+                for i, msg in enumerate(conversation_history):
+                    logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}...")
         except Exception as e:
             logger.warning(f"⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: {e}")
 

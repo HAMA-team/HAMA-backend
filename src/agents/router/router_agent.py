@@ -199,6 +199,17 @@ async def route_query(
     avg_trades_per_day = user_profile.get("avg_trades_per_day", 1.0)
     technical_level = user_profile.get("technical_level", "intermediate")
 
+    # 대화 히스토리 포맷팅 (있을 경우)
+    conversation_context = ""
+    if conversation_history and len(conversation_history) > 0:
+        history_lines = []
+        for msg in conversation_history:
+            role = "사용자" if msg["role"] == "user" else "AI"
+            history_lines.append(f"{role}: {msg['content']}")
+        conversation_context = "\n".join(history_lines)
+        logger.info(f"📜 [Router] 대화 히스토리 포맷팅 완료 ({len(conversation_history)}개 메시지)")
+        logger.info(f"  히스토리 내용:\n{conversation_context[:500]}{'...' if len(conversation_context) > 500 else ''}")
+
     router_prompt = ChatPromptTemplate.from_messages(
         [
             (
@@ -209,6 +220,8 @@ async def route_query(
 투자 경험: {user_expertise}
 투자 성향: {investment_style}
 </user_context>
+
+{conversation_context_block}
 
 <instructions>
 사용자 질문을 분석하여 다음 중 하나를 선택하세요:
@@ -292,10 +305,21 @@ async def route_query(
 
     logger.info(f"🧭 [Router] 질문 분석 시작: {query[:50]}...")
 
+    # 대화 히스토리 블록 구성
+    conversation_context_block = ""
+    if conversation_context:
+        conversation_context_block = f"""<conversation_history>
+이전 대화 내역:
+{conversation_context}
+</conversation_history>
+
+위 대화 내용을 참고하여 현재 질문의 맥락을 파악하세요. 사용자가 이전 대화를 언급하는 경우(예: "방금", "아까", "그것") 히스토리를 활용하여 답변하세요."""
+
     prompt_inputs = {
         "query": query,
         "user_expertise": user_expertise,
         "investment_style": investment_style,
+        "conversation_context_block": conversation_context_block,
     }
 
     try:
@@ -325,7 +349,8 @@ async def route_query(
                 api_key=settings.OPENAI_API_KEY,
             )
 
-            simple_prompt = ChatPromptTemplate.from_messages([
+            # 대화 히스토리 포함 프롬프트 (맥락 참고)
+            simple_messages = [
                 ("system", """당신은 친절한 투자 도우미입니다.
 사용자의 간단한 질문에 명확하고 간결하게 답변하세요.
 
@@ -333,17 +358,33 @@ async def route_query(
 - 1-3문장으로 핵심만 전달
 - 전문 용어는 쉽게 풀어서 설명
 - 투자 관련 질문이 아니어도 친절하게 답변
-- 한국어로 자연스럽게 작성"""),
-                ("human", "{query}")
-            ])
+- 한국어로 자연스럽게 작성
+- 이전 대화 내용을 참고하여 맥락에 맞는 답변 제공
+- 사용자가 "방금", "아까", "그것" 등으로 이전 대화를 언급하면 대화 히스토리를 활용하여 구체적으로 답변""")
+            ]
 
+            # 대화 히스토리가 있으면 실제 메시지로 추가
+            if conversation_history:
+                logger.info(f"💬 [Router] simple_llm에 대화 히스토리 {len(conversation_history)}개 추가")
+                for msg in conversation_history:
+                    role = "human" if msg["role"] == "user" else "ai"
+                    simple_messages.append((role, msg["content"]))
+
+            # 현재 질문 추가
+            simple_messages.append(("human", "{query}"))
+
+            simple_prompt = ChatPromptTemplate.from_messages(simple_messages)
             simple_chain = simple_prompt | simple_llm
 
             try:
+                simple_inputs = {
+                    "query": query,
+                }
+
                 if config is not None:
-                    answer_msg = await simple_chain.ainvoke({"query": query}, config=config)
+                    answer_msg = await simple_chain.ainvoke(simple_inputs, config=config)
                 else:
-                    answer_msg = await simple_chain.ainvoke({"query": query})
+                    answer_msg = await simple_chain.ainvoke(simple_inputs)
 
                 direct_answer = answer_msg.content
                 result.direct_answer = direct_answer
