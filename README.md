@@ -46,25 +46,26 @@
 
 | 영역 | 구현 내용 | 주요 경로 |
 |------|-----------|-----------|
-| **LangGraph 다중 에이전트** | Supervisor + Router 조합으로 Research/Strategy/Risk/Trading/Portfolio/Monitoring/Report Generator 서브그래프 운영, SSE 스트리밍 지원 | `src/agents/*`, `src/api/routes/multi_agent_stream.py` |
-| **HITL & 자동화 레벨** | `ApprovalRequest`/`UserDecision` 모델, Automation preset API, 승인 이력 조회 API, 인터럽트/승인 기록 저장 | `src/models/agent.py`, `src/api/routes/settings.py`, `src/api/routes/approvals.py`, `src/services/approval_service.py` |
-| **시장·거시 데이터 수집** | pykrx + FinanceDataReader 이중화, KIS 실시간 시세, DART 공시, 한국은행 거시지표, 네이버 뉴스 API, Redis 실시간 캐시 | `src/services/stock_data_service.py`, `src/services/kis_service.py`, `src/services/dart_service.py`, `src/services/bok_service.py`, `src/services/news_crawler_service.py`, `src/services/realtime_cache_service.py` |
+| **LangGraph 다중 에이전트** | Router 기반 동적 라우팅으로 Research/Strategy/Risk/Trading/Portfolio/Report Generator 서브그래프 운영, SSE 스트리밍 지원 | `src/agents/*`, `src/api/routes/multi_agent_stream.py` |
+| **HITL & 자동화 레벨** | `HITLConfig` 기반 승인 시스템, Automation preset API, 승인 이력 조회 API, 인터럽트/승인 기록 저장 (automation_level은 deprecated) | `src/models/agent.py`, `src/api/routes/settings.py`, `src/api/routes/approvals.py`, `src/services/approval_service.py` |
+| **시장·거시 데이터 수집** | FinanceDataReader 기반 시세 조회, KIS 실시간 시세, DART 공시, 한국은행 거시지표, 네이버 뉴스 API | `src/services/stock_data_service.py`, `src/services/kis_service.py`, `src/services/dart_service.py`, `src/services/bok_service.py`, `src/services/news_crawler_service.py` |
 | **포트폴리오 & 매매 파이프라인** | DB 기반 포트폴리오 스냅샷, 리밸런싱/리스크 계산, Trading Agent 체결 시뮬레이터, Artifact/Onboarding API | `src/services/portfolio_service.py`, `src/agents/trading/*`, `src/api/routes/portfolio.py`, `src/api/routes/artifacts.py`, `src/api/routes/onboarding.py` |
-| **인프라 & 운영** | SQLAlchemy 모델, Chat history/Artifact 저장소, Redis/LangGraph 캐시, Celery 워커/비트 스케줄, dotenv 설정 | `src/models/*`, `src/services/chat_history_service.py`, `src/services/cache_manager.py`, `src/workers/*`, `src/config/settings.py` |
+| **인프라 & 운영** | SQLAlchemy 모델, Chat history/Artifact 저장소, Celery 워커/비트 스케줄, dotenv 설정 | `src/models/*`, `src/services/chat_history_service.py`, `src/workers/*`, `src/config/settings.py` |
 | **테스트 & 툴링** | 단위/통합/E2E 테스트, KIS/Trading 플로우 디버깅 스크립트, 풍부한 픽스처/로그 | `tests/unit`, `tests/integration`, `tests/e2e`, `tests/test_trading_flow.py`, `tests/test_kis_index.py` |
 
 ---
 
 ## ✨ 핵심 기능
 
-### 1. **멀티 에이전트 AI 시스템** (LangGraph Supervisor 패턴)
+### 1. **멀티 에이전트 AI 시스템** (Router 기반 동적 라우팅)
 
 ```
-마스터 에이전트 (Supervisor)
-        ↓
-┌───────┬─────────┬────────┬────────┬──────────┬────────────┐
-↓       ↓         ↓        ↓        ↓          ↓
-Research Strategy Risk  Trading Portfolio Monitoring (+Report Generator)
+사용자 질의 → Router Agent (질문 분석)
+                    ↓
+        필요한 에이전트만 동적 선택
+                    ↓
+┌──────────┬─────────┬────────┬────────┬──────────┬──────────────┐
+Research  Strategy   Risk   Trading Portfolio Report Generator
 ```
 
 **서브그래프 & 노드:**
@@ -73,7 +74,6 @@ Research Strategy Risk  Trading Portfolio Monitoring (+Report Generator)
 - ⚠️ **Risk**: 포트폴리오 집중도·VaR·드로우다운 진단 (`src/agents/risk/*`)
 - 💰 **Trading**: 주문 시뮬레이션, HITL 승인 조건 생성, 체결 결과 요약 (`src/agents/trading/*`)
 - 📊 **Portfolio**: 스냅샷 생성, 최적 비중 계산, 차트 데이터 제공 (`src/agents/portfolio/*`)
-- 🛰️ **Monitoring**: 실시간 뉴스/이벤트 모니터링, 경보 생성 (`src/agents/monitoring/*`)
 - 🧾 **Report Generator**: Research/Strategy 결과를 하이라이트 카드로 재구성 (`src/agents/report_generator/*`)
 
 ### 2. **HITL (Human-in-the-Loop)** 🔔
@@ -94,11 +94,10 @@ Level 3 (Advisor) → 모든 결정 승인 필요
 
 | 데이터 소스 | 상태 | 제공 데이터 |
 |------------|------|------------|
-| **pykrx** | ✅ 연동 완료 | 주가, 거래량, 종목 리스트 |
+| **FinanceDataReader** | ✅ 연동 완료 | 주가, 거래량, 종목 리스트 |
 | **한국투자증권 API** | ✅ 연동 완료 | 실시간 시세, 차트, 호가 |
 | **DART API** | ✅ 연동 완료 | 재무제표, 공시, 기업 정보 |
 | **한국은행 API** | ✅ 연동 완료 | 금리, 거시경제 지표 |
-| **Redis** | ✅ 작동 중 | 캐싱 (TTL 60초) |
 | **네이버 뉴스 API** | ✅ (API 키 필요) | 종목 키워드 기반 최신 뉴스/요약 |
 | **Celery 워커** | ✅ 작동 중 | 실시간 시세/거시지표 스케줄링 |
 
@@ -169,19 +168,23 @@ curl -X POST http://localhost:8000/api/v1/news/fetch \
 
 ## 🏗️ 아키텍처
 
-### **LangGraph Supervisor 패턴**
+### **Router 기반 동적 라우팅**
 
 ```python
-# Master Agent (Supervisor)
-supervisor = create_supervisor(
-    agents=[research_agent, strategy_agent, risk_agent, ...],
-    model=ChatAnthropic(model="claude-3-5-sonnet"),
-    parallel_tool_calls=True  # 에이전트 선택 시 병렬 가능
-    # 실제 실행은 의존성에 따라 순차적으로 조율
+# Router Agent - 질문 분석 및 에이전트 선택
+routing_decision = await route_query(
+    query=user_message,
+    user_profile=profile,
+    conversation_history=history
 )
 
-# HITL Interrupt 메커니즘
-if state.next:  # Interrupt 발생
+# 필요한 에이전트만 실행
+for agent_name in routing_decision.agents_to_call:
+    result = await execute_agent(agent_name, context)
+    agent_results[agent_name] = result
+
+# HITL Interrupt 메커니즘 (HITLConfig 기반)
+if hitl_config.phases.trade and requires_approval:
     return {
         "requires_approval": True,
         "approval_request": {
@@ -194,26 +197,28 @@ if state.next:  # Interrupt 발생
 ### **데이터 플로우**
 
 ```
-사용자 질의 → Master Agent → 의도 분석 (LLM)
+사용자 질의
+    ↓
+Router Agent (질문 분석, LLM 기반)
+    ↓
+필요한 에이전트만 선택
+    ↓
+┌──────────┬─────────┬────────┬────────┬──────────┐
+│ Research │Strategy │  Risk  │Trading │Portfolio │ (병렬 구조)
+│  Agent   │ Agent   │ Agent  │ Agent  │  Agent   │
+└──────────┴─────────┴────────┴────────┴──────────┘
+    ↓           ↓         ↓        ↓         ↓
+    └───────────┴─────────┴────────┴─────────┘
                     ↓
-        적절한 에이전트 선택 (동적 라우팅)
+            결과 통합 (Aggregator)
                     ↓
-              Research Agent
-        (내부 노드: Bull/Bear 병렬 분석)
-                    ↓
-             Strategy Agent
-      (내부 노드: 시장/섹터/자산배분 순차)
-                    ↓
-               Risk Agent
-       (내부 노드: 집중도/시장리스크 순차)
-                    ↓
-            결과 통합 → HITL 체크
+            HITL 체크 (HITLConfig)
                     ↓
         승인 필요? → Interrupt 발생
                     ↓
         사용자 승인 → 거래 실행
 
-⚠️ 에이전트 간: 순차 실행 (의존성)
+✅ 에이전트: 질문에 따라 필요한 것만 실행
 ✅ 에이전트 내부 노드: 병렬 실행 가능
 ```
 
@@ -225,16 +230,15 @@ if state.next:  # Interrupt 발생
 - **FastAPI** 0.104+ - 고성능 비동기 웹 프레임워크
 - **Python** 3.12
 - **PostgreSQL** - 관계형 데이터베이스 (19개 테이블)
-- **Redis** - 캐싱 시스템
 
 ### **AI Framework**
 - **LangGraph** 0.2+ - 에이전트 오케스트레이션
 - **LangChain** - LLM 통합
 - **Anthropic Claude** 3.5 Sonnet - 메인 LLM
-- **Supervisor 패턴** - 멀티 에이전트 조율
+- **Router 패턴** - 동적 에이전트 라우팅
 
 ### **Data Sources**
-- **pykrx** - KRX 시장 데이터
+- **FinanceDataReader** - KRX 시장 데이터
 - **한국투자증권 API** - 실시간 시세, 차트, 호가
 - **DART Open API** - 금융감독원 공시 시스템
 - **한국은행 API** - 금리, 거시경제 지표
@@ -256,7 +260,7 @@ if state.next:  # Interrupt 발생
 ### **Option A: Docker Compose로 실행** ⭐
 
 **장점:**
-- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, Redis, FastAPI, Celery)
+- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, FastAPI, Celery)
 - ✅ 환경 격리
 - ✅ 팀원 온보딩 간편
 
@@ -291,7 +295,6 @@ docker-compose ps
 - FastAPI: http://localhost:8000
 - Swagger 문서: http://localhost:8000/docs
 - PostgreSQL: localhost:5432
-- Redis: localhost:6379
 
 **5. 중지/재시작**
 ```bash
@@ -312,7 +315,6 @@ docker-compose down -v
 **사전 요구사항**
 - Python 3.12+
 - PostgreSQL 13+
-- Redis 6+
 - API 키:
   - Anthropic API Key
   - DART API Key (선택)
@@ -348,15 +350,8 @@ OPENAI_API_KEY=your_openai_key_here  # 선택
 # Database
 DATABASE_URL=postgresql://user:password@localhost:5432/hama_db
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
 # DART API (선택)
 DART_API_KEY=your_dart_api_key_here
-
-# 캐시 TTL
-CACHE_TTL_MARKET_DATA=60
 ```
 
 ### **4. 데이터베이스 설정**
@@ -413,6 +408,9 @@ curl -X PUT http://localhost:8000/api/v1/settings/automation-level \
           "phases": {"analysis": false, "portfolio": false, "risk": false, "trade": "conditional"}
         }
       }'
+
+> **보안 메모:** 로컬 네트워크 외부(ngrok, 클라우드 등)에서 `PUT /settings/automation-level`을 호출할 경우
+> `.env`에 `AUTOMATION_CONTROL_TOKEN`을 설정하고 요청 헤더 `X-Hama-Automation-Token: <토큰>`을 반드시 포함해야 합니다.
 ```
 
 ### **7. 채팅 히스토리 & 테스트 모드**
@@ -448,7 +446,6 @@ curl -X PUT http://localhost:8000/api/v1/settings/automation-level \
 HAMA-backend/
 ├── src/
 │   ├── agents/              # LangGraph 에이전트
-│   │   ├── monitoring/       ✅ 뉴스/경보 모니터링 서브그래프
 │   │   ├── portfolio/        ✅ 포트폴리오 서브그래프
 │   │   ├── report_generator/ ✅ 결과 카드 합성
 │   │   ├── research/         ✅ 종목 분석 서브그래프
@@ -470,12 +467,11 @@ HAMA-backend/
 │   │       ├── news.py               ✅ 네이버 뉴스 연동
 │   │       └── artifacts.py          ✅ AI 산출물 CRUD
 │   ├── services/             # 데이터 서비스
-│   │   ├── stock_data_service.py      ✅ pykrx + KIS + Redis 캐시
+│   │   ├── stock_data_service.py      ✅ FinanceDataReader + KIS 기반 시세
 │   │   ├── kis_service.py             ✅ 한국투자증권 OAuth + 주문
 │   │   ├── dart_service.py            ✅ 공시 수집
 │   │   ├── bok_service.py             ✅ 한국은행 지표
 │   │   ├── news_crawler_service.py    ✅ 네이버 뉴스 API
-│   │   ├── realtime_cache_service.py  ✅ 실시간 시세 Redis 캐시
 │   │   ├── portfolio_service.py       ✅ 포트폴리오/리스크 계산
 │   │   ├── approval_service.py        ✅ ApprovalRequest 리포지토리
 │   │   ├── user_profile_service.py    ✅ 투자 성향 프로파일
@@ -545,7 +541,7 @@ python tests/test_trading_flow.py
 |------|-----------|-------------|
 | Unit – Agents | `tests/unit/test_agents/*.py` | Research/Strategy/Trading 상태 머신 검증, Routing worker 선택 테스트 |
 | Unit – Services | `tests/unit/test_services/test_news_crawler_service.py` 등 | 네이버 뉴스, Approval, Cache 로직 스텁 |
-| Integration | `tests/integration/test_hitl_integration.py`, `tests/integration/test_stock_data_integration.py`, `tests/integration/test_news_api.py` | HITL 승인 시나리오, pykrx/KIS 혼합 시세, 뉴스 API 라운드트립 |
+| Integration | `tests/integration/test_hitl_integration.py`, `tests/integration/test_stock_data_integration.py`, `tests/integration/test_news_api.py` | HITL 승인 시나리오, FDR/KIS 혼합 시세, 뉴스 API 라운드트립 |
 | System Smoke | `tests/test_trading_flow.py`, `tests/test_kis_index.py` | LangGraph 서브그래프 단독 실행, KIS 실계좌·모의계좌 API 검증 |
 | Fixtures & Logs | `tests/fixtures/*.json`, `tests/logs/` | 결정적 데이터셋/로그로 CI 재현성 유지 |
 
@@ -579,17 +575,17 @@ python tests/test_trading_flow.py
 
 ### **Phase 1 (현재) - MVP 완성** 🔵 90% 완료
 
-- [x] LangGraph Supervisor + Router + SSE 스트리밍 파이프라인
-- [x] 7개 서브그래프 (Research/Strategy/Risk/Trading/Portfolio/Monitoring/Report Generator)
+- [x] LangGraph Router + SSE 스트리밍 파이프라인
+- [x] 6개 서브그래프 (Research/Strategy/Risk/Trading/Portfolio/Report Generator)
 - [x] HITL 시스템
-  - [x] Automation Preset (Pilot/Copilot/Advisor) & Custom 저장
+  - [x] HITLConfig 기반 승인 (Pilot/Copilot/Advisor 프리셋)
   - [x] ApprovalRequest/UserDecision 모델 & API
   - [x] SSE Interrupt → 승인 기록 연동
 - [x] 실거래소 데이터 통합
-  - [x] pykrx + FinanceDataReader 이중화
+  - [x] FinanceDataReader 기반 시세
   - [x] 한국투자증권 API (실시간 시세·지수·주문)
   - [x] DART / 한국은행 / 네이버 뉴스 API
-- [x] Redis + Celery 기반 실시간 캐시/워커
+- [x] Celery 기반 실시간 워커
 - [x] 종목명 추출기 (LLM 구조화 출력)
 - [x] 15+ 서비스/리포지토리 계층
 - [x] 프론트엔드 통합/데이터 시나리오 문서
@@ -600,7 +596,7 @@ python tests/test_trading_flow.py
 ### **Phase 2 - 확장 기능** 🔵 예정
 
 - [ ] 실거래 주문/체결 웹훅 연동 (KIS real env)
-- [ ] LangGraph 체크포인트 영속화 (Redis/Postgres)
+- [ ] LangGraph 체크포인트 영속화 (Postgres)
 - [ ] WebSocket 실시간 대시보드/알림
 - [ ] 사용자 인증 (JWT + OAuth) 및 다중 계정
 - [ ] 포트폴리오 백테스트 + 퍼포먼스 리포트
@@ -622,9 +618,9 @@ python tests/test_trading_flow.py
 | 컴포넌트 | 완성도 | 비고 |
 |---------|--------|------|
 | Backend Core | 🟢 95% | FastAPI + LangGraph + Celery |
-| Agents | 🟢 90% | 7개 서브그래프 + Router + SSE |
+| Agents | 🟢 90% | 6개 서브그래프 + Router + SSE |
 | HITL System | 🟢 95% | HITLConfig + Settings API |
-| Data Integration | 🟢 95% | pykrx + KIS + DART + BOK + Naver News |
+| Data Integration | 🟢 95% | FDR + KIS + DART + BOK + Naver News |
 | API Endpoints | 🟢 95% | Chat/Portfolio/News 등 10+ 라우터 |
 | Services | 🟢 90% | 15+ 서비스/리포지토리 |
 | Documentation | 🟢 90% | PRD + 시나리오 + 배포/운영 문서 |
@@ -652,7 +648,6 @@ Railway로 손쉽게 배포할 수 있습니다 (무료 티어 제공).
 
 **3단계: 서비스 추가**
 - PostgreSQL 데이터베이스 추가
-- Redis 추가
 - FastAPI, Celery Worker, Celery Beat 배포
 
 **4단계: 환경 변수 설정**
