@@ -57,7 +57,7 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """FastAPI lifespan 이벤트 핸들러"""
-    # RedisSemanticCache 초기화 (LLM 응답 캐싱)
+    # LLM 캐시 초기화 (응답 재사용)
     initialize_semantic_cache()
 
     # KIS 서비스 초기화

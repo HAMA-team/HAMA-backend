@@ -3,7 +3,7 @@
 ## 구성 요소
 - **Worker**: 태스크 실행 (`celery -A src.workers.celery_app worker`)
 - **Beat**: 주기 스케줄러 (`celery -A src.workers.celery_app beat`)
-- **Broker/Backend**: `.env`에서 `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`로 설정 (기본 Redis)
+- **Broker/Backend**: `.env`에서 `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`로 설정 (기본 메모리)
 
 ## 실행 명령
 ```bash
@@ -17,7 +17,7 @@ celery -A src.workers.celery_app beat --loglevel=info
 ## 주기 태스크(Beat 스케줄)
 | 태스크 | 주기 | 설명 |
 |--------|------|------|
-| `update_realtime_market_data` | 60초 | Redis 실시간 캐시 갱신 |
+| `update_realtime_market_data` | 60초 | 실시간 캐시 갱신 |
 | `refresh_price_history_daily` | 평일 16:20 | Close 후 과거 가격/기술지표 DB 갱신 |
 | `refresh_macro_indicators` | 매일 06:30 | BOK 거시지표 적재 |
 
@@ -27,7 +27,7 @@ celery -A src.workers.celery_app beat --loglevel=info
 - **프로세스 관리자**: systemd, Supervisor, pm2 등으로 worker/beat를 관리하고 장애시 자동 재시작
 - **로그 수집**: `--logfile` 옵션 또는 중앙 로깅 시스템으로 수집
 - **고가용성**: Worker를 여러 대 띄워 병렬 실행 가능 (단, pykrx 호출 시 Rate Limit 고려)
-- **브로커/백엔드**: 운영 환경에서는 Redis 클러스터 또는 AWS Elasticache 등 관리형 서비스 추천
+- **브로커/백엔드**: 운영 환경에서는 필요 시 외부 메시지 브로커(Amazon SQS 등)로 교체 가능
 
 ## 운영 팁
 - **Graceful Shutdown**: `celery control shutdown` 또는 `SIGTERM`으로 종료하여 현재 작업을 마무리하도록 함

@@ -109,9 +109,6 @@ class Settings(BaseSettings):
     KIS_APP_SECRET: str | None = None
     KIS_ACCOUNT_NUMBER: str | None = None
 
-    # Redis
-    REDIS_URL: str = "redis://localhost:6379/0"
-
     # Caching (TTL in seconds)
     CACHE_TTL_MARKET_DATA: int = 60  # 개별 종목 주가 데이터
     CACHE_TTL_MARKET_INDEX: int = 3600  # 시장 지수 (KOSPI, KOSDAQ 등) - Rate Limit 방지
@@ -120,10 +117,8 @@ class Settings(BaseSettings):
     CACHE_TTL_FINANCIAL_STATEMENTS: int = 86400
     CACHE_TTL_ANALYSIS_RESULTS: int = 3600
 
-    # LLM Semantic Cache (RedisSemanticCache)
-    ENABLE_SEMANTIC_CACHE: bool = True  # SemanticCache 활성화 여부
-    SEMANTIC_CACHE_DISTANCE_THRESHOLD: float = 0.2  # 유사도 임계값 (낮을수록 엄격)
-    SEMANTIC_CACHE_TTL: int = 3600  # LLM 응답 캐시 만료 시간 (1시간)
+    # LLM 캐시 (InMemory)
+    ENABLE_SEMANTIC_CACHE: bool = True  # LLM 응답 캐시 활성화 여부
 
     # LangSmith (Optional)
     LANGSMITH_API_KEY: str | None = None
@@ -132,8 +127,8 @@ class Settings(BaseSettings):
     LANGCHAIN_PROJECT: str = "hama-backend"
 
     # Celery (실시간 데이터 수집)
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+    CELERY_BROKER_URL: str = "memory://"
+    CELERY_RESULT_BACKEND: str = "cache+memory://"
     CELERY_REALTIME_UPDATE_INTERVAL: int = 60  # 실시간 데이터 업데이트 주기 (초)
     CELERY_BATCH_SIZE: int = 50  # 배치당 종목 수 (Rate Limit 관리)
 
@@ -143,8 +138,8 @@ class Settings(BaseSettings):
     # Langgraph persistence
     LANGGRAPH_CHECKPOINT_TTL_MINUTES: int = 43200  # 30일
     LANGGRAPH_CHECKPOINT_REFRESH_ON_READ: bool = True
-    GRAPH_CHECKPOINT_BACKEND: str = "memory"  # memory | redis (비동기 구조 개선 후)
-    # Note: Redis/PostgreSQL checkpointer는 비동기 context manager로 구현되어
+    GRAPH_CHECKPOINT_BACKEND: str = "memory"  # memory | postgres
+    # Note: PostgreSQL checkpointer는 비동기 context manager로 구현되어
     # 현재 동기 캐싱 구조에서는 사용 복잡. 추후 비동기 초기화로 개선 예정 (Phase 2)
 
     # CORS

@@ -46,7 +46,7 @@ Router Agent 기반 3-Tier 라우팅 시스템을 중심으로 한국투자증�
                                      │                 │  · KIS Open Trading     │
                                      │                 │  · BOK ECOS             │
                                      │                 │  · DART, pykrx          │
-                                     │                 │  · PostgreSQL, Redis    │
+                                     │                 │  · PostgreSQL, 메모리 캐시 │
                                      │                 └─────────────────────────┘
 ```
 
@@ -100,7 +100,7 @@ class RoutingDecision(BaseModel):
 |----------|---------|----------|-------------|
 | `research_agent` | 8 workers | 재무·기술·거래량 분석 | DART, pykrx |
 | `strategy_agent` | 6 specialists | 매수/매도 전략, 시장 분석 | BOK, 섹터 데이터 |
-| `risk_agent` | 단일 노드 | 포트폴리오 리스크 측정 | 포트폴리오 스냅샷, Redis |
+| `risk_agent` | 단일 노드 | 포트폴리오 리스크 측정 | 포트폴리오 스냅샷, 인메모리 캐시 |
 | `trading_agent` | 3 노드 | 주문 준비→승인→실행 | `trading_service`, `kis_service` |
 | `portfolio_agent` | 3 노드 | 리밸런싱, 최적화 | `portfolio_optimizer` |
 | `monitoring_agent` | 배경 전용 | 실시간 알림 (미구현) | WebSocket (예정) |
@@ -172,7 +172,7 @@ prepare_trade → approval_trade → execute_trade → END
   - 현재는 동기 `requests` 호출과 간단한 캐시만 적용되어 있어 주기 호출 시 타임아웃 관리가 필요하다.
 - **기타 데이터 소스**  
   - DART, pykrx를 통한 재무·시세 데이터 수집이 Research 에이전트 도구에서 사용된다.  
-  - Redis는 토큰과 실시간 시세·거시 데이터 캐싱, PostgreSQL은 포트폴리오·주문·사용자 프로필 영속화를 담당한다.
+  - 인메모리 캐시는 토큰과 실시간 시세·거시 데이터 캐싱, PostgreSQL은 포트폴리오·주문·사용자 프로필 영속화를 담당한다.
 
 ---
 

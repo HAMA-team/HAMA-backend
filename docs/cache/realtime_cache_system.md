@@ -1,139 +1,96 @@
-# 실시간 주가 데이터 Redis 캐싱 시스템
+# 실시간 주가 데이터 캐싱 시스템
 
 ## 개요
 
-코스피/코스닥 전체 종목(약 2,500개)의 실시간 주가를 Redis에 캐싱하여 빠른 응답 속도를 제공하는 시스템입니다.
+코스피/코스닥 전체 종목(약 2,500개)의 실시간 주가를 **프로세스 단위 인메모리 캐시**에 저장하여 API 요청을 최소화하고 응답 지연을 줄입니다. 장중에는 Celery 워커가 60초마다 캐시를 갱신하고, 에이전트는 항상 캐시를 먼저 조회한 뒤 데이터가 없을 때만 KIS API를 호출합니다.
 
 ### 핵심 기능
 
-- **전체 종목 캐싱**: 코스피/코스닥 약 2,500개 종목 자동 수집
-- **주기적 업데이트**: Celery Beat를 통해 60초마다 자동 갱신
-- **장중 시간 관리**: 평일 09:00-15:30만 동작
-- **Fallback 전략**: Redis 캐시 미스 시 KIS API 즉시 호출
+- **전체 종목 캐싱**: 코스피/코스닥 종목 리스트를 가져와 일괄 업데이트
+- **주기적 갱신**: Celery Beat → Worker가 60초마다 자동 실행
+- **장중 시간 관리**: 평일 09:00~15:30에만 수집 루프 동작
+- **Fallback 전략**: 캐시 미스 시 즉시 KIS API 호출 후 캐시에 저장
 
 ## 아키텍처
 
 ```
 ┌─────────────────────────────────────┐
-│   Celery Beat (Scheduler)          │
-│   - 60초마다 update_task 트리거     │
+│ Celery Beat (Scheduler)            │
+│ - 60초마다 update_task 트리거       │
 └────────────┬────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────┐
-│   Celery Worker                     │
-│   - 장중 시간 체크                   │
-│   - 종목 리스트 조회                 │
-│   - 배치 처리 (Rate Limit 관리)     │
+│ Celery Worker                       │
+│ - 장중 시간 체크                     │
+│ - 종목 리스트 조회                   │
+│ - 배치 처리 (Rate Limit 관리)       │
 └────────────┬────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────┐
-│   KIS API                           │
-│   - 실시간 주가 조회                 │
-│   - Rate Limit: 초당 1회            │
+│ KIS API                             │
+│ - 실시간 주가 조회                   │
+│ - Rate Limit: 초당 1회              │
 └────────────┬────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────┐
-│   Redis Cache                       │
-│   - realtime:price:{code}           │
-│   - TTL: 120초                      │
+│ In-Memory Cache                     │
+│ - realtime:price:{code}             │
+│ - TTL: 120초                        │
 └────────────┬────────────────────────┘
              │
              ▼
 ┌─────────────────────────────────────┐
-│   Agent (Research/Strategy)         │
-│   - Redis 우선 조회                 │
-│   - 캐시 미스 시 API Fallback       │
+│ Agents / API                        │
+│ - 캐시 우선 조회                    │
+│ - 미스 시 API Fallback              │
 └─────────────────────────────────────┘
 ```
 
 ## 구현 파일
 
-### 1. 서비스 계층
-- **src/services/realtime_cache_service.py**
-  - `get_all_stock_codes()`: 코스피/코스닥 종목 리스트 조회
-  - `cache_stock_price()`: 개별 종목 캐싱
-  - `cache_stock_batch()`: 배치 캐싱 (Rate Limit 관리)
-  - `get_cached_price()`: 캐시된 데이터 조회
-  - `is_market_open()`: 장중 시간 체크
+### 서비스 계층
+- `src/services/realtime_cache_service.py`
+  - `get_all_stock_codes()`: 코스피·코스닥 종목 리스트 수집
+  - `cache_stock_price()`: 단일 종목 캐싱
+  - `cache_stock_batch()`: 배치 캐싱 (Rate Limit 준수)
+  - `get_cached_price()`: 캐시 조회
+  - `is_market_open()`: 장중 여부 판별
+- `src/services/stock_data_service.py`
+  - `get_realtime_price()`: 캐시 우선 조회 + Fallback
 
-- **src/services/stock_data_service.py**
-  - `get_realtime_price()`: Redis 우선 조회 + KIS API Fallback
+### 워커 계층
+- `src/workers/celery_app.py`: Celery 설정 및 Beat 스케줄 정의
+- `src/workers/tasks.py`: 주기/수동 태스크
+  - `update_realtime_market_data()`: 60초마다 전체 갱신
+  - `update_stock_batch()`: 지정 종목 배치 갱신
+  - `cache_single_stock()`: 단일 종목 수동 갱신
 
-### 2. Worker 계층
-- **src/workers/celery_app.py**: Celery 앱 설정 및 Beat 스케줄
-- **src/workers/tasks.py**: 주기적 태스크 구현
-  - `update_realtime_market_data()`: 60초마다 전체 시장 데이터 업데이트
-  - `update_stock_batch()`: 배치 업데이트 (수동 호출용)
-  - `cache_single_stock()`: 단일 종목 캐싱 (수동 호출용)
+## Celery 구성
 
-### 3. 설정
-- **src/config/settings.py**
-  - `CELERY_BROKER_URL`: Redis DB 1
-  - `CELERY_RESULT_BACKEND`: Redis DB 2
-  - `CELERY_REALTIME_UPDATE_INTERVAL`: 60초
-  - `CELERY_BATCH_SIZE`: 50개
-  - `CACHE_TTL_REALTIME_PRICE`: 120초
+| 항목 | 값 | 비고 |
+| --- | --- | --- |
+| Broker | `memory://` | 기본값 (환경 변수로 오버라이드 가능) |
+| Result Backend | `cache+memory://` | 개발/테스트 용도 |
+| Beat 스케줄 | 60초 | 장중 여부에 따라 자동 스킵 |
+| Worker Prefetch | 1 | Rate Limit 보호 |
 
-### 4. 실행 스크립트
-- **scripts/start_celery_worker.sh**: Worker 실행
-- **scripts/start_celery_beat.sh**: Beat 스케줄러 실행
+필요 시 `.env`에서 `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`를 다른 브로커로 변경할 수 있습니다.
 
-## 실행 방법
+## 캐시 키 & 데이터 포맷
 
-### 1. 의존성 설치
-
-```bash
-pip install celery==5.3.4
-```
-
-### 2. Redis 실행
-
-```bash
-redis-server
-```
-
-### 3. Celery Worker 실행 (터미널 1)
-
-```bash
-./scripts/start_celery_worker.sh
-
-# 또는 직접 실행
-celery -A src.workers.celery_app worker --loglevel=info
-```
-
-### 4. Celery Beat 실행 (터미널 2)
-
-```bash
-./scripts/start_celery_beat.sh
-
-# 또는 직접 실행
-celery -A src.workers.celery_app beat --loglevel=info
-```
-
-### 5. FastAPI 서버 실행 (터미널 3)
-
-```bash
-uvicorn src.main:app --reload
-```
-
-## 데이터 구조
-
-### Redis 키 구조
-
-```
-realtime:price:{stock_code}
-```
-
-### 데이터 포맷
+| 키 | 설명 | TTL |
+| --- | --- | --- |
+| `realtime:stock_list:{market}` | 종목 코드 리스트 (`ALL`, `KOSPI`, `KOSDAQ`) | 3600초 |
+| `realtime:price:{stock_code}` | 실시간 주가 스냅샷 | 120초 |
 
 ```json
 {
   "stock_code": "005930",
   "stock_name": "삼성전자",
-  "price": 72000,
+  "price": 71100,
   "change": 1000,
   "change_rate": 1.41,
   "volume": 15234567,
@@ -141,124 +98,44 @@ realtime:price:{stock_code}
 }
 ```
 
-## 성능 특성
-
-### 업데이트 주기
-- **60초마다** Celery Beat가 트리거
-- **장중만** 동작 (평일 09:00-15:30)
-- **장외/주말**: 자동 스킵
-
-### Rate Limit 관리
-- KIS API: **초당 1회** 제한
-- 배치 크기: **50개**
-- 배치 간 대기: **2초**
-- **전체 종목 갱신 시간**: 약 **42분** (2,500개 ÷ 60개/분)
-
-### TTL 설정
-- **120초**: 워커 실패 시 2회 주기까지 대기 가능
-- 다음 워커 실행 전(60초) 자동 갱신
-
 ## 사용 예시
-
-### Agent에서 실시간 주가 조회
 
 ```python
 from src.services.stock_data_service import stock_data_service
 
-# 실시간 주가 조회 (Redis 우선)
-price_data = await stock_data_service.get_realtime_price("005930")
+price = await stock_data_service.get_realtime_price("005930")
 
-if price_data:
-    print(f"{price_data['stock_name']}: {price_data['price']:,}원")
-    print(f"등락률: {price_data['change_rate']}%")
+if price:
+    print(f"{price['stock_name']}: {price['price']:,}원 ({price['change_rate']}%)")
 else:
-    print("주가 데이터 없음 (캐시 미스 + API 실패)")
-```
-
-### 수동 배치 업데이트
-
-```python
-from src.workers.tasks import update_stock_batch
-
-# 특정 종목만 업데이트
-stock_codes = ["005930", "000660", "035420"]
-result = update_stock_batch.delay(stock_codes)
-
-print(result.get())  # 결과 대기
+    print("주가 데이터가 없습니다.")
 ```
 
 ## 모니터링
 
-### Celery Flower (선택)
-
-```bash
-pip install flower
-celery -A src.workers.celery_app flower
-```
-
-브라우저: http://localhost:5555
-
-### 로그 확인
-
-```bash
-tail -f logs/celery_worker.log
-tail -f logs/celery_beat.log
-```
-
-### Redis 키 확인
-
-```bash
-redis-cli
-
-# 캐시된 종목 수 확인
-> KEYS realtime:price:*
-> GET realtime:price:005930
-```
+- Celery 로그: `tail -f logs/celery_worker.log`
+- Beat 로그: `tail -f logs/celery_beat.log`
+- Flower (선택): `celery -A src.workers.celery_app flower`
+- 캐시 통계: `src/services/cache_manager.py` 의 `get_stats()` 활용
 
 ## 트러블슈팅
 
-### 1. Worker가 실행되지 않음
+| 증상 | 점검 항목 |
+| --- | --- |
+| Worker 미실행 | 장중 여부(`is_market_open`), Celery 로그 |
+| 데이터 미갱신 | `CELERY_BATCH_SIZE`, Rate Limit 초과 여부 |
+| 캐시 미스 잦음 | TTL 조정, 워커 주기 확인 |
+| API 호출 실패 | KIS 토큰 만료 여부, 네트워크 상태 |
 
-```bash
-# Redis 연결 확인
-redis-cli ping
+## 향후 개선
 
-# 환경 변수 확인
-echo $CELERY_BROKER_URL
-```
-
-### 2. Task가 실행되지 않음
-
-```bash
-# Beat 스케줄 확인
-celery -A src.workers.celery_app inspect scheduled
-
-# Worker 상태 확인
-celery -A src.workers.celery_app inspect active
-```
-
-### 3. Rate Limit 에러
-
-- KIS API 초당 1회 제한 초과
-- → 배치 크기 줄이기 (`CELERY_BATCH_SIZE` 감소)
-- → 배치 간 대기 시간 증가
-
-### 4. 종목 리스트 조회 실패
-
-- FinanceDataReader API 일시적 장애
-- → 캐시된 리스트 사용
-- → 재시도 로직 추가 (Phase 2)
-
-## 향후 개선 사항 (Phase 2)
-
-1. **지수 캐싱**: KOSPI, KOSDAQ, KOSPI200 지수 추가
-2. **동적 종목 리스트**: 사용자 관심 종목만 우선 캐싱
-3. **WebSocket**: 실시간 Push 알림
-4. **Fallback 개선**: FinanceDataReader → KIS API 자동 전환
-5. **모니터링**: Prometheus + Grafana 대시보드
+1. **지수 캐싱**: KOSPI/KOSDAQ/KOSPI200 데이터 추가
+2. **관심 종목 우선순위**: 사용자 지정 리스트 선처리
+3. **WebSocket 알림**: 캐시 갱신 결과 푸시
+4. **외부 캐시 옵션**: 필요 시 관리형 캐시(예: Elasticache) 연결
+5. **모니터링 강화**: Prometheus + Grafana 통합
 
 ## 참고 자료
 
 - [Celery 공식 문서](https://docs.celeryproject.org/)
-- [한국투자증권 API 문서](https://apiportal.koreainvestment.com/)
-- [Redis 공식 문서](https://redis.io/docs/)
+- [한국투자증권 API 포털](https://apiportal.koreainvestment.com/)

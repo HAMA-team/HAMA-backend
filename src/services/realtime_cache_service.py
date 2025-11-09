@@ -1,4 +1,4 @@
-"""실시간 주가 데이터 Redis 캐싱 서비스"""
+"""실시간 주가 데이터 캐싱 서비스"""
 
 import asyncio
 import json
@@ -17,15 +17,15 @@ logger = logging.getLogger(__name__)
 
 class RealtimeCacheService:
     """
-    실시간 주가 데이터 Redis 캐싱 서비스
+    실시간 주가 데이터 캐싱 서비스
 
     - 코스피/코스닥 전체 종목 리스트 관리
     - KIS API를 통한 실시간 주가 수집
-    - Redis에 구조화된 형태로 저장
+    - 인메모리 캐시에 구조화된 형태로 저장
     - 배치 처리로 Rate Limit 관리
     """
 
-    # Redis 키 프리픽스
+    # 캐시 키 프리픽스
     KEY_PREFIX_PRICE = "realtime:price"
     KEY_PREFIX_INDEX = "realtime:index"
     KEY_STOCK_LIST = "realtime:stock_list"
@@ -93,7 +93,7 @@ class RealtimeCacheService:
 
     async def cache_stock_price(self, stock_code: str) -> bool:
         """
-        개별 종목의 현재가를 Redis에 캐싱
+        개별 종목의 현재가를 캐싱
 
         Args:
             stock_code: 종목 코드 (예: "005930")
@@ -109,7 +109,7 @@ class RealtimeCacheService:
                 logger.warning(f"⚠️ 주가 데이터 없음: {stock_code}")
                 return False
 
-            # Redis에 저장할 데이터 구조
+            # 캐시에 저장할 데이터 구조
             cache_data = {
                 "stock_code": stock_code,
                 "stock_name": price_data.get("stock_name", ""),
@@ -120,7 +120,7 @@ class RealtimeCacheService:
                 "timestamp": datetime.now().isoformat(),
             }
 
-            # Redis 캐싱 (TTL 120초 - 워커 실패 대비)
+            # 캐싱 (TTL 120초 - 워커 실패 대비)
             cache_key = f"{self.KEY_PREFIX_PRICE}:{stock_code}"
             success = self.cache.set(cache_key, cache_data, ttl=120)
 
@@ -190,7 +190,7 @@ class RealtimeCacheService:
 
     async def cache_market_index(self, index_name: str) -> bool:
         """
-        시장 지수를 Redis에 캐싱
+        시장 지수를 캐싱
 
         Args:
             index_name: 지수 이름 ("kospi", "kosdaq", "kospi200")

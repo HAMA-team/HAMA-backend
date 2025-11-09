@@ -83,7 +83,7 @@ def build_graph(automation_level: int):
 #### LangGraph 모범 사례 반영 설계
 - **컴파일 재사용**: `StateGraph` 정의는 `build_state_graph(automation_level)`로 분리하고, `graph.compile(checkpointer=...)` 결과만 캐시에 저장한다. (참고: `docs/langgraph_best_practices.md`)
 - **Configurable 주입**: `run_graph()` 호출 시 `app.with_config({"configurable": {"request_meta": request.meta}})` 패턴으로 런타임 변수를 전달하여 그래프 구조 재빌드를 방지한다.
-- **체크포인터 옵션화**: 프로덕션에서는 SQLite/Redis saver, 테스트에서는 in-memory saver를 사용하도록 `settings.graph_checkpoint_backend`를 분기한다.
+- **체크포인터 옵션화**: 프로덕션에서는 SQLite/PostgreSQL saver, 테스트에서는 in-memory saver를 사용하도록 `settings.graph_checkpoint_backend`를 분기한다.
 - **LLM 리소스 재사용**: Supervisor 노드에서 사용할 LLM은 `get_llm()` 호출을 함수 외부에서 주입하거나 `lru_cache`로 감싼다. Phase 1과 연계해 Supervisor용 LLM을 한 번만 초기화한다.
 - **메트릭 수집**: 캐시 적중률과 그래프 실행 횟수를 `statsd` 혹은 `settings.metrics_client`로 수집해 최적화 효과를 검증한다.
 

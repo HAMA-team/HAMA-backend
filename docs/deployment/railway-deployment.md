@@ -33,10 +33,8 @@ Railway는 여러 서비스를 하나의 프로젝트로 관리할 수 있습니
 2. "Database" → "PostgreSQL" 선택
 3. 자동으로 `DATABASE_URL` 환경 변수 생성됨
 
-### 2.2 Redis 추가
-1. 프로젝트 대시보드에서 "+ New" 클릭
-2. "Database" → "Redis" 선택
-3. 자동으로 `REDIS_URL` 환경 변수 생성됨
+### 2.2 캐시 서비스
+현재 버전은 인메모리 캐시만 사용하므로 추가 데이터 스토어를 만들 필요가 없습니다.
 
 ---
 
@@ -61,12 +59,9 @@ DEBUG=False
 # Database (자동 생성됨)
 DATABASE_URL=${{Postgres.DATABASE_URL}}
 
-# Redis (자동 생성됨)
-REDIS_URL=${{Redis.REDIS_URL}}
-
-# Celery
-CELERY_BROKER_URL=${{Redis.REDIS_URL}}/1
-CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}/2
+# Celery (기본값 유지 가능)
+CELERY_BROKER_URL=memory://
+CELERY_RESULT_BACKEND=cache+memory://
 
 # LLM APIs (실제 값 입력)
 OPENAI_API_KEY=your-key
@@ -281,9 +276,9 @@ Railway 대시보드 → 각 서비스 → "Deployments" → "View Logs"
 ### 문제 3: Celery가 작동하지 않음
 
 **해결:**
-1. Redis 서비스 확인
-2. `CELERY_BROKER_URL` 환경 변수 확인
-3. Worker 로그에서 에러 확인
+1. Worker/Beat 로그에서 에러 확인
+2. `CELERY_BROKER_URL` 값이 `memory://`로 설정되어 있는지 확인
+3. 서비스 재시작 후 스케줄러 메시지가 출력되는지 모니터링
 
 ### 문제 4: API 키 에러
 

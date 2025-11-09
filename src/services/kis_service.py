@@ -207,7 +207,7 @@ class KISService:
             self._access_token = access_token
             self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-            # Redis 캐싱 (TTL: expires_in - 5분)
+            # 캐시 저장 (TTL: expires_in - 5분)
             cache_manager.set(cache_key, access_token, ttl=max(expires_in - 300, 60))
 
             logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")

@@ -47,7 +47,7 @@ src/
 │   │   ├── kis_service.py      # 외부 API 어댑터
 │   │   └── dart_service.py
 │   └── cache/
-│       └── redis_cache.py
+│       └── cache_manager.py
 └── interfaces/
     └── api/                    # FastAPI 라우터 → application 계층 호출
 ```
@@ -82,4 +82,3 @@ src/
 1. 폴더 구조 초안 및 `pyproject.toml` 패키지 경로 업데이트 설계.
 2. Stock 도메인 스파이크 작업 분량 추정 후 TODO 리스트화.
 3. FastAPI 의존성 주입 패턴(`Depends`)과 Celery 초기화 패턴 정리 문서 초안 작성.
-

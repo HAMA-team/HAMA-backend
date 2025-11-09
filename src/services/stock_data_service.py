@@ -48,7 +48,7 @@ class StockDataService:
 
     - pykrx 기반 시세/종목 데이터 조회
     - FinanceDataReader를 fallback으로 활용하여 안정성 확보
-    - 실시간 데이터는 Redis 캐시 우선 조회
+    - 실시간 데이터는 캐시 우선 조회
     - 캐싱 지원
     """
 
@@ -307,7 +307,7 @@ class StockDataService:
 
     async def get_realtime_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
-        실시간 주가 조회 (Redis 캐시 우선)
+        실시간 주가 조회 (캐시 우선)
 
         Args:
             stock_code: 종목 코드 (예: "005930")
@@ -327,7 +327,7 @@ class StockDataService:
         # 순환 import 방지
         from src.services.realtime_cache_service import realtime_cache_service
 
-        # 1. Redis 캐시 우선 조회
+        # 1. 캐시 우선 조회
         cached = await realtime_cache_service.get_cached_price(stock_code)
 
         if cached:

@@ -8,12 +8,10 @@ sqlalchemy==2.0.44  # Updated from 2.0.43
 psycopg2-binary==2.9.9
 psycopg[binary,pool]>=3.2.0  # PostgreSQL 비동기 지원 (LangGraph Checkpointer용)
 alembic==1.17.0  # Updated from 1.13.1 (requires Python 3.10+)
-redis<=7.0.0  # Updated from 5.2.1 (major version update)
 
 # AI & LLM - LangGraph/LangChain 1.0 Ecosystem
 langchain==1.0.3  # Updated from 0.3.27 (major version update to 1.0)
 langgraph==1.0.2  # Updated from 0.6.8 (major version update to 1.0)
-langgraph-checkpoint-redis==0.1.2  # LangGraph 1.0 checkpoint API
 langgraph-checkpoint-postgres==3.0.0
 langgraph-supervisor==0.0.30
 langchain-openai==1.0.1  # Updated from 0.3.34 (1.0 release)
@@ -21,7 +19,6 @@ langchain-community==0.4  # Updated from 0.3.30
 langchain-core==1.0.1  # Updated from 0.3.77 (1.0 release)
 langchain-anthropic==1.0.0  # Updated from 0.3.21 (1.0 release)
 langchain-google-genai==3.0.0
-# langchain-redis==0.2.4  # RedisSemanticCache 지원
 openai==2.6.1  # Updated from 2.1.0
 anthropic==0.71.0  # Updated from 0.69.0
 

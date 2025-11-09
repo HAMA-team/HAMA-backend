@@ -142,7 +142,7 @@ Changelog: Phase 1 구현 완료 상태 반영, HITL 시스템 확장 반영
 - **API**: `/multi-stream` (SSE 스트리밍)
 - **Router**: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
 - **Agents**: LangGraph Subgraph 패턴
-- **Checkpointer**: Redis (프로덕션) / Memory (개발)
+- **Checkpointer**: PostgreSQL (프로덕션) / Memory (개발)
 
 ### 4.2 주요 에이전트 상세
 
@@ -218,7 +218,7 @@ Changelog: Phase 1 구현 완료 상태 반영, HITL 시스템 확장 반영
 **기술 스택**
 - 프레임워크: `langgraph-supervisor` 라이브러리
 - LLM: ROUTER_MODEL 설정 (기본: GPT-4o)
-- Checkpointer: Redis / Memory
+- Checkpointer: PostgreSQL / Memory
 - Recursion Limit: 50 (Supervisor 패턴 최적화)
 
 ### 리서치 에이전트
@@ -742,8 +742,8 @@ HITL 개입 (자동화 레벨에 따라)
 | Frontend | Next.js (React) | Phase 2 |
 | Database | PostgreSQL | 동기 세션 |
 | Vector DB | Pinecone (DART RAG) | Phase 2 |
-| Checkpointer | Redis / Memory | Redis (프로덕션) |
-| Cache | Redis | TTL 60초 |
+| Checkpointer | PostgreSQL / Memory | PostgreSQL (프로덕션) |
+| Cache | 인메모리 | TTL 60초 |
 
 ---
 
@@ -839,7 +839,7 @@ HITL 개입 (자동화 레벨에 따라)
 
 **데이터 & 서비스**
 5. ✅ 데이터 연동 (pykrx, KIS, DART, BOK)
-6. ✅ Redis 캐싱 시스템 (TTL 60초)
+6. ✅ 인메모리 캐싱 시스템 (TTL 60초)
 7. ✅ 15+ 서비스 레이어 구현
 8. ✅ 종목명 추출 개선 (Claude Sonnet 4.5 기반)
 

@@ -293,7 +293,7 @@ class DARTService:
         종목 코드로 고유번호 찾기
 
         DART corp_code.zip을 다운로드하여 전체 종목 매핑 테이블 사용
-        Redis 캐싱 (1일 TTL)
+        캐시 저장 (1일 TTL)
 
         Args:
             stock_code: 종목 코드 (6자리, 예: "005930")
@@ -313,7 +313,7 @@ class DARTService:
             mapping = await self._download_and_parse_corp_code_mapping()
 
             if mapping:
-                # Redis 캐싱 (1일 TTL)
+                # 캐시 저장 (1일 TTL)
                 self.cache.set(cache_key, mapping, ttl=86400)
                 logger.info(f"✅ DART 매핑 테이블 캐싱 완료: {len(mapping)}개 종목")
             else:
