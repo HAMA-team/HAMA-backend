@@ -164,10 +164,11 @@ async def stream_multi_agent_execution(
         conversation_uuid = uuid.UUID(conversation_id)
         demo_user_uuid = settings.demo_user_uuid
 
+        # automation_level 제거됨: hitl_config로 완전 전환
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=demo_user_uuid,
-            automation_level=automation_level,
+            metadata={"hitl_preset": automation_level_to_hitl_config(automation_level).preset},  # hitl_config 정보만 metadata에 저장
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,

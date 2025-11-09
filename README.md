@@ -42,6 +42,19 @@
 
 ---
 
+## 📌 현재 구현 현황 (2025-11-09 기준)
+
+| 영역 | 구현 내용 | 주요 경로 |
+|------|-----------|-----------|
+| **LangGraph 다중 에이전트** | Supervisor + Router 조합으로 Research/Strategy/Risk/Trading/Portfolio/Monitoring/Report Generator 서브그래프 운영, SSE 스트리밍 지원 | `src/agents/*`, `src/api/routes/multi_agent_stream.py` |
+| **HITL & 자동화 레벨** | `ApprovalRequest`/`UserDecision` 모델, Automation preset API, 승인 이력 조회 API, 인터럽트/승인 기록 저장 | `src/models/agent.py`, `src/api/routes/settings.py`, `src/api/routes/approvals.py`, `src/services/approval_service.py` |
+| **시장·거시 데이터 수집** | pykrx + FinanceDataReader 이중화, KIS 실시간 시세, DART 공시, 한국은행 거시지표, 네이버 뉴스 API, Redis 실시간 캐시 | `src/services/stock_data_service.py`, `src/services/kis_service.py`, `src/services/dart_service.py`, `src/services/bok_service.py`, `src/services/news_crawler_service.py`, `src/services/realtime_cache_service.py` |
+| **포트폴리오 & 매매 파이프라인** | DB 기반 포트폴리오 스냅샷, 리밸런싱/리스크 계산, Trading Agent 체결 시뮬레이터, Artifact/Onboarding API | `src/services/portfolio_service.py`, `src/agents/trading/*`, `src/api/routes/portfolio.py`, `src/api/routes/artifacts.py`, `src/api/routes/onboarding.py` |
+| **인프라 & 운영** | SQLAlchemy 모델, Chat history/Artifact 저장소, Redis/LangGraph 캐시, Celery 워커/비트 스케줄, dotenv 설정 | `src/models/*`, `src/services/chat_history_service.py`, `src/services/cache_manager.py`, `src/workers/*`, `src/config/settings.py` |
+| **테스트 & 툴링** | 단위/통합/E2E 테스트, KIS/Trading 플로우 디버깅 스크립트, 풍부한 픽스처/로그 | `tests/unit`, `tests/integration`, `tests/e2e`, `tests/test_trading_flow.py`, `tests/test_kis_index.py` |
+
+---
+
 ## ✨ 핵심 기능
 
 ### 1. **멀티 에이전트 AI 시스템** (LangGraph Supervisor 패턴)
@@ -49,18 +62,19 @@
 ```
 마스터 에이전트 (Supervisor)
         ↓
-┌───────┼───────┬───────┬───────┬───────┐
-↓       ↓       ↓       ↓       ↓       ↓
-Research Strategy Risk  Trading Portfolio General
+┌───────┬─────────┬────────┬────────┬──────────┬────────────┐
+↓       ↓         ↓        ↓        ↓          ↓
+Research Strategy Risk  Trading Portfolio Monitoring (+Report Generator)
 ```
 
-**6개 서브그래프 에이전트:**
-- 🔍 **Research**: 종목 분석 (재무, 기술적 지표, 뉴스 감정)
-- 📈 **Strategy**: 투자 전략 (시장 사이클, 섹터 로테이션, 자산 배분)
-- ⚠️ **Risk**: 리스크 평가 (VaR, 집중도, 경고 생성)
-- 💰 **Trading**: 매매 실행 (주문 생성, HITL 승인, 실행)
-- 📊 **Portfolio**: 포트폴리오 관리 (최적화, 리밸런싱)
-- 💬 **General**: 일반 질의응답 (투자 용어, 시장 교육)
+**서브그래프 & 노드:**
+- 🔍 **Research**: 재무제표·실적·뉴스 감정 분석, Bull/Bear 비교 (`src/agents/research/*`)
+- 📈 **Strategy**: 시장 시나리오, 섹터 로테이션, 자산 배분 제안 (`src/agents/strategy/*`)
+- ⚠️ **Risk**: 포트폴리오 집중도·VaR·드로우다운 진단 (`src/agents/risk/*`)
+- 💰 **Trading**: 주문 시뮬레이션, HITL 승인 조건 생성, 체결 결과 요약 (`src/agents/trading/*`)
+- 📊 **Portfolio**: 스냅샷 생성, 최적 비중 계산, 차트 데이터 제공 (`src/agents/portfolio/*`)
+- 🛰️ **Monitoring**: 실시간 뉴스/이벤트 모니터링, 경보 생성 (`src/agents/monitoring/*`)
+- 🧾 **Report Generator**: Research/Strategy 결과를 하이라이트 카드로 재구성 (`src/agents/report_generator/*`)
 
 ### 2. **HITL (Human-in-the-Loop)** 🔔
 
@@ -85,28 +99,71 @@ Level 3 (Advisor) → 모든 결정 승인 필요
 | **DART API** | ✅ 연동 완료 | 재무제표, 공시, 기업 정보 |
 | **한국은행 API** | ✅ 연동 완료 | 금리, 거시경제 지표 |
 | **Redis** | ✅ 작동 중 | 캐싱 (TTL 60초) |
-| **네이버 금융** | ⏸️ Phase 2 | 뉴스 크롤링 |
+| **네이버 뉴스 API** | ✅ (API 키 필요) | 종목 키워드 기반 최신 뉴스/요약 |
+| **Celery 워커** | ✅ 작동 중 | 실시간 시세/거시지표 스케줄링 |
 
-### 4. **RESTful API** (FastAPI)
+### 4. **API 영역 & 라우터** (FastAPI)
 
-**Chat & HITL:**
-- `POST /api/v1/chat/` - 대화형 인터페이스
-- `POST /api/v1/chat/approve` - HITL 승인/거부
-- `GET /api/v1/chat/history/{id}` - 대화 이력 조회
-- `POST /api/v1/multi-agent-stream/` - 스트리밍 응답
+| 범주 | Method | Endpoint | 설명 / 구현 위치 |
+|------|--------|----------|------------------|
+| **Chat & HITL** | `POST` | `/api/v1/chat/multi-stream` | SSE 기반 멀티에이전트 실행·Thinking Trace 스트리밍<br>`src/api/routes/multi_agent_stream.py` |
+| **Approvals** | `GET` | `/api/v1/approvals` | 승인 이력 조회, 상태/타입 필터, 페이지네이션<br>`src/api/routes/approvals.py` |
+| **Approvals** | `GET` | `/api/v1/approvals/{request_id}` | 단일 승인 요청 상세 보기 |
+| **Automation** | `GET` | `/api/v1/settings/automation-level` | 사용자 HITL 설정 조회 (없으면 Copilot 프리셋)<br>`src/api/routes/settings.py` |
+| **Automation** | `PUT` | `/api/v1/settings/automation-level` | 사용자 정의·프리셋 저장 (confirm=true 필요) |
+| **Automation** | `GET` | `/api/v1/settings/automation-levels` | Pilot/Copilot/Advisor 프리셋 메타데이터 |
+| **Dashboard** | `GET` | `/api/v1/dashboard` | 총자산/상위 보유/활동 로그 요약 |
+| **Portfolio** | `GET` | `/api/v1/portfolio` | 기본 포트폴리오 스냅샷 자동 해석 |
+| **Portfolio** | `GET` | `/api/v1/portfolio/{portfolio_id}` | 특정 포트폴리오 요약/리스크/구성 |
+| **Portfolio** | `GET` | `/api/v1/portfolio/{portfolio_id}/performance` | 기간별 성과·지표 |
+| **Portfolio** | `GET` | `/api/v1/portfolio/chart-data` | 차트/밸런싱 데이터 (프런트 차트용) |
+| **Portfolio** | `POST` | `/api/v1/portfolio/{portfolio_id}/rebalance` | 리밸런싱 시뮬레이션/행동 계획 기록 |
+| **Stocks** | `GET` | `/api/v1/stocks/search` | 종목/코드 검색 + 최신 시세 |
+| **Stocks** | `GET` | `/api/v1/stocks/{code}` | 단일 종목 기본 정보 |
+| **Stocks** | `GET` | `/api/v1/stocks/{code}/price-history` | 기간별 시세 (pykrx → KIS fallback) |
+| **Stocks** | `GET` | `/api/v1/stocks/{code}/analysis` | Research Agent 호출 결과 |
+| **News** | `GET` | `/api/v1/news/{stock_code}` | 종목별 저장된 뉴스 |
+| **News** | `POST` | `/api/v1/news/fetch` | 네이버 뉴스 API 호출 + DB 저장 |
+| **News** | `GET` | `/api/v1/news/recent` | 전체 종목 최신 뉴스 |
+| **Artifacts** | `POST/GET/PUT/DELETE` | `/api/v1/artifacts[...]` | AI 생성 보고서 CRUD |
+| **Onboarding** | `POST` | `/api/v1/onboarding/screening` | 스크리닝 응답 → AI 프로파일 생성 |
+| **Onboarding** | `GET` | `/api/v1/onboarding/profile/{user_id}` | 투자 프로파일 조회 |
 
-**Settings & Automation:**
-- `GET /api/v1/settings/automation-level` - 자동화 레벨 조회
-- `PUT /api/v1/settings/automation-level` - 자동화 레벨 업데이트
-- `GET /api/v1/settings/automation-levels` - 사용 가능한 프리셋 목록
+#### SSE 기반 멀티에이전트 호출 예시
 
-**Portfolio & Trading:**
-- `GET /api/v1/portfolio/{user_id}` - 포트폴리오 조회
-- `POST /api/v1/approvals/` - 승인 요청 처리
+```bash
+curl -N \
+  -H "Accept: text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "message": "삼성전자 10주 매수해도 될까?",
+        "user_id": "3bd04ffb-350a-5fa4-bee5-6ce019fdad9c",
+        "conversation_id": "4e51a4fd-6d30-4bfd-9f31-1fba6dd51b0d",
+        "automation_level": 2,
+        "stream_thinking": true
+      }' \
+  http://localhost:8000/api/v1/chat/multi-stream
+```
 
-**Stock & Market Data:**
-- `GET /api/v1/stocks/{stock_code}` - 종목 정보
-- `GET /api/v1/dashboard/` - 대시보드 데이터
+수신되는 이벤트 타입: `master_start`, `agent_start`, `agent_thinking`, `agent_complete`, `approval_required`, `final_answer` 등. `approval_required` 이벤트에는 `request_id`가 포함되며, 프런트는 이를 `/api/v1/approvals` API로 조회하거나 UI에 저장한다.
+
+#### 승인/설정/데이터 조회 예시
+
+```bash
+# 승인 목록
+curl "http://localhost:8000/api/v1/approvals?status=pending&limit=10"
+
+# 자동화 프리셋
+curl http://localhost:8000/api/v1/settings/automation-levels
+
+# 상위 보유 종목이 포함된 대시보드
+curl http://localhost:8000/api/v1/dashboard
+
+# 뉴스 수집 (네이버 API 키 필요)
+curl -X POST http://localhost:8000/api/v1/news/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"stock_code":"005930","stock_name":"삼성전자","max_articles":10}'
+```
 
 ---
 
@@ -330,117 +387,49 @@ python -m src.main
 ### **6. API 테스트**
 
 ```bash
-# 간단한 질문
-curl -X POST http://localhost:8000/api/v1/chat/ \
+# SSE 기반 다중 에이전트 호출
+curl -N \
+  -H "Accept: text/event-stream" \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "삼성전자 주가는 얼마야?",
-    "automation_level": 2
-  }'
+        "message": "코스피/코스닥 시장 위험 요약 알려줘",
+        "conversation_id": "f013f096-89be-4f1f-b0da-5ac486521111",
+        "user_id": "3bd04ffb-350a-5fa4-bee5-6ce019fdad9c",
+        "automation_level": 2,
+        "stream_thinking": true
+      }' \
+  http://localhost:8000/api/v1/chat/multi-stream
 
-# 매매 요청 (HITL 발생)
-curl -X POST http://localhost:8000/api/v1/chat/ \
+# 승인 히스토리
+curl "http://localhost:8000/api/v1/approvals?status=pending&limit=5"
+
+# 자동화 레벨 변경
+curl -X PUT http://localhost:8000/api/v1/settings/automation-level \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "삼성전자 10주 매수해줘",
-    "automation_level": 2
-  }'
+        "confirm": true,
+        "hitl_config": {
+          "preset": "pilot",
+          "phases": {"analysis": false, "portfolio": false, "risk": false, "trade": "conditional"}
+        }
+      }'
 ```
 
 ### **7. 채팅 히스토리 & 테스트 모드**
 
-- 채팅 세션과 메시지는 `chat_sessions`, `chat_messages` 테이블에 저장됩니다. 최초 설정 시 `alembic upgrade head` 명령으로 테이블을 생성하세요.
-- `.env`에서 `ENV=test`로 설정하거나 `ANTHROPIC_API_KEY`를 비워 두면 LangGraph가 외부 LLM 대신 모의 응답/승인 플로우를 반환해 안전하게 테스트할 수 있습니다.
+- 대화·승인 컨텍스트는 `chat_sessions`, `chat_messages`, `approval_requests`, `user_decisions` 테이블에 저장됩니다. (`alembic upgrade head`로 최초 스키마 구축)
+- `.env`의 `ENV=test` 또는 LLM 키 제거 시 에이전트가 모의 응답을 반환하여 외부 API 없이 흐름을 검증할 수 있습니다.
+- `tests/test_trading_flow.py`, `tests/test_kis_index.py`는 LangGraph/서비스 흐름을 단독으로 재현하는 디버깅 스크립트입니다.
 
 ---
 
 ## 📡 API 문서
 
-### **주요 엔드포인트**
-
-#### **POST `/api/v1/chat/`** - 대화 처리
-
-**Request:**
-```json
-{
-  "message": "삼성전자 10주 매수해줘",
-  "conversation_id": "optional-thread-id",
-  "automation_level": 2
-}
-```
-
-**Response (HITL 발생):**
-```json
-{
-  "message": "🔔 사용자 승인이 필요합니다.",
-  "conversation_id": "abc123-def456",
-  "requires_approval": true,
-  "approval_request": {
-    "type": "trade_approval",
-    "thread_id": "abc123-def456",
-    "interrupt_data": {
-      "order_id": "ORDER_a1b2c3d4",
-      "stock_code": "005930",
-      "quantity": 10,
-      "order_type": "buy"
-    }
-  }
-}
-```
-
-#### **POST `/api/v1/chat/approve`** - 승인/거부
-
-**Request:**
-```json
-{
-  "thread_id": "abc123-def456",
-  "decision": "approved",  // "approved" | "rejected" | "modified"
-  "automation_level": 2,
-  "user_notes": "좋은 타이밍"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "approved",
-  "message": "승인 완료 - 매매가 실행되었습니다.",
-  "result": {
-    "order_id": "ORDER_a1b2c3d4",
-    "status": "executed",
-    "total": 890000
-  }
-}
-```
-
-#### **GET `/api/v1/chat/history/{conversation_id}`** - 대화 히스토리 조회
-
-```bash
-curl http://localhost:8000/api/v1/chat/history/abc123-def456
-```
-
-```json
-{
-  "conversation_id": "abc123-def456",
-  "automation_level": 2,
-  "messages": [
-    {"role": "user", "content": "삼성전자 10주 매수해줘"},
-    {"role": "assistant", "content": "🔔 사용자 승인이 필요합니다."}
-  ]
-}
-```
-
-#### **DELETE `/api/v1/chat/history/{conversation_id}`** - 히스토리 삭제
-
-```bash
-curl -X DELETE http://localhost:8000/api/v1/chat/history/abc123-def456
-```
-
-### **자세한 문서**
-
-- 📄 [프론트엔드 통합 가이드](docs/frontend/frontend-integration-guide.md) - React 예시 포함
-- 📄 [API 빠른 참조](docs/api-quick-reference.md)
-- 🌐 [OpenAPI Swagger](http://localhost:8000/docs)
+- Swagger / ReDoc: `http://localhost:8000/docs`, `http://localhost:8000/redoc`
+- 샘플 통합 시나리오: `docs/complete_user_scenarios.md`
+- 프런트엔드 연동 가이드: `docs/frontend/frontend-integration-guide.md`
+- 운영/워커 관리: `docs/operations/celery-management.md`
+- 배포 가이드: `docs/deployment/railway-deployment.md`
 
 ---
 
@@ -459,62 +448,70 @@ curl -X DELETE http://localhost:8000/api/v1/chat/history/abc123-def456
 HAMA-backend/
 ├── src/
 │   ├── agents/              # LangGraph 에이전트
-│   │   ├── research/        ✅ 서브그래프 (종목 분석)
-│   │   ├── strategy/        ✅ 서브그래프 (투자 전략)
-│   │   ├── risk/            ✅ 서브그래프 (리스크 평가)
-│   │   ├── trading/         ✅ 서브그래프 (매매 실행)
-│   │   ├── portfolio/       ✅ 서브그래프 (포트폴리오)
-│   │   ├── general/         ✅ 서브그래프 (일반 QA)
-│   │   ├── router/          ✅ 라우터 에이전트 (쿼리 분석 및 에이전트 선택)
-│   │   └── thinking_trace.py ✅ LLM 사고 과정 추적 유틸리티
+│   │   ├── monitoring/       ✅ 뉴스/경보 모니터링 서브그래프
+│   │   ├── portfolio/        ✅ 포트폴리오 서브그래프
+│   │   ├── report_generator/ ✅ 결과 카드 합성
+│   │   ├── research/         ✅ 종목 분석 서브그래프
+│   │   ├── risk/             ✅ 리스크 평가 서브그래프
+│   │   ├── router/           ✅ LLM 기반 라우터
+│   │   ├── strategy/         ✅ 전략 서브그래프
+│   │   ├── trading/          ✅ HITL·체결 서브그래프
+│   │   └── thinking_trace.py ✅ SSE 이벤트 포맷터
 │   ├── api/
+│   │   ├── middleware/logging.py
 │   │   └── routes/
-│   │       ├── multi_agent_stream.py ✅ 멀티 에이전트 스트리밍 (메인 엔드포인트, Thinking Trace 지원)
-│   │       ├── approvals.py         ✅ 승인 요청 처리 (HITL)
-│   │       ├── settings.py          ✅ 자동화 레벨 설정
-│   │       ├── portfolio.py         ✅ 포트폴리오 관리
-│   │       ├── onboarding.py        ✅ 온보딩
-│   │       ├── stocks.py            ✅ 종목 정보
-│   │       ├── dashboard.py         ✅ 대시보드
-│   │       ├── news.py              ✅ 뉴스 검색
-│   │       └── artifacts.py         ✅ AI 생성 콘텐츠 관리
-│   ├── services/            # 데이터 서비스
-│   │   ├── stock_data_service.py     ✅ pykrx
-│   │   ├── kis_service.py            ✅ 한국투자증권 API
-│   │   ├── dart_service.py           ✅ DART API
-│   │   ├── bok_service.py            ✅ 한국은행 API
-│   │   ├── cache_manager.py          ✅ Redis 캐싱
-│   │   ├── portfolio_optimizer.py    ✅ 포트폴리오 최적화
-│   │   ├── portfolio_service.py      ✅ 포트폴리오 관리
-│   │   ├── approval_service.py       ✅ 승인 처리
-│   │   ├── user_profile_service.py   ✅ 사용자 프로필
-│   │   └── ...                       ✅ 15+ 서비스
-│   ├── models/              # SQLAlchemy 모델
-│   │   ├── user_settings.py ✅ HITL 설정
-│   │   ├── agent.py         ✅ ApprovalRequest 등
-│   │   └── ...              ✅ 10+ 모델
-│   ├── repositories/        # Repository 패턴
-│   │   └── user_settings_repository.py ✅
-│   ├── schemas/             # Pydantic 스키마
-│   │   ├── hitl_config.py   ✅ HITL 설정 스키마
-│   │   ├── settings.py      ✅ Settings API 스키마
-│   │   └── ...              ✅ 20+ 스키마
-│   ├── utils/               # 유틸리티
-│   │   ├── stock_name_extractor.py ✅ GPT-5 종목명 추출
-│   │   └── ...
-│   ├── config/              # 설정
-│   └── main.py              # FastAPI 앱
+│   │       ├── multi_agent_stream.py ✅ SSE 스트리밍 엔드포인트
+│   │       ├── approvals.py          ✅ 승인 이력 API
+│   │       ├── settings.py           ✅ 자동화 레벨 API
+│   │       ├── portfolio.py          ✅ 포트폴리오/리밸런싱 API
+│   │       ├── onboarding.py         ✅ 스크리닝 → 프로파일 API
+│   │       ├── stocks.py             ✅ 종목/시세/리서치 API
+│   │       ├── dashboard.py          ✅ 대시보드 요약 API
+│   │       ├── news.py               ✅ 네이버 뉴스 연동
+│   │       └── artifacts.py          ✅ AI 산출물 CRUD
+│   ├── services/             # 데이터 서비스
+│   │   ├── stock_data_service.py      ✅ pykrx + KIS + Redis 캐시
+│   │   ├── kis_service.py             ✅ 한국투자증권 OAuth + 주문
+│   │   ├── dart_service.py            ✅ 공시 수집
+│   │   ├── bok_service.py             ✅ 한국은행 지표
+│   │   ├── news_crawler_service.py    ✅ 네이버 뉴스 API
+│   │   ├── realtime_cache_service.py  ✅ 실시간 시세 Redis 캐시
+│   │   ├── portfolio_service.py       ✅ 포트폴리오/리스크 계산
+│   │   ├── approval_service.py        ✅ ApprovalRequest 리포지토리
+│   │   ├── user_profile_service.py    ✅ 투자 성향 프로파일
+│   │   └── portfolio_optimizer.py · macro_data_service.py 등 15+ 서비스
+│   ├── models/               # SQLAlchemy 모델
+│   │   ├── agent.py          ✅ ApprovalRequest/TradingSignal 등
+│   │   ├── chat.py           ✅ 세션/메시지 기록
+│   │   ├── portfolio.py      ✅ Portfolio/Position/Transaction
+│   │   ├── stock.py          ✅ 종목·재무·뉴스 테이블
+│   │   └── user_profile.py   ✅ 투자 성향 저장
+│   ├── repositories/         # Repository 패턴
+│   │   ├── news_repository.py
+│   │   ├── stock_repository.py
+│   │   └── user_settings_repository.py
+│   ├── schemas/              # Pydantic 스키마 (자동화/포트폴리오/뉴스 등 20+)
+│   ├── utils/                # LLM·지표·종목명 추출 유틸
+│   ├── workers/              # Celery 앱/태스크
+│   ├── config/               # Settings, 환경 변수
+│   └── main.py               # FastAPI 엔트리포인트
 ├── tests/
-│   ├── test_services/       ✅ 서비스 레이어 테스트
-│   └── test_general_agent_json.py ✅ Agent 테스트
+│   ├── unit/test_agents/*   ✅ 에이전트 단위 테스트
+│   ├── unit/test_services/* ✅ 서비스 단위 테스트
+│   ├── integration/         ✅ HITL/뉴스/시세 통합 테스트
+│   ├── e2e/                 ✅ LangGraph 시나리오 스크립트
+│   ├── test_kis_index.py    ✅ KIS API 수동 테스트
+│   └── test_trading_flow.py ✅ Trading 서브그래프 시뮬레이터
 ├── docs/
-│   ├── PRD.md               # 제품 요구사항
-│   ├── schema.md            # DB 스키마
-│   ├── frontend-integration-guide.md  ✅ 프론트엔드 가이드
-│   ├── api-quick-reference.md         ✅ API 빠른 참조
-│   └── plan/
-│       ├── legacy-agent-migration.md  # 마이그레이션 계획
-│       └── completed/       # 완료된 문서
+│   ├── PRD.md
+│   ├── schema.md
+│   ├── complete_user_scenarios.md
+│   ├── frontend/
+│   │   ├── frontend-integration-guide.md
+│   │   └── frontend-backend-gap-analysis.md
+│   ├── deployment/railway-deployment.md
+│   ├── operations/celery-management.md
+│   └── plan/ (phase 문서, completed 기록)
 ├── .env.example
 ├── requirements.txt
 ├── pytest.ini
@@ -525,30 +522,32 @@ HAMA-backend/
 
 ## 🧪 테스트
 
-### **테스트 실행**
+### **실행 가이드**
 
 ```bash
-# 전체 테스트
+# 전체 스위트 (pytest.ini에 async/strict marker 설정)
 pytest
 
-# E2E 테스트
-pytest tests/test_agents/test_end_to_end.py -v
+# 에이전트 단위 테스트
+pytest tests/unit/test_agents/test_trading_agent.py -vv
 
-# 특정 테스트
-pytest tests/test_agents/test_end_to_end.py::TestEndToEndIntegration::test_full_investment_workflow -v
+# HITL 플로우 통합 테스트
+pytest tests/integration/test_hitl_integration.py -vv
 
-# 데이터 연동 테스트
-python tests/test_research_data_collection.py
+# KIS/Trading 스모크 (환경 변수 필요)
+python tests/test_kis_index.py
+python tests/test_trading_flow.py
 ```
 
-### **테스트 커버리지**
+### **범위 & 커버리지 현황**
 
-| 테스트 카테고리 | 상태 | 비고 |
-|---------------|------|------|
-| End-to-End | ✅ 6/6 통과 | 전체 투자 워크플로우 |
-| Research Agent | ✅ 3/3 통과 | 실제 데이터 연동 검증 |
-| API + HITL | ✅ 작성 완료 | chat, approve 엔드포인트 |
-| Unit Tests | 🔄 진행 중 | 개별 노드 테스트 |
+| 범주 | 주요 파일 | 하이라이트 |
+|------|-----------|-------------|
+| Unit – Agents | `tests/unit/test_agents/*.py` | Research/Strategy/Trading 상태 머신 검증, Routing worker 선택 테스트 |
+| Unit – Services | `tests/unit/test_services/test_news_crawler_service.py` 등 | 네이버 뉴스, Approval, Cache 로직 스텁 |
+| Integration | `tests/integration/test_hitl_integration.py`, `tests/integration/test_stock_data_integration.py`, `tests/integration/test_news_api.py` | HITL 승인 시나리오, pykrx/KIS 혼합 시세, 뉴스 API 라운드트립 |
+| System Smoke | `tests/test_trading_flow.py`, `tests/test_kis_index.py` | LangGraph 서브그래프 단독 실행, KIS 실계좌·모의계좌 API 검증 |
+| Fixtures & Logs | `tests/fixtures/*.json`, `tests/logs/` | 결정적 데이터셋/로그로 CI 재현성 유지 |
 
 ---
 
@@ -558,18 +557,21 @@ python tests/test_research_data_collection.py
 
 | 문서 | 설명 |
 |------|------|
-| [PRD.md](docs/PRD.md) | 제품 요구사항 정의 |
-| [schema.md](docs/schema.md) | 데이터베이스 스키마 (19개 테이블) |
-| [frontend-integration-guide.md](docs/frontend/frontend-integration-guide.md) | 프론트엔드 통합 가이드 ⭐ |
-| [api-quick-reference.md](docs/api-quick-reference.md) | API 빠른 참조 |
-| [CLAUDE.md](CLAUDE.md) | 개발 가이드라인 |
+| [docs/PRD.md](docs/PRD.md) | 전체 기능/비즈니스 요구사항 |
+| [docs/schema.md](docs/schema.md) | 19개 테이블·ERD 정리 |
+| [docs/complete_user_scenarios.md](docs/complete_user_scenarios.md) | E2E 사용자 여정 & API 호출 순서 |
+| [docs/frontend/frontend-integration-guide.md](docs/frontend/frontend-integration-guide.md) | SSE/Redux 연동 예시, UI 요구사항 |
+| [CLAUDE.md](CLAUDE.md) | 에이전트 개발 가이드라인 |
 
 ### **계획 문서**
 
 | 문서 | 설명 |
 |------|------|
-| [legacy-agent-migration.md](docs/plan/legacy-agent-migration.md) | Legacy 마이그레이션 계획 |
-| [next-steps.md](docs/plan/next-steps.md) | Phase 2 계획 |
+| [docs/plan/legacy-agent-migration.md](docs/plan/legacy-agent-migration.md) | 기존 파이프라인 → LangGraph 전환 계획 |
+| [docs/plan/completed/phase1/tech-stack-setup.md](docs/plan/completed/phase1/tech-stack-setup.md) | lint/format/type-check 규칙 |
+| [docs/frontend/frontend-backend-gap-analysis.md](docs/frontend/frontend-backend-gap-analysis.md) | UX 요구 대비 서버 구현 갭 |
+| [docs/operations/celery-management.md](docs/operations/celery-management.md) | 워커 배포/모니터링 지침 |
+| [docs/deployment/railway-deployment.md](docs/deployment/railway-deployment.md) | Railway 배포 체크리스트 |
 
 ---
 
@@ -577,43 +579,41 @@ python tests/test_research_data_collection.py
 
 ### **Phase 1 (현재) - MVP 완성** 🔵 90% 완료
 
-- [x] LangGraph Supervisor 패턴 아키텍처
-- [x] 6개 서브그래프 에이전트 구현
-- [x] HITL (Human-in-the-Loop) 시스템
-  - [x] HITLConfig 스키마 (3단계 프리셋)
-  - [x] UserSettings 모델 및 Repository
-  - [x] Settings API (자동화 레벨 관리)
-  - [x] ApprovalRequest DB 저장
-- [x] 실제 데이터 연동
-  - [x] pykrx (주가, 거래량)
-  - [x] 한국투자증권 API (실시간 시세)
-  - [x] DART API (재무제표, 공시)
-  - [x] 한국은행 API (금리, 경제지표)
-- [x] Redis 캐싱 시스템
-- [x] 종목명 추출 개선 (GPT-5 기반)
-- [x] 15+ 서비스 레이어 구현
-- [x] 프론트엔드 통합 가이드
-- [ ] 테스트 커버리지 확대
-- [ ] API 인증/권한 시스템
-- [ ] 프론트엔드 개발
+- [x] LangGraph Supervisor + Router + SSE 스트리밍 파이프라인
+- [x] 7개 서브그래프 (Research/Strategy/Risk/Trading/Portfolio/Monitoring/Report Generator)
+- [x] HITL 시스템
+  - [x] Automation Preset (Pilot/Copilot/Advisor) & Custom 저장
+  - [x] ApprovalRequest/UserDecision 모델 & API
+  - [x] SSE Interrupt → 승인 기록 연동
+- [x] 실거래소 데이터 통합
+  - [x] pykrx + FinanceDataReader 이중화
+  - [x] 한국투자증권 API (실시간 시세·지수·주문)
+  - [x] DART / 한국은행 / 네이버 뉴스 API
+- [x] Redis + Celery 기반 실시간 캐시/워커
+- [x] 종목명 추출기 (LLM 구조화 출력)
+- [x] 15+ 서비스/리포지토리 계층
+- [x] 프론트엔드 통합/데이터 시나리오 문서
+- [ ] 자동 테스트 커버리지 80%+
+- [ ] API 인증/권한 계층
+- [ ] 프론트엔드 (Copilot UI) 1차 버전
 
 ### **Phase 2 - 확장 기능** 🔵 예정
 
-- [ ] 실제 매매 주문 실행
-- [ ] WebSocket 실시간 알림
-- [ ] 뉴스 크롤링 (네이버 금융)
-- [ ] 사용자 인증 시스템 (JWT)
-- [ ] 포트폴리오 백테스팅
-- [ ] 자동화 레벨 커스터마이징 (세부 조정)
-- [ ] Bull/Bear 토론 시각화
+- [ ] 실거래 주문/체결 웹훅 연동 (KIS real env)
+- [ ] LangGraph 체크포인트 영속화 (Redis/Postgres)
+- [ ] WebSocket 실시간 대시보드/알림
+- [ ] 사용자 인증 (JWT + OAuth) 및 다중 계정
+- [ ] 포트폴리오 백테스트 + 퍼포먼스 리포트
+- [ ] HITL 세분화 (조건부 필터, 한도 관리)
+- [ ] SSE → WebRTC/HMR 시각화 모듈
 
 ### **Phase 3 - 확장** ⚪ 계획 중
 
-- [ ] 해외 주식 지원
-- [ ] 모바일 앱
-- [ ] 자동 리밸런싱 스케줄러
-- [ ] 성과 분석 대시보드
-- [ ] 커뮤니티 기능
+- [ ] 해외 주식/ETF 데이터 소스 편입
+- [ ] 자동 리밸런싱 스케줄러 + 캘린더
+- [ ] 모바일/데스크톱 클라이언트
+- [ ] 성과 분석 대시보드 + 목표 대비 추적
+- [ ] 커뮤니티/토론 기능 (Bull/Bear 시각화)
 
 ---
 
@@ -621,14 +621,14 @@ python tests/test_research_data_collection.py
 
 | 컴포넌트 | 완성도 | 비고 |
 |---------|--------|------|
-| Backend Core | 🟢 95% | FastAPI + LangGraph |
-| Agents | 🟢 90% | 6개 서브그래프 + Router |
+| Backend Core | 🟢 95% | FastAPI + LangGraph + Celery |
+| Agents | 🟢 90% | 7개 서브그래프 + Router + SSE |
 | HITL System | 🟢 95% | HITLConfig + Settings API |
-| Data Integration | 🟢 95% | pykrx + KIS + DART + BOK |
-| API Endpoints | 🟢 95% | 9개 라우트 완성 |
-| Services | 🟢 90% | 15+ 서비스 레이어 |
-| Documentation | 🟢 90% | 프론트엔드 가이드 완성 |
-| Testing | 🟡 70% | 테스트 커버리지 확대 중 |
+| Data Integration | 🟢 95% | pykrx + KIS + DART + BOK + Naver News |
+| API Endpoints | 🟢 95% | Chat/Portfolio/News 등 10+ 라우터 |
+| Services | 🟢 90% | 15+ 서비스/리포지토리 |
+| Documentation | 🟢 90% | PRD + 시나리오 + 배포/운영 문서 |
+| Testing | 🟡 70% | 단위/통합 대비 시스템 테스트 확대 예정 |
 | Frontend | 🔴 0% | 개발 대기 중 |
 | Deployment | 🟢 90% | Docker + Railway |
 
@@ -700,4 +700,4 @@ MIT License
 
 **Built with ❤️ using LangGraph & FastAPI**
 
-Last Updated: 2025-11-01
+Last Updated: 2025-11-09
