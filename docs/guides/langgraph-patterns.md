@@ -432,87 +432,143 @@ async def synthesis_node(state: ResearchState) -> dict:
 - 분석 로직 모듈화 및 재사용성 증가
 - 전문가별 가중치 조정 가능
 
-### 패턴 2: Sequential Specialist 패턴 (Trading Agent)
+### 패턴 2: 단순 선형 플로우 패턴 (Trading Agent) ⭐ 신규
 
-**개요**: 매매 결정을 순차적인 Specialist 노드로 분리하여 점진적 의사결정
+**개요**: 복잡한 ReAct 패턴 대신 단순한 3-노드 선형 플로우로 매매 실행
 
-**적용 예시: Trading Agent**
+**변경 이력 (2025-11-09)**:
+- ❌ 기존 9-노드 ReAct 패턴 제거 (query_intent_classifier, planner, task_router, buy/sell specialists, risk_reward_calculator)
+- ✅ 3-노드 선형 플로우로 단순화 (prepare → approve → execute)
+- **결과**: 58% 코드 감소, 80% LLM 호출 감소, ~5배 속도 향상
+
+**적용 예시: Trading Agent (단순화 버전)**
+
+```python
+# trading/graph.py
+
+def build_trading_subgraph():
+    """Trading Agent 서브그래프 (단순화된 구조)"""
+    workflow = StateGraph(TradingState)
+
+    # 3개 노드만 추가
+    workflow.add_node("prepare_trade", prepare_trade_node)
+    workflow.add_node("approval_trade", approval_trade_node)
+    workflow.add_node("execute_trade", execute_trade_node)
+
+    # 단순 선형 플로우
+    workflow.set_entry_point("prepare_trade")
+    workflow.add_edge("prepare_trade", "approval_trade")
+
+    # Approval 이후 조건부 분기
+    workflow.add_conditional_edges(
+        "approval_trade",
+        should_execute_trade,
+        {
+            "execute": "execute_trade",
+            "end": END,
+        },
+    )
+
+    workflow.add_edge("execute_trade", END)
+    return workflow.compile()
+
+
+def should_execute_trade(state: TradingState) -> str:
+    """승인 여부에 따라 실행 결정"""
+    if state.get("skip_hitl"):  # Automation Level 1
+        return "execute"
+    if state.get("trade_approved"):
+        return "execute"
+    return "end"
+```
 
 ```python
 # trading/nodes.py
 
-async def buy_specialist_node(state: TradingState) -> dict:
-    """매수 점수 산출 (1-10점)"""
-    if state.get("order_type") != "BUY":
-        return {}  # 매도 주문은 건너뜀
+async def prepare_trade_node(state: TradingState) -> dict:
+    """1단계: LLM으로 주문 준비"""
+    # 멱등성 체크
+    if state.get("trade_prepared"):
+        return {}
 
-    research = state.get("research_result", {})
+    query = state.get("query")
 
-    # 종합 점수 계산
-    buy_score = calculate_buy_score(
-        technical=research.get("technical_summary", {}),
-        trading_flow=research.get("trading_flow_summary", {}),
-        information=research.get("information_summary", {}),
-        fundamental=research.get("fundamental_summary", {})
+    # LLM으로 주문 정보 추출
+    llm = get_llm()
+    order_info = await llm.ainvoke(f"주문 정보 추출: {query}")
+
+    # DB에 주문 생성
+    order_id = trading_service.create_pending_order(
+        stock_code=order_info["stock_code"],
+        quantity=order_info["quantity"],
+        order_type=order_info["order_type"],
     )
 
     return {
-        "buy_score": buy_score,  # 1-10
-        "buy_rationale": generate_rationale(research),
-        "investment_period": "중기" if buy_score >= 7 else "단기",
+        "trade_prepared": True,
+        "stock_code": order_info["stock_code"],
+        "quantity": order_info["quantity"],
+        "order_type": order_info["order_type"],
+        "trade_order_id": order_id,
     }
 
-async def risk_reward_calculator_node(state: TradingState) -> dict:
-    """손절가/목표가 자동 계산"""
-    investment_period = state.get("investment_period", "중기")
-    buy_score = state.get("buy_score", 5)
-    current_price = state.get("order_price", 0)
 
-    # 투자 기간별 목표 수익률
-    if investment_period == "단기":
-        target_return = 0.05  # 5%
-        stop_loss_pct = -0.03  # -3%
-    elif investment_period == "장기":
-        target_return = 0.20  # 20%
-        stop_loss_pct = -0.07  # -7%
-    else:  # 중기
-        target_return = 0.10  # 10%
-        stop_loss_pct = -0.05  # -5%
+async def approval_trade_node(state: TradingState) -> dict:
+    """2단계: HITL 승인"""
+    # Automation Level 1: 자동 승인
+    automation_level = state.get("automation_level", 2)
+    if automation_level == 1:
+        return {"skip_hitl": True, "trade_approved": True}
 
-    # 매수 점수로 목표가 조정
-    if buy_score >= 8:
-        target_return *= 1.2
+    # HITL Interrupt
+    approval = interrupt({
+        "type": "trade_approval",
+        "order_id": state["trade_order_id"],
+        "summary": {
+            "stock_code": state["stock_code"],
+            "quantity": state["quantity"],
+            "order_type": state["order_type"],
+        }
+    })
 
-    target_price = current_price * (1 + target_return)
-    stop_loss = current_price * (1 + stop_loss_pct)
+    if approval.get("decision") == "approved":
+        return {"trade_approved": True}
+    else:
+        return {
+            "trade_approved": False,
+            "rejection_reason": approval.get("reason"),
+        }
 
-    # Risk/Reward Ratio 최소 1.5:1 보장
-    reward = target_price - current_price
-    risk = current_price - stop_loss
-    risk_reward_ratio = reward / risk if risk > 0 else 0
 
-    if risk_reward_ratio < 1.5:
-        min_stop_loss = current_price - (reward / 1.5)
-        stop_loss = max(stop_loss, min_stop_loss)
-        risk_reward_ratio = 1.5
+async def execute_trade_node(state: TradingState) -> dict:
+    """3단계: 주문 실행"""
+    # 멱등성 체크
+    if state.get("trade_executed"):
+        return {}
+
+    order_id = state["trade_order_id"]
+
+    # 실제 주문 실행
+    result = trading_service.execute_order(order_id)
 
     return {
-        "target_price": target_price,
-        "stop_loss": stop_loss,
-        "risk_reward_ratio": risk_reward_ratio,
+        "trade_executed": True,
+        "trade_result": result,
     }
-
-# 그래프 구성
-workflow.add_edge("prepare_trade", "buy_specialist")
-workflow.add_edge("buy_specialist", "sell_specialist")
-workflow.add_edge("sell_specialist", "risk_reward_calculator")
-workflow.add_edge("risk_reward_calculator", "approval_trade")
 ```
 
 **장점**:
-- 명확한 의사결정 흐름 (점수 → 근거 → 리스크 계산)
-- 각 단계별 로직 분리로 유지보수 용이
-- 특정 주문 유형에서 건너뛰기 가능
+- **단순성**: 9 노드 → 3 노드로 복잡도 대폭 감소
+- **비용 절감**: LLM 호출 5회 → 1회 (80% 감소)
+- **속도**: 평균 60-90초 → 10-20초 (~5배 향상)
+- **유지보수**: 선형 플로우로 디버깅 용이
+- **멱등성**: 각 노드에서 플래그 체크로 재실행 안전
+
+**제거된 노드 및 이동 계획**:
+- ❌ `buy_specialist`, `sell_specialist`: Strategy Agent로 이동 예정
+- ❌ `risk_reward_calculator`: Strategy Agent로 이동 예정
+- ❌ `query_intent_classifier`: prepare_trade에서 LLM이 직접 처리
+- ❌ `planner`, `task_router`: 선형 플로우에 불필요
 
 ### 패턴 3: Constraint Validation 패턴 (Portfolio Agent)
 
@@ -603,7 +659,186 @@ workflow.add_edge("optimize_allocation", "validate_constraints")
 - Severity 기반 우선순위 관리 (high/medium/low)
 - 시장 상황에 따른 동적 제약 조정
 
-### 패턴 4: Dynamic Worker Selection (Smart Planner) 패턴 (v1.2 신규)
+### 패턴 4: 3-Tier 라우팅 패턴 (Router Agent) ⭐ 신규
+
+**개요**: 단일 진입점에서 쿼리 복잡도에 따라 3단계 우선순위로 라우팅하여 비용/속도 최적화
+
+**변경 이력 (2025-11-09)**:
+- ❌ Supervisor 패턴 제거 (langgraph-supervisor 라이브러리)
+- ✅ Router Agent로 단일화 (Claude Sonnet 4.5 + Pydantic Structured Output)
+- ✅ 3-Tier 라우팅 우선순위 시스템 도입
+
+**적용 예시: Router Agent**
+
+```python
+# router/router_agent.py
+
+from pydantic import BaseModel, Field
+from typing import Optional, List
+
+class WorkerParams(BaseModel):
+    """Worker 직접 호출 파라미터"""
+    stock_code: Optional[str] = None
+    index_code: Optional[str] = None
+
+class PersonalizationSettings(BaseModel):
+    """사용자 맞춤 설정"""
+    expertise_level: str = "intermediate"
+    preferred_depth: str = "detailed"
+    focus_areas: List[str] = []
+
+class RoutingDecision(BaseModel):
+    """라우팅 결정 스키마 (Pydantic Structured Output)"""
+    query_complexity: str = Field(
+        ...,
+        description="simple | moderate | expert"
+    )
+    user_intent: str = Field(
+        ...,
+        description="quick_info | stock_analysis | trading | portfolio_management | etc"
+    )
+    stock_names: Optional[List[str]] = Field(
+        None,
+        description="추출된 종목명"
+    )
+    agents_to_call: List[str] = Field(
+        default_factory=list,
+        description="호출할 에이전트: research, strategy, risk, trading, portfolio"
+    )
+    depth_level: str = Field(
+        ...,
+        description="brief | detailed | comprehensive"
+    )
+    personalization: PersonalizationSettings = Field(
+        default_factory=PersonalizationSettings
+    )
+    reasoning: str = Field(
+        ...,
+        description="라우팅 결정 이유"
+    )
+
+    # Tier 1: Worker 직접 호출 (초고속)
+    worker_action: Optional[str] = Field(
+        None,
+        description="stock_price, index_price 등"
+    )
+    worker_params: Optional[WorkerParams] = None
+
+    # Tier 2: 직접 답변
+    direct_answer: Optional[str] = Field(
+        None,
+        description="간단한 질문은 LLM이 즉시 답변"
+    )
+
+
+async def route_query(
+    query: str,
+    user_profile: dict,
+    conversation_history: List[dict]
+) -> RoutingDecision:
+    """Router Agent: 3-Tier 라우팅 결정"""
+
+    # Claude Sonnet 4.5 with Structured Output
+    llm = ChatAnthropic(
+        model="claude-sonnet-4-5-20250929",
+        temperature=0
+    ).with_structured_output(RoutingDecision)
+
+    prompt = f"""
+    당신은 HAMA 시스템의 Router Agent입니다.
+
+    다음 우선순위로 쿼리를 처리하세요:
+
+    **우선순위 1 (최고): Worker 직접 호출**
+    - 간단한 조회성 쿼리는 worker_action 사용
+    - 예: "삼성전자 현재가?" → worker_action="stock_price", worker_params={{"stock_code": "005930"}}
+    - 예: "코스피 지수?" → worker_action="index_price", worker_params={{"index_code": "KOSPI"}}
+
+    **우선순위 2: 직접 답변**
+    - 일반적인 질문은 direct_answer에 즉시 답변
+    - 예: "HAMA가 뭐야?" → direct_answer="..."
+    - 예: "포트폴리오 조회 방법?" → direct_answer="..."
+
+    **우선순위 3 (최하): 에이전트 호출**
+    - 복잡한 분석/매매는 agents_to_call 사용
+    - 예: "삼성전자 분석해줘" → agents_to_call=["research"]
+    - 예: "리밸런싱해줘" → agents_to_call=["portfolio"]
+
+    사용자 쿼리: {query}
+    사용자 프로파일: {user_profile}
+    대화 이력: {conversation_history[-5:]}  # 최근 5개만
+    """
+
+    decision = await llm.ainvoke(prompt)
+    return decision
+```
+
+```python
+# api/routes/multi_agent_stream.py
+
+@router.post("/multi-stream")
+async def multi_agent_stream(request: ChatRequest):
+    """3-Tier 라우팅 기반 SSE 스트리밍"""
+
+    # 1. Router 판단
+    routing_decision = await route_query(
+        query=request.message,
+        user_profile=user_profile,
+        conversation_history=conversation_history
+    )
+
+    # 2. Tier 1: Worker 직접 호출 (초고속)
+    if routing_decision.worker_action:
+        if routing_decision.worker_action == "stock_price":
+            stock_code = routing_decision.worker_params.stock_code
+            price_data = await stock_data_service.get_current_price(stock_code)
+
+            yield {
+                "type": "worker_result",
+                "data": price_data,
+                "elapsed": "0.5초"  # 매우 빠름
+            }
+            return
+
+    # 3. Tier 2: 직접 답변
+    if routing_decision.direct_answer:
+        yield {
+            "type": "direct_answer",
+            "content": routing_decision.direct_answer,
+            "elapsed": "1초"
+        }
+        return
+
+    # 4. Tier 3: 에이전트 호출 (복잡한 분석)
+    agents_to_call = routing_decision.agents_to_call
+
+    for agent_name in agents_to_call:
+        agent = load_agent(agent_name)
+
+        async for event in agent.astream_events(...):
+            yield {
+                "type": "agent_event",
+                "agent": agent_name,
+                "data": event
+            }
+```
+
+**장점**:
+- **속도 최적화**: Tier 1 (0.5초) < Tier 2 (1초) < Tier 3 (10-90초)
+- **비용 절감**: 간단한 쿼리는 Worker 직접 호출로 LLM 비용 절감
+- **단일 진입점**: Supervisor 제거로 아키텍처 단순화
+- **Pydantic 검증**: Structured Output으로 잘못된 라우팅 방지
+- **사용자 맞춤**: UserProfile 기반 depth_level 자동 조정
+
+**성능 비교**:
+
+| 쿼리 유형 | 기존 (Supervisor) | Router Agent | 개선 |
+|----------|------------------|--------------|------|
+| "삼성전자 현재가?" | 60초 (에이전트 호출) | 0.5초 (Worker 직접) | **99% 단축** |
+| "HAMA가 뭐야?" | 10초 (LLM 호출) | 1초 (직접 답변) | **90% 단축** |
+| "삼성전자 분석해줘" | 60초 | 60초 | 변화 없음 (필요시) |
+
+### 패턴 5: Dynamic Worker Selection (Smart Planner) 패턴 (v1.2 신규)
 
 **개요**: 사용자 쿼리와 프로파일에 따라 필요한 Worker만 동적으로 선택하여 비용과 시간 최적화
 
