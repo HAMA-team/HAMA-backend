@@ -19,6 +19,7 @@ from src.services.user_profile_service import user_profile_service
 from src.services import chat_history_service
 from src.models.database import get_db_context
 from src.utils.stock_name_extractor import extract_stock_names_from_query
+from src.utils.hitl_compat import automation_level_to_hitl_config
 from src.config.settings import settings
 from src.workers.market_data import get_stock_price, get_index_price
 
@@ -65,6 +66,7 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3)
+    stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
 def _format_agent_results(agent_results: dict) -> str:
@@ -126,7 +128,8 @@ async def stream_multi_agent_execution(
     message: str,
     user_id: str,
     conversation_id: str,
-    automation_level: int
+    automation_level: int,
+    stream_thinking: bool = True
 ) -> AsyncGenerator[str, None]:
     """
     멀티 에이전트 실행을 SSE로 스트리밍
@@ -137,7 +140,9 @@ async def stream_multi_agent_execution(
     - agent_start: 서브 에이전트 시작
     - agent_node: 에이전트 내부 노드 실행
     - agent_llm_start: LLM 호출 시작
-    - agent_llm_stream: LLM 응답 스트리밍
+    - agent_thinking: LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+    - agent_tool_call: Tool 호출 시작 (향후 대비)
+    - agent_tool_result: Tool 실행 결과 (향후 대비)
     - agent_llm_end: LLM 호출 완료
     - agent_complete: 서브 에이전트 완료
     - master_aggregating: Master가 결과 집계 중
@@ -159,10 +164,11 @@ async def stream_multi_agent_execution(
         conversation_uuid = uuid.UUID(conversation_id)
         demo_user_uuid = settings.demo_user_uuid
 
+        # automation_level 제거됨: hitl_config로 완전 전환
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=demo_user_uuid,
-            automation_level=automation_level,
+            metadata={"hitl_preset": automation_level_to_hitl_config(automation_level).preset},  # hitl_config 정보만 metadata에 저장
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -185,6 +191,9 @@ async def stream_multi_agent_execution(
                     for msg in messages[-6:]  # 최근 3턴 (6개 메시지)
                 ]
                 logger.info(f"📜 [MultiAgentStream] 대화 히스토리 로드: {len(conversation_history)}개")
+                # 디버깅: 대화 히스토리 내용 출력
+                for i, msg in enumerate(conversation_history):
+                    logger.info(f"  [{i}] {msg['role']}: {msg['content'][:100]}...")
         except Exception as e:
             logger.warning(f"⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: {e}")
 
@@ -233,8 +242,82 @@ async def stream_multi_agent_execution(
                     index_name = params.get("index_name", "코스피")
                     worker_result = await get_index_price(index_name)
 
-                # 워커 결과 메시지 추출
-                worker_message = worker_result.get("message", "데이터를 가져왔습니다.") if worker_result else "데이터를 가져오는 중 오류가 발생했습니다."
+                # Worker 결과를 LLM으로 친근하게 변환
+                worker_message_raw = worker_result.get("message", "데이터를 가져왔습니다.") if worker_result else "데이터를 가져오는 중 오류가 발생했습니다."
+
+                # SSE 이벤트 전송 (WorkerParams를 dict로 변환)
+                worker_params_dict = routing_decision.worker_params.model_dump() if routing_decision.worker_params else {}
+                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': worker_params_dict}, ensure_ascii=False)}\n\n"
+                yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
+
+                # LLM으로 답변 개선 (더 친근하고 맥락있게)
+                yield f"event: agent_llm_start\ndata: {json.dumps({'agent': 'master', 'model': 'gpt-4o-mini', 'message': '답변을 생성하고 있습니다...'}, ensure_ascii=False)}\n\n"
+
+                try:
+                    from langchain_openai import ChatOpenAI
+                    from langchain_core.prompts import ChatPromptTemplate
+
+                    # 대화 히스토리 조회 (최근 1개 메시지만 - 맥락 파악용)
+                    recent_context = ""
+                    try:
+                        history_data = await chat_history_service.get_history(
+                            conversation_id=conversation_uuid,
+                            limit=4  # 최근 2턴
+                        )
+                        if history_data and "messages" in history_data:
+                            # 최신 메시지 제외 (방금 저장한 user 메시지)
+                            messages = history_data["messages"][:-1]
+                            if messages:
+                                last_msg = messages[-1]
+                                recent_context = f"[이전 답변] {last_msg.content[:150]}..."
+                    except Exception as e:
+                        logger.debug(f"대화 히스토리 조회 실패: {e}")
+
+                    enhancer_llm = ChatOpenAI(
+                        model="gpt-4o-mini",
+                        temperature=0.7,
+                        max_completion_tokens=300,
+                        api_key=settings.OPENAI_API_KEY,
+                    )
+
+                    enhancer_prompt = ChatPromptTemplate.from_messages([
+                        ("system", """당신은 투자 정보를 친근하고 이해하기 쉽게 전달하는 AI 어시스턴트입니다.
+
+주어진 데이터를 바탕으로 사용자에게 자연스럽고 도움이 되는 답변을 생성하세요.
+
+<guidelines>
+1. **친근한 톤**: "~입니다", "~해요" 같은 부드러운 어투 사용
+2. **맥락 제공**: 단순 숫자 나열이 아닌, 의미 있는 해석 포함
+3. **간결함**: 핵심 정보를 명확히 전달 (3-4문장)
+4. **추가 인사이트**: 가능하면 간단한 해석이나 조언 추가
+</guidelines>
+
+<data>
+{worker_data}
+</data>
+
+{context_block}
+
+위 데이터를 바탕으로 사용자에게 친근하고 유용한 답변을 생성하세요."""),
+                        ("human", "사용자 질문: {query}")
+                    ])
+
+                    context_block = f"\n<recent_context>\n{recent_context}\n</recent_context>" if recent_context else ""
+
+                    enhancer_chain = enhancer_prompt | enhancer_llm
+                    enhanced_response = await enhancer_chain.ainvoke({
+                        "query": message,
+                        "worker_data": worker_message_raw,
+                        "context_block": context_block
+                    })
+
+                    worker_message = enhanced_response.content
+
+                except Exception as e:
+                    logger.warning(f"⚠️ [MultiAgentStream] LLM 답변 개선 실패, 원본 사용: {e}")
+                    worker_message = worker_message_raw
+
+                yield f"event: agent_llm_end\ndata: {json.dumps({'agent': 'master', 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
                 # Assistant 메시지 저장
                 await chat_history_service.append_message(
@@ -249,10 +332,6 @@ async def stream_multi_agent_execution(
                     }
                 )
 
-                # SSE 이벤트 전송 (WorkerParams를 dict로 변환)
-                worker_params_dict = routing_decision.worker_params.model_dump() if routing_decision.worker_params else {}
-                yield f"event: worker_start\ndata: {json.dumps({'worker': routing_decision.worker_action, 'params': worker_params_dict}, ensure_ascii=False)}\n\n"
-                yield f"event: worker_complete\ndata: {json.dumps({'worker': routing_decision.worker_action, 'result': worker_result}, ensure_ascii=False)}\n\n"
                 yield f"event: master_complete\ndata: {json.dumps({'message': worker_message, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
                 yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
 
@@ -369,8 +448,26 @@ async def stream_multi_agent_execution(
                     elif event_type == "on_chat_model_start":
                         model = event.get("name", "LLM")
                         yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
-                    # elif event_type == "on_chat_model_stream":
-                    #     ...
+                    elif event_type == "on_chat_model_stream":
+                        # LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+                        if stream_thinking:
+                            chunk = event.get("data", {}).get("chunk")
+                            if chunk and hasattr(chunk, "content") and chunk.content:
+                                yield f"event: agent_thinking\ndata: {json.dumps({'agent': agent_name, 'content': chunk.content}, ensure_ascii=False)}\n\n"
+                    elif event_type == "on_tool_start":
+                        # Tool 호출 추적 (향후 ReAct Agent 지원)
+                        if stream_thinking:
+                            tool_name = event.get("name", "")
+                            tool_input = event.get("data", {}).get("input", {})
+                            yield f"event: agent_tool_call\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'input': tool_input}, ensure_ascii=False)}\n\n"
+                            logger.info(f"🔧 [Tool Call] {agent_name} - {tool_name}")
+                    elif event_type == "on_tool_end":
+                        # Tool 실행 결과 (향후 ReAct Agent 지원)
+                        if stream_thinking:
+                            tool_name = event.get("name", "")
+                            tool_output = event.get("data", {}).get("output")
+                            yield f"event: agent_tool_result\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'output': tool_output}, ensure_ascii=False)}\n\n"
+                            logger.info(f"✅ [Tool Result] {agent_name} - {tool_name}")
                     elif event_type == "on_chat_model_end":
                         yield f"event: agent_llm_end\ndata: {json.dumps({'agent': agent_name, 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
@@ -396,6 +493,9 @@ async def stream_multi_agent_execution(
                 if not resolved_stock_code:
                     raise ValueError("매매를 위한 종목 코드를 추출하지 못했습니다.")
 
+                # automation_level을 hitl_config로 변환
+                hitl_config = automation_level_to_hitl_config(automation_level)
+
                 # 원문(query)을 그대로 Trading Agent에 전달
                 # Trading Agent 내부에서 LLM으로 매수/매도, 수량 분석
                 input_state = {
@@ -403,7 +503,8 @@ async def stream_multi_agent_execution(
                     "stock_code": resolved_stock_code,
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
-                    "automation_level": automation_level,
+                    "hitl_config": hitl_config,  # hitl_config 사용
+                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                     "query": message,
                     # order_type, quantity는 Trading Agent에서 LLM으로 추출
                 }
@@ -414,8 +515,8 @@ async def stream_multi_agent_execution(
                     # 모든 automation level에서 Trading 서브그래프 사용
                     agent = build_trading_subgraph().compile()
 
-                    # automation_level에 따라 처리 방식 분기
-                    if automation_level == 1:
+                    # hitl_config의 trade 설정에 따라 처리 방식 분기
+                    if hitl_config.phases.trade == "conditional" or hitl_config.phases.trade is False:
                         # Pilot 모드: Trading 서브그래프 완전 실행 (자동 승인)
                         result = await agent.ainvoke(input_state)
 
@@ -451,12 +552,16 @@ async def stream_multi_agent_execution(
                                 from src.agents.portfolio.graph import build_portfolio_subgraph
                                 portfolio_agent = build_portfolio_subgraph().compile()
 
+                                # automation_level을 hitl_config로 변환
+                                hitl_config_fallback = automation_level_to_hitl_config(automation_level)
+
                                 # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
                                 portfolio_input = {
                                     "messages": [HumanMessage(content=message)],
                                     "user_id": user_id,
                                     "portfolio_id": None,
-                                    "automation_level": automation_level,
+                                    "hitl_config": hitl_config_fallback,  # hitl_config 사용
+                                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                                     "query": message,  # Portfolio Agent가 query 분석
                                     "view_only": True,
                                 }
@@ -597,12 +702,16 @@ async def stream_multi_agent_execution(
 
                 agent = build_portfolio_subgraph().compile()
 
+                # automation_level을 hitl_config로 변환
+                hitl_config = automation_level_to_hitl_config(automation_level)
+
                 # Portfolio Agent가 query를 스스로 분석 (ReAct 패턴)
                 input_state = {
                     "messages": [HumanMessage(content=message)],
                     "user_id": user_id,
                     "portfolio_id": None,  # 기본 포트폴리오 사용
-                    "automation_level": automation_level,
+                    "hitl_config": hitl_config,  # hitl_config 사용
+                    "automation_level": automation_level,  # 하위 호환성 유지 (추후 제거 예정)
                     "query": message,  # Portfolio Agent가 query 분석
                     "view_only": True,  # 조회 전용 모드
                 }
@@ -624,6 +733,31 @@ async def stream_multi_agent_execution(
                             # 최종 결과 캡처 (LangGraph의 마지막 on_chain_end)
                             if node_name == "LangGraph":
                                 result = event.get("data", {}).get("output")
+                        elif event_type == "on_chat_model_stream":
+                            # LLM 사고 과정 실시간 스트리밍 (stream_thinking=True 시)
+                            if stream_thinking:
+                                chunk = event.get("data", {}).get("chunk")
+                                if chunk and hasattr(chunk, "content") and chunk.content:
+                                    yield f"event: agent_thinking\ndata: {json.dumps({'agent': agent_name, 'content': chunk.content}, ensure_ascii=False)}\n\n"
+                        elif event_type == "on_tool_start":
+                            # Tool 호출 추적 (Portfolio Agent는 ReAct 패턴 사용)
+                            if stream_thinking:
+                                tool_name = event.get("name", "")
+                                tool_input = event.get("data", {}).get("input", {})
+                                yield f"event: agent_tool_call\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'input': tool_input}, ensure_ascii=False)}\n\n"
+                                logger.info(f"🔧 [Tool Call] {agent_name} - {tool_name}")
+                        elif event_type == "on_tool_end":
+                            # Tool 실행 결과
+                            if stream_thinking:
+                                tool_name = event.get("name", "")
+                                tool_output = event.get("data", {}).get("output")
+                                yield f"event: agent_tool_result\ndata: {json.dumps({'agent': agent_name, 'tool': tool_name, 'output': tool_output}, ensure_ascii=False)}\n\n"
+                                logger.info(f"✅ [Tool Result] {agent_name} - {tool_name}")
+                        elif event_type == "on_chat_model_start":
+                            model = event.get("name", "LLM")
+                            yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
+                        elif event_type == "on_chat_model_end":
+                            yield f"event: agent_llm_end\ndata: {json.dumps({'agent': agent_name, 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
                     # astream_events에서 결과를 못 얻은 경우 fallback (중복 실행 최소화)
                     if result is None:
@@ -815,7 +949,8 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             message=request.message,
             user_id=user_id,
             conversation_id=conversation_id,
-            automation_level=request.automation_level
+            automation_level=request.automation_level,
+            stream_thinking=request.stream_thinking
         ),
         media_type="text/event-stream",
         headers={
@@ -824,3 +959,191 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             "X-Accel-Buffering": "no"
         }
     )
+
+
+@router.get("/sessions")
+async def get_chat_sessions(
+    limit: int = 20,
+    offset: int = 0,
+):
+    """
+    대화 세션 목록 조회
+
+    Args:
+        limit: 조회할 세션 수 (기본값: 20)
+        offset: 건너뛸 세션 수 (기본값: 0)
+
+    Returns:
+        {
+            "sessions": [
+                {
+                    "conversation_id": "uuid",
+                    "title": "첫 메시지 내용",
+                    "last_message": "마지막 메시지",
+                    "created_at": "2025-01-09T10:00:00",
+                    "updated_at": "2025-01-09T10:30:00",
+                    "message_count": 10
+                }
+            ],
+            "total": 100,
+            "limit": 20,
+            "offset": 0
+        }
+    """
+    try:
+        # Demo 사용자 UUID
+        demo_user_uuid = settings.demo_user_uuid
+
+        # 세션 목록 조회 (전체 조회 후 offset 적용)
+        all_sessions = await chat_history_service.list_sessions(
+            user_id=demo_user_uuid,
+            limit=limit + offset  # offset만큼 더 가져옴
+        )
+
+        # offset 적용하여 슬라이싱
+        sessions_slice = all_sessions[offset:offset + limit]
+
+        # API 응답 형식으로 포맷팅
+        formatted_sessions = []
+        for session_data in sessions_slice:
+            first_msg = session_data.get("first_user_message")
+            last_msg = session_data.get("last_message")
+            chat_session = session_data.get("session")
+
+            formatted_sessions.append({
+                "conversation_id": str(session_data["conversation_id"]),
+                "title": first_msg.content[:50] if first_msg and first_msg.content else "새 대화",
+                "last_message": last_msg.content[:100] if last_msg and last_msg.content else "",
+                "created_at": chat_session.created_at.isoformat() if chat_session and hasattr(chat_session, "created_at") else None,
+                "updated_at": chat_session.last_message_at.isoformat() if chat_session and hasattr(chat_session, "last_message_at") and chat_session.last_message_at else None,
+                "message_count": session_data.get("message_count", 0)
+            })
+
+        return {
+            "sessions": formatted_sessions,
+            "total": len(all_sessions),
+            "limit": limit,
+            "offset": offset
+        }
+
+    except Exception as e:
+        logger.error(f"❌ [ChatSessions] 세션 목록 조회 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "sessions": [],
+            "total": 0,
+            "limit": limit,
+            "offset": offset
+        }
+
+
+@router.get("/sessions/{conversation_id}")
+async def get_chat_session(conversation_id: str):
+    """
+    특정 대화 세션의 메시지 조회
+
+    Args:
+        conversation_id: 대화 ID (UUID)
+
+    Returns:
+        {
+            "conversation_id": "uuid",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "안녕하세요",
+                    "created_at": "2025-01-09T10:00:00"
+                },
+                {
+                    "role": "assistant",
+                    "content": "안녕하세요! 무엇을 도와드릴까요?",
+                    "created_at": "2025-01-09T10:00:05"
+                }
+            ]
+        }
+    """
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+        history = await chat_history_service.get_history(
+            conversation_id=conversation_uuid,
+            limit=100  # 최근 100개 메시지
+        )
+
+        if not history:
+            return {
+                "conversation_id": conversation_id,
+                "messages": []
+            }
+
+        # 메시지 포맷팅
+        messages = []
+        for msg in history.get("messages", []):
+            messages.append({
+                "role": msg.role,
+                "content": msg.content,
+                "created_at": msg.created_at.isoformat() if hasattr(msg, "created_at") else None
+            })
+
+        return {
+            "conversation_id": conversation_id,
+            "messages": messages
+        }
+
+    except ValueError:
+        logger.error(f"❌ [ChatSession] 잘못된 UUID 형식: {conversation_id}")
+        return {
+            "conversation_id": conversation_id,
+            "messages": [],
+            "error": "Invalid conversation ID format"
+        }
+    except Exception as e:
+        logger.error(f"❌ [ChatSession] 세션 조회 실패: {e}")
+        return {
+            "conversation_id": conversation_id,
+            "messages": [],
+            "error": str(e)
+        }
+
+
+@router.delete("/sessions/{conversation_id}")
+async def delete_chat_session(conversation_id: str):
+    """
+    대화 세션 삭제
+
+    Args:
+        conversation_id: 대화 ID (UUID)
+
+    Returns:
+        {
+            "success": true,
+            "conversation_id": "uuid",
+            "message": "세션이 삭제되었습니다."
+        }
+    """
+    try:
+        conversation_uuid = uuid.UUID(conversation_id)
+
+        # 세션 삭제 (delete_history 사용)
+        await chat_history_service.delete_history(conversation_id=conversation_uuid)
+
+        return {
+            "success": True,
+            "conversation_id": conversation_id,
+            "message": "세션이 삭제되었습니다."
+        }
+
+    except ValueError:
+        logger.error(f"❌ [DeleteSession] 잘못된 UUID 형식: {conversation_id}")
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": "Invalid conversation ID format"
+        }
+    except Exception as e:
+        logger.error(f"❌ [DeleteSession] 세션 삭제 실패: {e}")
+        return {
+            "success": False,
+            "conversation_id": conversation_id,
+            "error": str(e)
+        }

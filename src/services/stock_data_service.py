@@ -7,6 +7,9 @@ from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 import FinanceDataReader as fdr
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from pydantic import BaseModel, Field
 
 from src.config.settings import settings
 from src.repositories import (
@@ -19,6 +22,24 @@ from src.services.kis_service import kis_service
 from src.utils.indicators import calculate_all_indicators
 
 logger = logging.getLogger(__name__)
+
+
+class StockMatchResult(BaseModel):
+    """LLM이 반환하는 종목 매칭 결과"""
+    matched_stock_code: Optional[str] = Field(
+        default=None,
+        description="매칭된 종목 코드 (예: '035420'). 매칭 실패 시 null"
+    )
+    matched_stock_name: Optional[str] = Field(
+        default=None,
+        description="매칭된 종목명 (예: 'NAVER'). 매칭 실패 시 null"
+    )
+    confidence: float = Field(
+        description="매칭 신뢰도 (0.0~1.0)"
+    )
+    reasoning: str = Field(
+        description="매칭 판단 근거"
+    )
 
 
 class StockDataService:
@@ -482,6 +503,126 @@ class StockDataService:
         logger.warning(f"⚠️ 종목 리스트 조회 실패: {market}")
         return None
 
+    async def _match_stock_with_llm(
+        self, user_input: str, candidates_df: pd.DataFrame, market: str
+    ) -> Optional[str]:
+        """
+        LLM을 사용하여 종목명 매칭 (의미적 유사도 기반)
+
+        Args:
+            user_input: 사용자 입력 종목명 (예: "네이버", "삼전", "SK하이닉")
+            candidates_df: 후보 종목 DataFrame (Code, Name 컬럼 필요)
+            market: 시장명 (캐싱 키 생성용)
+
+        Returns:
+            종목 코드 (매칭 성공 시) 또는 None
+        """
+        # 캐시 확인
+        cache_key = f"stock_name_mapping:{user_input}:{market}"
+        cached_code = self.cache.get(cache_key)
+        if cached_code:
+            logger.info(f"✅ [LLM Matching] 캐시 히트: {user_input} -> {cached_code}")
+            return cached_code
+
+        # 후보 종목 선정 전략:
+        # LLM에게 충분한 컨텍스트를 제공하되, 너무 많으면 비용/성능 문제
+        # 상위 300개 종목을 사용 (시가총액 순으로 정렬되어 있다고 가정)
+        MAX_CANDIDATES = 300
+
+        if len(candidates_df) > MAX_CANDIDATES:
+            candidates_df = candidates_df.head(MAX_CANDIDATES)
+            logger.info(f"📋 [LLM Matching] 상위 {MAX_CANDIDATES}개 종목 사용")
+        else:
+            logger.info(f"📋 [LLM Matching] 전체 {len(candidates_df)}개 종목 사용")
+
+        # 후보 종목 리스트 생성 (Code: Name 형식)
+        candidates_list = [
+            f"{row['Code']}: {row['Name']}"
+            for _, row in candidates_df.iterrows()
+        ]
+        candidates_text = "\n".join(candidates_list)
+
+        # LLM 프롬프트
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", """당신은 한국 주식 종목명 매칭 전문가입니다.
+
+사용자가 입력한 종목명과 가장 유사한 종목을 찾아주세요.
+
+<matching_rules>
+1. 동일 기업의 다양한 표현 매칭:
+   - "네이버" ↔ "NAVER"
+   - "삼전" ↔ "삼성전자"
+   - "SK하이닉" ↔ "SK하이닉스"
+
+2. 오타/약어 허용:
+   - "엔에이버" → "NAVER"
+   - "카카오뱅크" → "카카오뱅크"
+
+3. 신뢰도 기준:
+   - 0.9 이상: 확실한 매칭
+   - 0.7~0.9: 높은 가능성
+   - 0.5~0.7: 중간 가능성
+   - 0.5 미만: 매칭 실패 (matched_stock_code를 null로 설정)
+
+4. 매칭 실패 조건:
+   - 유사한 종목이 전혀 없는 경우
+   - 입력이 너무 모호한 경우
+   - confidence < 0.5인 경우
+</matching_rules>
+
+<output_format>
+반드시 JSON 형식으로 응답하세요:
+- matched_stock_code: 종목 코드 (매칭 실패 시 null)
+- matched_stock_name: 종목명 (매칭 실패 시 null)
+- confidence: 0.0~1.0
+- reasoning: 판단 근거
+</output_format>"""),
+            ("human", """사용자 입력: {user_input}
+
+후보 종목 목록:
+{candidates_text}
+
+가장 유사한 종목을 찾아주세요.""")
+        ])
+
+        # LLM 초기화 (빠르고 저렴한 모델 사용)
+        llm = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0,
+            max_completion_tokens=500,
+            api_key=settings.OPENAI_API_KEY,
+        )
+
+        structured_llm = llm.with_structured_output(StockMatchResult)
+        chain = prompt | structured_llm
+
+        try:
+            logger.info(f"🤖 [LLM Matching] 종목명 매칭 시작: '{user_input}' (후보 {len(candidates_df)}개)")
+
+            result: StockMatchResult = await chain.ainvoke({
+                "user_input": user_input,
+                "candidates_text": candidates_text,
+            })
+
+            logger.info(f"📊 [LLM Matching] 결과:")
+            logger.info(f"  - 매칭 종목: {result.matched_stock_name} ({result.matched_stock_code})")
+            logger.info(f"  - 신뢰도: {result.confidence:.2f}")
+            logger.info(f"  - 근거: {result.reasoning}")
+
+            # 신뢰도 체크
+            if result.confidence >= 0.5 and result.matched_stock_code:
+                # 캐싱 (1일 TTL)
+                self.cache.set(cache_key, result.matched_stock_code, ttl=86400)
+                logger.info(f"✅ [LLM Matching] 매칭 성공: {user_input} -> {result.matched_stock_code}")
+                return result.matched_stock_code
+            else:
+                logger.warning(f"⚠️ [LLM Matching] 신뢰도 낮음 또는 매칭 실패: {result.confidence:.2f}")
+                return None
+
+        except Exception as e:
+            logger.error(f"❌ [LLM Matching] 오류 발생: {e}")
+            return None
+
     async def get_stock_by_name(self, name: str, market: str = "KOSPI") -> Optional[str]:
         """
         종목명으로 종목 코드 찾기 (퍼지 매칭 지원)
@@ -530,6 +671,13 @@ class StockDataService:
             stock_code = normalized_contains.iloc[0]["Code"]
             print(f"✅ 종목 코드 찾기 성공 (정규화 부분 매칭): {name} -> {stock_code}")
             return stock_code
+
+        # 5차 시도: LLM 기반 의미적 매칭 (fallback)
+        logger.info(f"🤖 [StockData] 기존 매칭 실패 → LLM 매칭 시도: {name}")
+        llm_matched_code = await self._match_stock_with_llm(name, df, market)
+        if llm_matched_code:
+            print(f"✅ 종목 코드 찾기 성공 (LLM 매칭): {name} -> {llm_matched_code}")
+            return llm_matched_code
 
         print(f"⚠️ 종목을 찾을 수 없음: {name} (시장: {market})")
         return None
