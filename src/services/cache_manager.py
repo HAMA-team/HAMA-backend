@@ -14,14 +14,16 @@ class CacheManager:
         self._memory_cache: dict[str, tuple[Any, float]] = {}
 
     def get(self, key: str) -> Optional[Any]:
-        """캐시에서 데이터 조회"""
-        return self._get_from_memory(key)
+        """캐시에서 데이터 조회 (캐싱 비활성화됨)"""
+        # 캐싱 비활성화: 항상 None 반환하여 API 직접 호출
+        return None
 
     def set(
         self, key: str, value: Any, ttl: int = 300
     ) -> bool:  # ttl in seconds
-        """캐시에 데이터 저장"""
-        return self._set_to_memory(key, value, ttl)
+        """캐시에 데이터 저장 (캐싱 비활성화됨)"""
+        # 캐싱 비활성화: 저장하지 않음
+        return True
 
     def delete(self, key: str) -> bool:
         """캐시에서 데이터 삭제"""
