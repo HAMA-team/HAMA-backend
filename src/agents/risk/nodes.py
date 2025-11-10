@@ -477,3 +477,492 @@ async def final_assessment_node(state: RiskState) -> dict:
         },
         "messages": messages,
     }
+
+
+# ==================== Phase 1: Pre-Trade Risk Briefing ====================
+
+async def simulate_portfolio_change(
+    portfolio_id: str,
+    order_type: str,
+    stock_code: str,
+    stock_name: str,
+    quantity: int,
+    price: float,
+) -> Dict[str, Any]:
+    """
+    거래 후 포트폴리오 변화 시뮬레이션
+
+    Args:
+        portfolio_id: 포트폴리오 ID
+        order_type: 주문 유형 (BUY/SELL)
+        stock_code: 종목 코드
+        stock_name: 종목명
+        quantity: 수량
+        price: 가격
+
+    Returns:
+        Dict: 포트폴리오 변화 데이터
+    """
+    from src.services import kis_service, sector_data_service
+
+    logger.info(
+        "🔮 [Risk/Simulate] 포트폴리오 변화 시뮬레이션 시작: %s %s %d주 @ %s원",
+        order_type,
+        stock_code,
+        quantity,
+        f"{price:,.0f}",
+    )
+
+    try:
+        # 1. 현재 포트폴리오 스냅샷 조회
+        snapshot = await portfolio_service.get_portfolio_snapshot(portfolio_id=portfolio_id)
+        if not snapshot:
+            raise PortfolioNotFoundError(f"포트폴리오 {portfolio_id}를 찾을 수 없습니다")
+
+        portfolio_data = snapshot.portfolio_data
+        current_cash = float(portfolio_data.get("cash_balance", 0))
+        current_total_value = float(portfolio_data.get("total_value", 0))
+
+        # 2. 현재 포지션 조회 (holdings에서 추출)
+        holdings = portfolio_data.get("holdings", [])
+        position_dict = {
+            h["stock_code"]: {
+                "stock_code": h["stock_code"],
+                "quantity": h.get("quantity", 0),
+                "current_price": h.get("current_price", 0),
+                "average_price": h.get("average_price", 0),
+            }
+            for h in holdings
+            if h.get("stock_code") and h["stock_code"].upper() != "CASH"
+        }
+
+        # 3. 거래 금액 계산
+        total_amount = quantity * price
+        is_buy = order_type.upper() in ("BUY", "매수")
+
+        # 4. 거래 후 현금 계산
+        if is_buy:
+            cash_after = current_cash - total_amount
+            if cash_after < 0:
+                logger.warning("⚠️ [Risk/Simulate] 현금 부족: 필요 %s원, 보유 %s원", f"{total_amount:,.0f}", f"{current_cash:,.0f}")
+        else:  # SELL
+            cash_after = current_cash + total_amount
+
+        # 5. 거래 후 총 자산 계산
+        # 매수/매도는 포트폴리오 내에서 자산 형태만 변환하므로 총 자산은 변하지 않음
+        total_value_after = current_total_value
+
+        # 6. 종목별 비중 계산 (거래 전)
+        position_weight_before = {}
+        for h in holdings:
+            if h.get("stock_code") and h["stock_code"].upper() != "CASH":
+                pos_value = float(h.get("quantity", 0)) * float(h.get("current_price", 0))
+                weight = pos_value / current_total_value if current_total_value > 0 else 0
+                position_weight_before[h["stock_code"]] = weight
+
+        # 7. 거래 대상 종목의 거래 전 비중
+        target_weight_before = position_weight_before.get(stock_code, 0.0)
+
+        # 8. 거래 후 종목별 비중 계산
+        position_weight_after = dict(position_weight_before)
+
+        if is_buy:
+            # 매수: 기존 수량 + 신규 수량
+            existing_pos = position_dict.get(stock_code)
+            if existing_pos:
+                new_quantity = existing_pos["quantity"] + quantity
+            else:
+                new_quantity = quantity
+            new_value = new_quantity * price
+            target_weight_after = new_value / total_value_after if total_value_after > 0 else 0
+            position_weight_after[stock_code] = target_weight_after
+        else:
+            # 매도: 기존 수량 - 매도 수량
+            existing_pos = position_dict.get(stock_code)
+            if existing_pos:
+                remaining_quantity = existing_pos["quantity"] - quantity
+                if remaining_quantity > 0:
+                    new_value = remaining_quantity * price
+                    target_weight_after = new_value / total_value_after if total_value_after > 0 else 0
+                    position_weight_after[stock_code] = target_weight_after
+                else:
+                    # 전량 매도
+                    target_weight_after = 0.0
+                    position_weight_after.pop(stock_code, None)
+            else:
+                target_weight_after = 0.0
+
+        # 9. 현금 비중 계산
+        cash_ratio_before = current_cash / current_total_value if current_total_value > 0 else 0
+        cash_ratio_after = cash_after / total_value_after if total_value_after > 0 else 0
+
+        logger.info(
+            "✅ [Risk/Simulate] 시뮬레이션 완료: 현금 %s원 → %s원 (%.1f%% → %.1f%%)",
+            f"{current_cash:,.0f}",
+            f"{cash_after:,.0f}",
+            cash_ratio_before * 100,
+            cash_ratio_after * 100,
+        )
+
+        return {
+            "cash_before": current_cash,
+            "cash_after": cash_after,
+            "cash_ratio_before": cash_ratio_before,
+            "cash_ratio_after": cash_ratio_after,
+            "position_weight_before": position_weight_before,
+            "position_weight_after": position_weight_after,
+            "target_stock_code": stock_code,
+            "target_stock_name": stock_name,
+            "target_weight_before": target_weight_before,
+            "target_weight_after": target_weight_after,
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Risk/Simulate] 시뮬레이션 실패: %s", exc, exc_info=True)
+        raise
+
+
+async def calculate_concentration_risk(
+    position_weight_after: Dict[str, float],
+    stock_code: str,
+) -> Dict[str, Any]:
+    """
+    집중도 리스크 계산
+
+    Args:
+        position_weight_after: 거래 후 종목별 비중
+        stock_code: 거래 대상 종목 코드
+
+    Returns:
+        Dict: 집중도 리스크 분석 결과
+    """
+    import asyncio
+    from src.models.database import SessionLocal
+    from src.models.stock import Stock
+
+    logger.info("📊 [Risk/Concentration] 집중도 리스크 계산 시작")
+
+    try:
+        # 1. Stock 테이블에서 섹터 정보 조회
+        def get_sectors_sync(stock_codes):
+            session = SessionLocal()
+            try:
+                stocks = session.query(Stock).filter(Stock.stock_code.in_(stock_codes)).all()
+                return {stock.stock_code: stock.sector or "기타" for stock in stocks}
+            finally:
+                session.close()
+
+        stock_codes = list(position_weight_after.keys())
+        sector_map = await asyncio.to_thread(get_sectors_sync, stock_codes)
+
+        # 2. 섹터별 비중 계산
+        sector_concentration = {}
+        for code, weight in position_weight_after.items():
+            sector = sector_map.get(code, "기타")
+            sector_concentration[sector] = sector_concentration.get(sector, 0.0) + weight
+
+        # 3. 최대 섹터 집중도
+        if sector_concentration:
+            max_sector_name = max(sector_concentration, key=sector_concentration.get)
+            max_sector_concentration = sector_concentration[max_sector_name]
+        else:
+            max_sector_name = "없음"
+            max_sector_concentration = 0.0
+
+        # 4. 최대 단일 종목 비중
+        if position_weight_after:
+            max_stock_code = max(position_weight_after, key=position_weight_after.get)
+            single_stock_max = position_weight_after[max_stock_code]
+            # 종목명 조회 (간단히 코드로 대체 가능)
+            single_stock_name = max_stock_code
+        else:
+            single_stock_max = 0.0
+            single_stock_name = None
+
+        # 5. 리스크 레벨 판단
+        warnings = []
+        if max_sector_concentration > 0.50:
+            risk_level = "critical"
+            warnings.append(f"⚠️⚠️⚠️ {max_sector_name} 섹터 집중도 {max_sector_concentration*100:.0f}% (권장: 40% 이하)")
+        elif max_sector_concentration > 0.40:
+            risk_level = "high"
+            warnings.append(f"⚠️⚠️ {max_sector_name} 섹터 집중도 {max_sector_concentration*100:.0f}% (권장: 40% 이하)")
+        elif max_sector_concentration > 0.30:
+            risk_level = "moderate"
+            warnings.append(f"⚠️ {max_sector_name} 섹터 집중도 {max_sector_concentration*100:.0f}%")
+        else:
+            risk_level = "low"
+
+        if single_stock_max > 0.40:
+            if risk_level not in ("critical", "high"):
+                risk_level = "high"
+            warnings.append(f"⚠️⚠️ {single_stock_name} 단일 종목 비중 {single_stock_max*100:.0f}% (권장: 30% 이하)")
+        elif single_stock_max > 0.30:
+            if risk_level == "low":
+                risk_level = "moderate"
+            warnings.append(f"⚠️ {single_stock_name} 단일 종목 비중 {single_stock_max*100:.0f}%")
+
+        logger.info(
+            "✅ [Risk/Concentration] 계산 완료: %s (최대 섹터 %s %.0f%%, 최대 종목 %.0f%%)",
+            risk_level,
+            max_sector_name,
+            max_sector_concentration * 100,
+            single_stock_max * 100,
+        )
+
+        return {
+            "sector_concentration": sector_concentration,
+            "max_sector_concentration": max_sector_concentration,
+            "max_sector_name": max_sector_name,
+            "single_stock_max": single_stock_max,
+            "single_stock_name": single_stock_name,
+            "risk_level": risk_level,
+            "warnings": warnings,
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Risk/Concentration] 계산 실패: %s", exc, exc_info=True)
+        # Fallback
+        return {
+            "sector_concentration": {},
+            "max_sector_concentration": 0.0,
+            "max_sector_name": "알 수 없음",
+            "single_stock_max": 0.0,
+            "single_stock_name": None,
+            "risk_level": "low",
+            "warnings": [],
+        }
+
+
+async def calculate_stop_loss_target(
+    stock_code: str,
+    current_price: float,
+) -> Optional[Dict[str, Any]]:
+    """
+    손절/익절 라인 계산 (ATR 기반)
+
+    Args:
+        stock_code: 종목 코드
+        current_price: 현재가
+
+    Returns:
+        Dict: 손절/익절 라인 정보 또는 None
+    """
+    logger.info("🎯 [Risk/StopLoss] 손절/익절 라인 계산 시작: %s @ %s원", stock_code, f"{current_price:,.0f}")
+
+    try:
+        # 1. 고정 비율 기반 손절/익절 라인 계산
+        # TODO: 향후 ATR 기반 계산으로 개선
+        # 손절: -5% (현재가의 95%)
+        # 익절: +10% (현재가의 110%)
+        atr_value = current_price * 0.05  # 5% 기본
+        volatility_level = "moderate"
+        calculation_method = "fixed_percentage"
+
+        # 2. 손절/익절 라인 계산
+        stop_loss_price = current_price * 0.95  # -5%
+        target_price = current_price * 1.10  # +10%
+
+        stop_loss_percent = ((stop_loss_price - current_price) / current_price) * 100
+        target_percent = ((target_price - current_price) / current_price) * 100
+
+        logger.info(
+            "✅ [Risk/StopLoss] 계산 완료: 손절 %s원 (%.1f%%), 익절 %s원 (%.1f%%)",
+            f"{stop_loss_price:,.0f}",
+            stop_loss_percent,
+            f"{target_price:,.0f}",
+            target_percent,
+        )
+
+        return {
+            "current_price": current_price,
+            "stop_loss_price": stop_loss_price,
+            "stop_loss_percent": stop_loss_percent,
+            "target_price": target_price,
+            "target_percent": target_percent,
+            "atr_value": atr_value,
+            "volatility_level": volatility_level,
+            "calculation_method": calculation_method,
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Risk/StopLoss] 계산 실패: %s", exc, exc_info=True)
+        # Fallback: 고정 비율
+        return {
+            "current_price": current_price,
+            "stop_loss_price": current_price * 0.95,
+            "stop_loss_percent": -5.0,
+            "target_price": current_price * 1.10,
+            "target_percent": 10.0,
+            "atr_value": None,
+            "volatility_level": "moderate",
+            "calculation_method": "fixed_percentage",
+        }
+
+
+async def generate_pre_trade_risk_briefing(
+    portfolio_id: str,
+    order_type: str,
+    stock_code: str,
+    stock_name: str,
+    quantity: int,
+    price: float,
+) -> Dict[str, Any]:
+    """
+    Pre-Trade Risk Briefing 생성
+
+    매매 실행 전 리스크를 사전 평가하여 RiskBriefing 객체 반환
+
+    Args:
+        portfolio_id: 포트폴리오 ID
+        order_type: 주문 유형 (BUY/SELL)
+        stock_code: 종목 코드
+        stock_name: 종목명
+        quantity: 수량
+        price: 가격
+
+    Returns:
+        Dict: RiskBriefing 스키마에 맞는 데이터
+    """
+    logger.info(
+        "🚨 [Risk/PreTrade] Pre-Trade Risk Briefing 시작: %s %s %d주 @ %s원",
+        order_type,
+        stock_name,
+        quantity,
+        f"{price:,.0f}",
+    )
+
+    try:
+        # 1. 포트폴리오 변화 시뮬레이션
+        portfolio_change = await simulate_portfolio_change(
+            portfolio_id=portfolio_id,
+            order_type=order_type,
+            stock_code=stock_code,
+            stock_name=stock_name,
+            quantity=quantity,
+            price=price,
+        )
+
+        # 2. 집중도 리스크 계산
+        concentration_risk = await calculate_concentration_risk(
+            position_weight_after=portfolio_change["position_weight_after"],
+            stock_code=stock_code,
+        )
+
+        # 3. 손절/익절 라인 계산 (매수인 경우만)
+        stop_loss_target = None
+        if order_type.upper() in ("BUY", "매수"):
+            stop_loss_target = await calculate_stop_loss_target(stock_code, price)
+
+        # 4. 종합 리스크 레벨 판단
+        concentration_level = concentration_risk["risk_level"]
+        cash_ratio_after = portfolio_change["cash_ratio_after"]
+
+        # 현금 비중이 10% 미만이면 유동성 리스크
+        if cash_ratio_after < 0.10:
+            overall_risk_level = "high"
+        elif concentration_level in ("critical", "high"):
+            overall_risk_level = concentration_level
+        elif concentration_level == "moderate":
+            overall_risk_level = "moderate"
+        else:
+            overall_risk_level = "low"
+
+        # 5. 권장 조치 결정
+        if overall_risk_level == "critical":
+            recommended_action = "cancel"
+            recommended_quantity = None
+        elif overall_risk_level == "high":
+            recommended_action = "adjust"
+            recommended_quantity = max(quantity // 2, 1)  # 절반으로 조정
+        else:
+            recommended_action = "proceed"
+            recommended_quantity = None
+
+        # 6. 요약 메시지 생성
+        risk_emoji = {
+            "low": "✅",
+            "moderate": "⚠️",
+            "high": "⚠️⚠️",
+            "critical": "🚨",
+        }.get(overall_risk_level, "ℹ️")
+
+        if recommended_action == "cancel":
+            summary = f"{risk_emoji} 고위험: 거래를 취소하고 포트폴리오 재조정을 권장합니다."
+        elif recommended_action == "adjust":
+            summary = (
+                f"{risk_emoji} 중위험: {stock_name} 비중이 과도하게 높아집니다. "
+                f"수량을 {recommended_quantity}주로 조정하는 것을 권장합니다."
+            )
+        else:
+            summary = f"{risk_emoji} 저위험: 거래를 진행해도 무방합니다."
+
+        # 7. 상세 경고 목록 생성
+        detailed_warnings = list(concentration_risk.get("warnings", []))
+        if cash_ratio_after < 0.10:
+            detailed_warnings.append(f"현금 비중이 {cash_ratio_after*100:.1f}%로 낮아져 유동성 리스크 발생")
+        if cash_ratio_after < 0.05:
+            detailed_warnings.append("긴급 자금 부족 가능성 높음")
+
+        logger.info(
+            "✅ [Risk/PreTrade] Briefing 완료: %s | 권장 조치: %s",
+            overall_risk_level,
+            recommended_action,
+        )
+
+        # 8. RiskBriefing 스키마 형식으로 반환
+        return {
+            "order_type": order_type.lower(),
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "quantity": quantity,
+            "price": price,
+            "total_amount": quantity * price,
+            "portfolio_change": portfolio_change,
+            "concentration_risk": concentration_risk,
+            "stop_loss_target": stop_loss_target,
+            "overall_risk_level": overall_risk_level,
+            "recommended_action": recommended_action,
+            "recommended_quantity": recommended_quantity,
+            "summary": summary,
+            "detailed_warnings": detailed_warnings,
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Risk/PreTrade] Briefing 생성 실패: %s", exc, exc_info=True)
+        # Fallback: 최소한의 정보 반환
+        return {
+            "order_type": order_type.lower(),
+            "stock_code": stock_code,
+            "stock_name": stock_name,
+            "quantity": quantity,
+            "price": price,
+            "total_amount": quantity * price,
+            "portfolio_change": {
+                "cash_before": 0,
+                "cash_after": 0,
+                "cash_ratio_before": 0,
+                "cash_ratio_after": 0,
+                "position_weight_before": {},
+                "position_weight_after": {},
+                "target_stock_code": stock_code,
+                "target_stock_name": stock_name,
+                "target_weight_before": 0,
+                "target_weight_after": 0,
+            },
+            "concentration_risk": {
+                "sector_concentration": {},
+                "max_sector_concentration": 0,
+                "max_sector_name": "알 수 없음",
+                "single_stock_max": 0,
+                "single_stock_name": None,
+                "risk_level": "low",
+                "warnings": [],
+            },
+            "stop_loss_target": None,
+            "overall_risk_level": "low",
+            "recommended_action": "proceed",
+            "recommended_quantity": None,
+            "summary": "⚠️ 리스크 분석 실패. 신중하게 진행하세요.",
+            "detailed_warnings": [f"리스크 분석 오류: {str(exc)}"],
+        }
