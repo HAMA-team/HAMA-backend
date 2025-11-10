@@ -66,6 +66,7 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     automation_level: int = Field(default=2, ge=1, le=3)
+    hitl_config: Optional[dict] = Field(default=None, description="HITL 설정 (automation_level보다 우선)")
     stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
@@ -129,6 +130,7 @@ async def stream_multi_agent_execution(
     user_id: str,
     conversation_id: str,
     automation_level: int,
+    hitl_config_dict: Optional[dict] = None,
     stream_thinking: bool = True
 ) -> AsyncGenerator[str, None]:
     """
@@ -151,6 +153,16 @@ async def stream_multi_agent_execution(
     """
 
     try:
+        # 0. HITL 설정 처리
+        from src.schemas.hitl_config import HITLConfig
+
+        if hitl_config_dict:
+            hitl_config = HITLConfig(**hitl_config_dict)
+            logger.info(f"🎛️  [MultiAgentStream] HITL Config: preset={hitl_config.preset}, phases={hitl_config.phases.model_dump()}")
+        else:
+            hitl_config = automation_level_to_hitl_config(automation_level)
+            logger.info(f"🎛️  [MultiAgentStream] Fallback to automation_level {automation_level} -> preset={hitl_config.preset}")
+
         # 1. Master Agent 시작
         yield f"event: master_start\ndata: {json.dumps({'message': '분석을 시작합니다...'}, ensure_ascii=False)}\n\n"
 
@@ -198,13 +210,64 @@ async def stream_multi_agent_execution(
             logger.warning(f"⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: {e}")
 
         # 3. Router 판단 (어떤 에이전트를 호출할지)
+        logger.info(f"🧭 [Router] 쿼리 분석 시작: '{message}'")
         routing_decision = await route_query(
             query=message,
             user_profile=user_profile,
             conversation_history=conversation_history
         )
 
+        # Router 판단 결과 상세 로깅
+        logger.info("=" * 80)
+        logger.info("🧭 [Router] 판단 결과:")
+        logger.info(f"  - 복잡도: {routing_decision.query_complexity}")
+        logger.info(f"  - 사용자 의도: {routing_decision.user_intent}")
+        logger.info(f"  - 종목명: {routing_decision.stock_names}")
+        logger.info(f"  - 호출할 에이전트: {routing_decision.agents_to_call}")
+        logger.info(f"  - 워커 액션: {routing_decision.worker_action}")
+        logger.info(f"  - 직접 답변: {routing_decision.direct_answer[:100] if routing_decision.direct_answer else None}")
+        logger.info(f"  - 근거: {routing_decision.reasoning}")
+        logger.info("=" * 80)
+
         agents_to_call = list(dict.fromkeys(routing_decision.agents_to_call))
+
+        # 3.5. HITL 설정에 따라 에이전트 필터링
+        original_agents = agents_to_call.copy()
+        logger.info(f"🎛️  [HITL] 필터링 전 에이전트: {original_agents}")
+
+        # Trading 에이전트는 별도 처리 (항상 실행, HITL은 내부에서 처리)
+        trading_requested = "trading" in agents_to_call
+
+        if not hitl_config.phases.data_collection:
+            # data_collection이 false면 research 제거 (데이터 수집 에이전트)
+            if "research" in agents_to_call:
+                agents_to_call.remove("research")
+                logger.info("🚫 [HITL] data_collection=False -> research agent 제거")
+
+        if not hitl_config.phases.analysis:
+            # analysis가 false면 strategy 제거 (전략 분석 에이전트)
+            if "strategy" in agents_to_call:
+                agents_to_call.remove("strategy")
+                logger.info("🚫 [HITL] analysis=False -> strategy agent 제거")
+
+        if not hitl_config.phases.risk:
+            # risk가 false면 risk 제거
+            if "risk" in agents_to_call:
+                agents_to_call.remove("risk")
+                logger.info("🚫 [HITL] risk=False -> risk agent 제거")
+
+        # Trading 에이전트는 HITL 필터링에서 제외하고 다시 추가
+        # (Trading Agent 내부에서 hitl_config.phases.trade를 직접 확인)
+        if trading_requested and "trading" not in agents_to_call:
+            agents_to_call.append("trading")
+            logger.info("✅ [HITL] trading agent는 항상 실행 (HITL은 내부 처리)")
+
+        # 필터링 결과 로그
+        logger.info(f"🎛️  [HITL] 필터링 후 에이전트: {agents_to_call}")
+        if original_agents != agents_to_call:
+            logger.info(f"⚠️  [HITL] 에이전트가 필터링되었습니다: {set(original_agents) - set(agents_to_call)} 제거됨")
+        else:
+            logger.info(f"✅ [HITL] 에이전트 필터링 없음")
 
         # 워커 직접 호출 (단순 데이터 조회)
         if routing_decision.worker_action:
@@ -319,6 +382,12 @@ async def stream_multi_agent_execution(
 
                 yield f"event: agent_llm_end\ndata: {json.dumps({'agent': 'master', 'message': 'AI 분석 완료'}, ensure_ascii=False)}\n\n"
 
+                # 최종 답변 로그 출력
+                logger.info("=" * 80)
+                logger.info("📝 [Worker] 최종 답변 (전체):")
+                logger.info(worker_message)
+                logger.info("=" * 80)
+
                 # Assistant 메시지 저장
                 await chat_history_service.append_message(
                     conversation_id=conversation_uuid,
@@ -357,6 +426,12 @@ async def stream_multi_agent_execution(
         if routing_decision.direct_answer:
             logger.info("💬 [MultiAgentStream] Router 직접 답변 사용")
 
+            # 최종 답변 로그 출력
+            logger.info("=" * 80)
+            logger.info("📝 [Router] 직접 답변 (전체):")
+            logger.info(routing_decision.direct_answer)
+            logger.info("=" * 80)
+
             # Assistant 메시지 저장
             await chat_history_service.append_message(
                 conversation_id=conversation_uuid,
@@ -380,20 +455,32 @@ async def stream_multi_agent_execution(
 
         # research, trading 에이전트는 종목 코드가 필요 (portfolio는 불필요)
         if any(agent in agents_to_call for agent in ["research", "trading"]):
+            logger.info(f"🔍 [StockCode] 종목 코드 추출 필요 (agents: {[a for a in agents_to_call if a in ['research', 'trading']]})")
+
             # Router가 종목을 추출했으면 사용, 아니면 fallback
             if stock_names:
                 stock_name = stock_names[0]  # 첫 번째 종목 사용
+                logger.info(f"🔍 [StockCode] Router가 추출한 종목명 사용: {stock_name}")
+
                 # 종목명으로 코드 검색
                 for market in ("KOSPI", "KOSDAQ", "KONEX"):
                     code = await stock_data_service.get_stock_by_name(stock_name, market=market)
                     if code:
                         resolved_stock_code = code
-                        logger.info(f"✅ [ResolveStock] 종목 코드 찾기 성공: {stock_name} -> {code}")
+                        logger.info(f"✅ [StockCode] 종목 코드 찾기 성공: {stock_name} -> {code} ({market})")
                         break
+
+                if not resolved_stock_code:
+                    logger.warning(f"⚠️ [StockCode] Router가 추출한 종목명으로 코드를 찾지 못함: {stock_name}")
 
             # Fallback: Router가 종목을 못 찾았거나 코드 변환 실패
             if not resolved_stock_code:
+                logger.info(f"🔍 [StockCode] Fallback: 직접 종목 코드 추출 시도")
                 resolved_stock_code = await resolve_stock_code(message)
+                if resolved_stock_code:
+                    logger.info(f"✅ [StockCode] Fallback 성공: {resolved_stock_code}")
+                else:
+                    logger.warning(f"⚠️ [StockCode] Fallback 실패: 종목 코드를 추출하지 못함")
 
             if not resolved_stock_code:
                 # trading이면 매매 관련 메시지, 아니면 분석 관련 메시지
@@ -402,20 +489,30 @@ async def stream_multi_agent_execution(
                         "어떤 종목을 매매하시겠습니까? "
                         "종목명이나 티커(예: 086790)를 알려주세요."
                     )
+                    logger.warning(f"⚠️ [StockCode] 매매 요청이지만 종목 코드를 찾지 못함")
                 else:
                     clarification_message = (
                         "어떤 종목을 장기 투자 관점에서 보고 싶으신가요? "
                         "종목명이나 티커(예: 128940)를 알려주시면 분석을 도와드릴게요."
                     )
+                    logger.warning(f"⚠️ [StockCode] 분석 요청이지만 종목 코드를 찾지 못함")
                 # Supervisor가 직접 처리하도록 agents_to_call 비움
                 agents_to_call = []
+                logger.info(f"🚫 [StockCode] 종목 코드 부재로 agents_to_call 초기화")
+        else:
+            logger.info(f"✅ [StockCode] 종목 코드 추출 불필요 (agents: {agents_to_call})")
 
         yield f"event: master_routing\ndata: {json.dumps({'agents': agents_to_call, 'depth_level': routing_decision.depth_level, 'stock_names': stock_names}, ensure_ascii=False)}\n\n"
 
         # 4. 각 에이전트 실행
         agent_results = {}
 
+        logger.info("=" * 80)
+        logger.info(f"🤖 [Agents] 실행할 에이전트 목록: {agents_to_call}")
+        logger.info("=" * 80)
+
         for agent_name in agents_to_call:
+            logger.info(f"▶️  [Agent/{agent_name.upper()}] 시작")
             yield f"event: agent_start\ndata: {json.dumps({'agent': agent_name, 'message': f'{agent_name.upper()} Agent 실행 중...'}, ensure_ascii=False)}\n\n"
 
             if agent_name == "research":
@@ -445,6 +542,21 @@ async def stream_multi_agent_execution(
                         node_name = event.get("name", "")
                         if node_name and node_name != "LangGraph":
                             yield f"event: agent_node\ndata: {json.dumps({'agent': agent_name, 'node': node_name, 'status': 'complete', 'message': f'{node_name} 완료'}, ensure_ascii=False)}\n\n"
+
+                            # Pre-Trade Risk Briefing 노드 완료 시 상세 정보 스트리밍
+                            if node_name == "risk_briefing":
+                                try:
+                                    # State에서 risk_analysis 추출
+                                    event_data = event.get("data", {})
+                                    output = event_data.get("output", {})
+                                    risk_analysis = output.get("risk_analysis")
+
+                                    if risk_analysis:
+                                        # risk_briefing 이벤트 전송 (Frontend에서 특별 처리 가능)
+                                        yield f"event: risk_briefing\ndata: {json.dumps({'agent': agent_name, 'risk_analysis': risk_analysis}, ensure_ascii=False)}\n\n"
+                                        logger.info(f"🚨 [Risk Briefing] {agent_name} - Level: {risk_analysis.get('overall_risk_level')}, Action: {risk_analysis.get('recommended_action')}")
+                                except Exception as exc:
+                                    logger.warning(f"⚠️ [Risk Briefing] State 추출 실패: {exc}")
                     elif event_type == "on_chat_model_start":
                         model = event.get("name", "LLM")
                         yield f"event: agent_llm_start\ndata: {json.dumps({'agent': agent_name, 'model': model, 'message': 'AI 분석 중...'}, ensure_ascii=False)}\n\n"
@@ -475,6 +587,7 @@ async def stream_multi_agent_execution(
                 agent_results[agent_name] = final_result
 
                 consensus = final_result.get("consensus", {})
+                logger.info(f"✅ [Agent/{agent_name.upper()}] 완료 - 추천: {consensus.get('recommendation')}, 목표가: {consensus.get('target_price')}, 신뢰도: {consensus.get('confidence')}")
                 yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'recommendation': consensus.get('recommendation'), 'target_price': consensus.get('target_price'), 'confidence': consensus.get('confidence')}}, ensure_ascii=False)}\n\n"
 
             elif agent_name == "strategy":
@@ -490,11 +603,19 @@ async def stream_multi_agent_execution(
                 # Trading Agent 실행
                 from src.agents.trading.graph import build_trading_subgraph
 
-                if not resolved_stock_code:
-                    raise ValueError("매매를 위한 종목 코드를 추출하지 못했습니다.")
+                logger.info(f"💰 [Agent/TRADING] 매매 에이전트 시작")
+                logger.info(f"  - 종목 코드: {resolved_stock_code}")
+                logger.info(f"  - 쿼리: {message}")
 
-                # automation_level을 hitl_config로 변환
-                hitl_config = automation_level_to_hitl_config(automation_level)
+                if not resolved_stock_code:
+                    error_msg = "매매를 위한 종목 코드를 추출하지 못했습니다."
+                    logger.error(f"❌ [Agent/TRADING] {error_msg}")
+                    raise ValueError(error_msg)
+
+                # automation_level을 hitl_config로 변환 (이미 위에서 했으므로 재사용)
+                # hitl_config = automation_level_to_hitl_config(automation_level)
+
+                logger.info(f"  - HITL 설정: preset={hitl_config.preset}, trade={hitl_config.phases.trade}")
 
                 # 원문(query)을 그대로 Trading Agent에 전달
                 # Trading Agent 내부에서 LLM으로 매수/매도, 수량 분석
@@ -518,6 +639,7 @@ async def stream_multi_agent_execution(
                     # hitl_config의 trade 설정에 따라 처리 방식 분기
                     if hitl_config.phases.trade == "conditional" or hitl_config.phases.trade is False:
                         # Pilot 모드: Trading 서브그래프 완전 실행 (자동 승인)
+                        logger.info(f"🚀 [Agent/TRADING] Pilot 모드 - 자동 실행")
                         result = await agent.ainvoke(input_state)
 
                         trade_result = result.get("trade_result", {})
@@ -528,13 +650,21 @@ async def stream_multi_agent_execution(
 
                         if result.get("trade_executed"):
                             summary = f"{order_type} {quantity}주 주문이 실행되었습니다. (KIS 주문번호: {trade_result.get('kis_order_no', 'N/A')})"
+                            logger.info(f"✅ [Agent/TRADING] 주문 실행 완료: {summary}")
                             yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'summary': summary, 'order_id': trade_result.get('order_id'), 'status': 'executed', 'kis_executed': True}}, ensure_ascii=False)}\n\n"
                         else:
                             error_msg = result.get("error", "실행 실패")
+                            logger.error("=" * 80)
+                            logger.error(f"❌ [Agent/TRADING] 주문 실행 실패!")
+                            logger.error(f"  - error_msg: {error_msg}")
+                            logger.error(f"  - result 전체: {result}")
+                            logger.error("=" * 80)
                             yield f"event: agent_complete\ndata: {json.dumps({'agent': agent_name, 'result': {'error': error_msg}}, ensure_ascii=False)}\n\n"
 
                     else:
                         # Copilot/Advisor 모드: prepare_trade까지만 실행 (주문 생성만)
+                        logger.info(f"⏸️  [Agent/TRADING] Copilot/Advisor 모드 - 승인 대기")
+
                         # Trading 서브그래프의 prepare_trade 노드만 실행
                         from src.agents.trading.nodes import prepare_trade_node
 
@@ -543,6 +673,7 @@ async def stream_multi_agent_execution(
 
                         if prepare_result.get("error"):
                             error_msg = prepare_result.get("error")
+                            logger.error(f"❌ [Agent/TRADING] 주문 준비 실패: {error_msg}")
 
                             # 조회 요청인 경우 Portfolio Agent로 fallback
                             if prepare_result.get("is_query_only"):
@@ -586,6 +717,9 @@ async def stream_multi_agent_execution(
                         order = prepare_result.get("trade_summary", {})
                         order_type = prepare_result.get("order_type", "BUY")
                         quantity = prepare_result.get("quantity", 0)
+
+                        logger.info(f"✅ [Agent/TRADING] 주문 생성 완료: {order_type} {quantity}주")
+                        logger.info(f"  - Order ID: {order.get('order_id')}")
 
                         # 포트폴리오 정보 조회 (비중, 보유 단가, 수익/손실 계산용)
                         current_weight = 0.0
@@ -804,10 +938,21 @@ async def stream_multi_agent_execution(
 
         if clarification_message:
             final_response = clarification_message
+            logger.info("=" * 80)
+            logger.info("📝 [Clarification] 종목명 확인 요청:")
+            logger.info(final_response)
+            logger.info("=" * 80)
             yield f"event: master_complete\ndata: {json.dumps({'message': final_response, 'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
             yield f"event: done\ndata: {json.dumps({'conversation_id': conversation_id}, ensure_ascii=False)}\n\n"
             logger.info("✅ [MultiAgentStream] 종목명 요청으로 응답 종료")
             return
+
+        # 에이전트 실행 완료 요약
+        logger.info("=" * 80)
+        logger.info(f"🏁 [Agents] 실행 완료 - 총 {len(agent_results)}개 에이전트")
+        for agent_name, result in agent_results.items():
+            logger.info(f"  - {agent_name}: {type(result).__name__ if hasattr(result, '__name__') else 'dict'}")
+        logger.info("=" * 80)
 
         # 5. Master가 결과 집계
         yield f"event: master_aggregating\ndata: {json.dumps({'message': '분석 결과를 종합하고 있습니다...'}, ensure_ascii=False)}\n\n"
@@ -822,8 +967,11 @@ async def stream_multi_agent_execution(
             final_response = _format_agent_results(agent_results)
             logger.info("✅ [MultiAgentStream] Agent 결과 직접 포맷팅")
 
-        # 최종 답변 로그 출력 (디버깅용)
-        logger.info("📝 [MultiAgentStream] 최종 답변: %s", final_response[:200] if len(final_response) > 200 else final_response)
+        # 최종 답변 로그 출력 (전체 내용)
+        logger.info("=" * 80)
+        logger.info("📝 [MultiAgentStream] 최종 답변 (전체):")
+        logger.info(final_response)
+        logger.info("=" * 80)
 
         # 6.5. Assistant 메시지 저장
         await chat_history_service.append_message(
@@ -950,6 +1098,7 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             user_id=user_id,
             conversation_id=conversation_id,
             automation_level=request.automation_level,
+            hitl_config_dict=request.hitl_config,  # hitl_config 전달
             stream_thinking=request.stream_thinking
         ),
         media_type="text/event-stream",
@@ -1146,4 +1295,139 @@ async def delete_chat_session(conversation_id: str):
             "success": False,
             "conversation_id": conversation_id,
             "error": str(e)
+        }
+
+
+class ApproveRequest(BaseModel):
+    """승인 요청"""
+    thread_id: str = Field(..., description="대화 스레드 ID (conversation_id)")
+    decision: str = Field(..., description="승인 결정 (approved/rejected/modified)")
+    modifications: Optional[dict] = Field(None, description="수정 내용 (decision=modified일 때)")
+
+
+@router.post("/approve")
+async def approve_trade(request: ApproveRequest):
+    """
+    매매 주문 승인 처리
+
+    Args:
+        request: 승인 요청 (thread_id, decision, modifications)
+
+    Returns:
+        {
+            "status": "approved" | "rejected",
+            "message": "처리 결과 메시지",
+            "result": {...}  # 실행 결과 상세
+        }
+    """
+    try:
+        # 1. thread_id로 pending 주문 찾기
+        from src.services import trading_service
+        from src.models.database import get_db_context
+
+        # thread_id는 실제로 conversation_id임
+        # 최근 pending 주문을 찾는다
+        with get_db_context() as db:
+            from src.models.order import Order
+
+            # conversation_id를 notes에서 찾거나, 가장 최근 pending 주문을 사용
+            pending_order = (
+                db.query(Order)
+                .filter(Order.status == "pending")
+                .filter(Order.notes.contains(request.thread_id))
+                .order_by(Order.created_at.desc())
+                .first()
+            )
+
+            # notes에서 못 찾으면 가장 최근 pending 주문 사용
+            if not pending_order:
+                pending_order = (
+                    db.query(Order)
+                    .filter(Order.status == "pending")
+                    .order_by(Order.created_at.desc())
+                    .first()
+                )
+
+            if not pending_order:
+                return {
+                    "status": "error",
+                    "message": "대기 중인 주문을 찾을 수 없습니다.",
+                    "thread_id": request.thread_id
+                }
+
+            order_id = str(pending_order.order_id)
+            stock_code = pending_order.stock_code
+            logger.info(f"✅ [Approve] Pending 주문 발견: {order_id} ({stock_code})")
+
+        # 2. decision에 따라 처리
+        if request.decision == "rejected":
+            # 주문 취소
+            logger.info(f"🚫 [Approve] 주문 거부: {order_id}")
+            return {
+                "status": "rejected",
+                "message": "주문이 취소되었습니다.",
+                "thread_id": request.thread_id,
+                "order_id": order_id
+            }
+
+        elif request.decision == "approved" or request.decision == "modified":
+            # 수정 사항 반영
+            execution_price = None
+            if request.modifications:
+                # 가격 수정이 있으면 반영
+                execution_price = request.modifications.get("price")
+                logger.info(f"📝 [Approve] 수정 사항 반영: price={execution_price}")
+
+            # 주문 실행
+            logger.info(f"✅ [Approve] 주문 실행 시작: {order_id}")
+            result = await trading_service.execute_order(
+                order_id=order_id,
+                execution_price=execution_price,
+                automation_level=2  # Copilot 모드
+            )
+
+            if result.get("status") == "rejected":
+                return {
+                    "status": "error",
+                    "message": f"주문 실행 실패: {result.get('error')}",
+                    "thread_id": request.thread_id,
+                    "result": result
+                }
+
+            # 성공
+            order_type = result.get("order_type", "BUY")
+            quantity = result.get("quantity", 0)
+            price = result.get("price", 0)
+
+            return {
+                "status": "approved",
+                "message": f"✅ {order_type} {quantity}주 @ {price:,.0f}원 주문이 실행되었습니다.",
+                "thread_id": request.thread_id,
+                "result": {
+                    "order_id": result.get("order_id"),
+                    "status": result.get("status"),
+                    "kis_order_no": result.get("kis_order_no"),
+                    "kis_executed": result.get("kis_executed", False),
+                    "order_type": order_type,
+                    "quantity": quantity,
+                    "price": price,
+                    "total": result.get("total", price * quantity)
+                }
+            }
+
+        else:
+            return {
+                "status": "error",
+                "message": f"알 수 없는 decision: {request.decision}",
+                "thread_id": request.thread_id
+            }
+
+    except Exception as e:
+        logger.error(f"❌ [Approve] 승인 처리 실패: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "message": f"승인 처리 중 오류 발생: {str(e)}",
+            "thread_id": request.thread_id
         }
