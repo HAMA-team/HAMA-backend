@@ -373,6 +373,13 @@ class StockDataService:
         Returns:
             DataFrame: 주가 데이터 (Open, High, Low, Close, Volume)
         """
+        # 지수 티커 감지 → get_market_index로 리다이렉트
+        INDEX_TICKERS = {"KS11": "KOSPI", "KQ11": "KOSDAQ", "KS200": "KOSPI200", "KRX100": "KRX100"}
+        if stock_code.upper() in INDEX_TICKERS:
+            index_name = INDEX_TICKERS[stock_code.upper()]
+            logger.info(f"🔀 [Stock] 지수 티커 감지: {stock_code} → get_market_index({index_name}) 호출")
+            return await self.get_market_index(index_name, days=days)
+
         # 캐시 키
         cache_key = f"stock_price:{stock_code}:{days}"
 

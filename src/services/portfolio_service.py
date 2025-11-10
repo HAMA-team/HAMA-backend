@@ -431,7 +431,8 @@ class PortfolioService:
         codes: List[str],
     ) -> Dict[str, float]:
         try:
-            kospi = await stock_data_service.get_stock_price("KS11", days=len(returns_df) + 10)
+            # 지수 전용 메서드 사용 (get_stock_price는 종목용)
+            kospi = await stock_data_service.get_market_index("KOSPI", days=len(returns_df) + 10)
         except Exception:
             kospi = None
 
