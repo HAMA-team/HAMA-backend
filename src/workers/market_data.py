@@ -49,7 +49,10 @@ async def get_stock_price(stock_code: str, stock_name: Optional[str] = None) -> 
         current_price = price_data.get("current_price", 0)
         change_price = price_data.get("change_price", 0)
         change_rate = price_data.get("change_rate", 0.0)
-        stock_name_result = price_data.get("stock_name", stock_name or stock_code)
+
+        # 종목명 우선순위: KIS API 응답 > 파라미터로 받은 stock_name > stock_code
+        # 빈 문자열 처리를 위해 or 연산자 사용
+        stock_name_result = price_data.get("stock_name") or stock_name or stock_code
 
         # 등락 방향 표시
         if change_price > 0:
@@ -62,10 +65,16 @@ async def get_stock_price(stock_code: str, stock_name: Optional[str] = None) -> 
             change_symbol = ""
             change_direction = "보합"
 
-        # 사용자 친화적 메시지 생성
+        # 사용자 친화적 메시지 생성 (시가, 고가, 저가 포함)
+        open_price = price_data.get("open_price", 0)
+        high_price = price_data.get("high_price", 0)
+        low_price = price_data.get("low_price", 0)
+        volume = price_data.get("volume", 0)
+
         message = (
             f"{stock_name_result}의 현재가는 {current_price:,}원입니다. "
-            f"전일 대비 {change_symbol}{change_price:,}원({change_symbol}{change_rate:.2f}%) {change_direction}했습니다."
+            f"전일 대비 {change_symbol}{change_price:,}원({change_symbol}{change_rate:.2f}%) {change_direction}했습니다.\n"
+            f"시가 {open_price:,}원, 고가 {high_price:,}원, 저가 {low_price:,}원, 거래량 {volume:,}주"
         )
 
         return {
@@ -75,10 +84,10 @@ async def get_stock_price(stock_code: str, stock_name: Optional[str] = None) -> 
             "current_price": current_price,
             "change_price": change_price,
             "change_rate": change_rate,
-            "open_price": price_data.get("open_price", 0),
-            "high_price": price_data.get("high_price", 0),
-            "low_price": price_data.get("low_price", 0),
-            "volume": price_data.get("volume", 0),
+            "open_price": open_price,
+            "high_price": high_price,
+            "low_price": low_price,
+            "volume": volume,
             "message": message,
         }
 
