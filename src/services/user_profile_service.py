@@ -12,15 +12,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.models.user_profile import UserProfile
-from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
 
 
 class UserProfileService:
     """사용자 프로파일 조회/저장 로직"""
-
-    CACHE_TTL = 3600  # 1시간
 
     def _normalize_user_id(self, user_id: Union[str, uuid.UUID]) -> uuid.UUID:
         if isinstance(user_id, uuid.UUID):
@@ -43,17 +40,8 @@ class UserProfileService:
         raise TypeError("user_id must be a UUID or string")
 
     def get_user_profile(self, user_id: Union[str, uuid.UUID], db: Session) -> Dict[str, Any]:
-        """
-        사용자 프로파일 조회 (캐시 → DB → 기본값 생성 순)
-        """
+        """사용자 프로파일 조회 (DB 조회 후 없으면 기본값 생성)"""
         user_uuid = self._normalize_user_id(user_id)
-        cache_key = f"profile:{user_uuid}"
-
-        cached = cache_manager.get(cache_key)
-        if cached:
-            logger.info("✅ [UserProfile] 캐시에서 조회: %s", user_uuid)
-            return cached
-
         logger.info("🔍 [UserProfile] DB에서 조회: %s", user_uuid)
         profile = db.execute(select(UserProfile).filter_by(user_id=user_uuid)).scalars().first()
 
@@ -78,8 +66,6 @@ class UserProfileService:
             db.refresh(profile)
 
         profile_dict = profile.to_dict()
-        cache_manager.set(cache_key, profile_dict, ttl=self.CACHE_TTL)
-
         return profile_dict
 
     def update_user_profile(
@@ -103,22 +89,13 @@ class UserProfileService:
         db.refresh(profile)
 
         profile_dict = profile.to_dict()
-        cache_key = f"profile:{user_uuid}"
-        cache_manager.delete(cache_key)
-        cache_manager.set(cache_key, profile_dict, ttl=self.CACHE_TTL)
-
         logger.info("✅ [UserProfile] 업데이트 완료: %s", user_uuid)
 
         return profile_dict
 
     def invalidate_cache(self, user_id: Union[str, uuid.UUID]) -> None:
-        """
-        프로파일 캐시 무효화
-        """
-        user_uuid = self._normalize_user_id(user_id)
-        cache_key = f"profile:{user_uuid}"
-        cache_manager.delete(cache_key)
-        logger.info("🗑️ [UserProfile] 캐시 무효화: %s", user_uuid)
+        """캐싱 제거 이후에도 API 호환성을 위한 no-op 메서드."""
+        logger.info("ℹ️ [UserProfile] invalidate_cache 호출 (캐싱 기능 제거됨)")
 
 
 user_profile_service = UserProfileService()

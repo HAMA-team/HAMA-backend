@@ -9,7 +9,6 @@ from typing import Optional, List, Dict, Any
 
 import requests
 
-from src.services.cache_manager import cache_manager
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -19,14 +18,12 @@ class DARTService:
     """
     DART 공시 서비스
 
-    - DART Open API를 사용한 공시 데이터 조회
-    - 캐싱 지원
+    - DART Open API 기반 공시 데이터 조회
     """
 
     def __init__(self):
         self.api_key = settings.DART_API_KEY
         self.base_url = "https://opendart.fss.or.kr/api"
-        self.cache = cache_manager
 
     async def get_company_info(self, corp_code: str) -> Optional[Dict[str, Any]]:
         """
@@ -38,15 +35,6 @@ class DARTService:
         Returns:
             dict: 기업 개황 정보
         """
-        # 캐시 키
-        cache_key = f"dart_company:{corp_code}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         # API 호출
         url = f"{self.base_url}/company.json"
         params = {"crtfc_key": self.api_key, "corp_code": corp_code}
@@ -58,8 +46,6 @@ class DARTService:
             data = response.json()
 
             if data.get("status") == "000":
-                # 캐싱 (1일 TTL - 기업 정보는 자주 변하지 않음)
-                self.cache.set(cache_key, data, ttl=86400)
                 print(f"✅ 기업 개황 조회 성공: {data.get('corp_name', corp_code)}")
                 return data
             else:
@@ -87,15 +73,6 @@ class DARTService:
         Returns:
             list: 공시 목록
         """
-        # 캐시 키
-        cache_key = f"dart_disclosure:{corp_code}:{bgn_de}:{end_de}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         # API 호출
         url = f"{self.base_url}/list.json"
         params = {
@@ -114,10 +91,6 @@ class DARTService:
 
             if data.get("status") == "000":
                 disclosures = data.get("list", [])
-                # 캐싱 (5분 TTL)
-                self.cache.set(
-                    cache_key, disclosures, ttl=settings.CACHE_TTL_NEWS
-                )
                 print(f"✅ 공시 목록 조회 성공: {len(disclosures)}건")
                 return disclosures
             else:
@@ -142,15 +115,6 @@ class DARTService:
         Returns:
             list: 재무제표 항목 리스트
         """
-        # 캐시 키
-        cache_key = f"dart_financial:{corp_code}:{bsns_year}:{reprt_code}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         # API 호출
         url = f"{self.base_url}/fnlttSinglAcntAll.json"
         params = {
@@ -169,10 +133,6 @@ class DARTService:
 
             if data.get("status") == "000":
                 statements = data.get("list", [])
-                # 캐싱 (1일 TTL)
-                self.cache.set(
-                    cache_key, statements, ttl=settings.CACHE_TTL_FINANCIAL_STATEMENTS
-                )
                 print(f"✅ 재무제표 조회 성공: {len(statements)}개 항목")
                 return statements
             else:
@@ -197,15 +157,6 @@ class DARTService:
         Returns:
             list: 주요주주 목록
         """
-        # 캐시 키
-        cache_key = f"dart_shareholder:{corp_code}:{bsns_year}:{reprt_code}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         # API 호출
         url = f"{self.base_url}/hyslrSttus.json"
         params = {
@@ -223,8 +174,6 @@ class DARTService:
 
             if data.get("status") == "000":
                 shareholders = data.get("list", [])
-                # 캐싱 (1일 TTL)
-                self.cache.set(cache_key, shareholders, ttl=86400)
                 print(f"✅ 주요주주 조회 성공: {len(shareholders)}명")
                 return shareholders
             else:
@@ -292,40 +241,17 @@ class DARTService:
         """
         종목 코드로 고유번호 찾기
 
-        DART corp_code.zip을 다운로드하여 전체 종목 매핑 테이블 사용
-        Redis 캐싱 (1일 TTL)
-
         Args:
             stock_code: 종목 코드 (6자리, 예: "005930")
 
         Returns:
             str: 고유번호 (8자리, 예: "00126380")
         """
-        # 캐시 키
-        cache_key = "dart_corp_code_mapping"
+        mapping = await self._download_and_parse_corp_code_mapping()
+        if not mapping:
+            logger.warning("⚠️ DART 매핑 테이블을 불러오지 못했습니다.")
+            return None
 
-        # 캐시에서 매핑 테이블 확인
-        cached_mapping = self.cache.get(cache_key)
-
-        if cached_mapping is None:
-            # 캐시 미스: 새로 다운로드
-            logger.info("🔄 DART 매핑 테이블 캐시 미스, 새로 다운로드...")
-            mapping = await self._download_and_parse_corp_code_mapping()
-
-            if mapping:
-                # Redis 캐싱 (1일 TTL)
-                self.cache.set(cache_key, mapping, ttl=86400)
-                logger.info(f"✅ DART 매핑 테이블 캐싱 완료: {len(mapping)}개 종목")
-            else:
-                logger.warning("⚠️ DART 매핑 테이블이 비어있습니다.")
-                # 빈 딕셔너리도 캐싱 (1시간 TTL)
-                self.cache.set(cache_key, {}, ttl=3600)
-                return None
-        else:
-            mapping = cached_mapping
-            logger.debug(f"✅ DART 매핑 테이블 캐시 히트: {len(mapping)}개 종목")
-
-        # 종목 코드로 고유번호 찾기
         corp_code = mapping.get(stock_code)
 
         if corp_code:

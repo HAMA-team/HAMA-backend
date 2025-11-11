@@ -6,7 +6,6 @@ Phase 2 통합 사항을 검토한 결과, 현재 코드베이스는 KIS 주문 
 - [ ] `src/services/kis_service.py`의 `place_order` 이후 체결 확인(`/uapi/domestic-stock/v1/trading/inquire-ccnl`) 및 취소/정정 API를 추가해 최종 체결 상태를 기록
 - [ ] 모의/실전 환경 전환 시 필요한 계좌 유형, 종목코드 포맷 검증 로직을 `KISService` 초기화 단계에 명시
 - [ ] 주문 실패 시 현재는 DB 시뮬레이션으로 강제 체결 처리되므로(`trading_service.execute_order`) KIS 실패 분기에서 재시도 또는 `order_status=rejected` 처리가 되도록 분리
-- [ ] 웹소켓 기반 실시간 호가/체결 채널(풍선 알림)을 추가하여 Celery 캐시(`realtime_cache_service`)와 통합
 - [ ] 테스트: `tests/test_services/test_kis_service.py`(현재 미구현)을 생성하고 아래 시나리오를 커버
   - [ ] 토큰 발급 API(`/oauth2/tokenP`) 성공/실패 분기
   - [ ] 잔고 조회(`/uapi/domestic-stock/v1/trading/inquire-balance`) 응답 파싱
@@ -16,7 +15,6 @@ Phase 2 통합 사항을 검토한 결과, 현재 코드베이스는 KIS 주문 
 - [ ] `trading_service.execute_order`가 체결가를 직접 받아야 하므로 실행 전 `stock_data_service` 또는 KIS 시세 API에서 최신 호가를 조회하도록 자동화
 - [ ] 부분 체결, 다중 체결 대응을 위해 `Order.filled_quantity` 갱신 로직을 반복 호출 구조로 개선하고 거래 로그(`Transaction`)에 체결 단위를 남김
 - [ ] 승인(Interrupt) 후 장 마감/가격 급변 등 리스크 경고를 추가하기 위해, 승인 시점과 실행 시점 사이에 리밸런싱 검증 노드를 삽입
-- [ ] Celery 비동기 태스크 도입을 검토해 주문 실행과 포트폴리오 재계산을 분리하고 Latency를 감시
 
 ## 3. BOK API 및 거시 지표 활용
 - [ ] `src/services/bok_service.py`가 하드코딩한 API 키를 `settings.BOK_API_KEY`로 대체하고 `.env` 로딩 경고 추가

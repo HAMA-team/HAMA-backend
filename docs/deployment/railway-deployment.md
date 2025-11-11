@@ -33,13 +33,6 @@ Railway는 여러 서비스를 하나의 프로젝트로 관리할 수 있습니
 2. "Database" → "PostgreSQL" 선택
 3. 자동으로 `DATABASE_URL` 환경 변수 생성됨
 
-### 2.2 Redis 추가
-1. 프로젝트 대시보드에서 "+ New" 클릭
-2. "Database" → "Redis" 선택
-3. 자동으로 `REDIS_URL` 환경 변수 생성됨
-
----
-
 ## 3단계: FastAPI 서비스 배포
 
 ### 3.1 GitHub 저장소 연결
@@ -60,13 +53,6 @@ DEBUG=False
 
 # Database (자동 생성됨)
 DATABASE_URL=${{Postgres.DATABASE_URL}}
-
-# Redis (자동 생성됨)
-REDIS_URL=${{Redis.REDIS_URL}}
-
-# Celery
-CELERY_BROKER_URL=${{Redis.REDIS_URL}}/1
-CELERY_RESULT_BACKEND=${{Redis.REDIS_URL}}/2
 
 # LLM APIs (실제 값 입력)
 OPENAI_API_KEY=your-key
@@ -119,57 +105,7 @@ Railway 대시보드 → `hama-fastapi` → "Settings" 탭 → "Healthcheck"
 
 ---
 
-## 4단계: Celery Worker 배포
-
-### 4.1 새 서비스 추가
-1. 프로젝트 대시보드에서 "+ New" 클릭
-2. "GitHub Repo" 선택
-3. **같은** `HAMA-backend` 저장소 선택
-4. 서비스 이름: `hama-celery-worker`
-
-### 4.2 환경 변수 설정
-
-**FastAPI 서비스와 동일한 환경 변수 복사** (Variables 탭)
-
-또는 Railway의 "Shared Variables" 기능 사용:
-1. 프로젝트 설정 → "Shared Variables"
-2. 공통 환경 변수 등록
-
-### 4.3 시작 명령어 설정
-
-Railway 대시보드 → `hama-celery-worker` → "Settings" 탭
-
-**Start Command:**
-```bash
-celery -A src.workers.celery_app worker --loglevel=info --concurrency=2
-```
-
----
-
-## 5단계: Celery Beat 배포
-
-### 5.1 새 서비스 추가
-1. 프로젝트 대시보드에서 "+ New" 클릭
-2. "GitHub Repo" 선택
-3. **같은** `HAMA-backend` 저장소 선택
-4. 서비스 이름: `hama-celery-beat`
-
-### 5.2 환경 변수 설정
-
-**FastAPI/Worker와 동일한 환경 변수 사용**
-
-### 5.3 시작 명령어 설정
-
-Railway 대시보드 → `hama-celery-beat` → "Settings" 탭
-
-**Start Command:**
-```bash
-celery -A src.workers.celery_app beat --loglevel=info
-```
-
----
-
-## 6단계: 데이터베이스 마이그레이션
+## 4단계: 데이터베이스 마이그레이션
 
 ### 6.1 Railway CLI 설치 (선택)
 
@@ -205,7 +141,7 @@ DATABASE_URL=postgresql://... alembic upgrade head
 
 ---
 
-## 7단계: 배포 확인
+## 5단계: 배포 확인
 
 ### 7.1 서비스 URL 확인
 
@@ -241,26 +177,11 @@ Swagger UI가 열리면 성공!
 
 ---
 
-## 8단계: 로그 모니터링
+## 6단계: 로그 모니터링
 
 ### 8.1 실시간 로그
 
 Railway 대시보드 → 각 서비스 → "Deployments" → "View Logs"
-
-### 8.2 Celery 작동 확인
-
-**Celery Worker 로그:**
-```
-[worker] celery@... ready
-[worker] Task update_realtime_market_data received
-```
-
-**Celery Beat 로그:**
-```
-[beat] Scheduler: Sending due task update-realtime-market-data
-```
-
----
 
 ## 트러블슈팅
 
@@ -278,14 +199,7 @@ Railway 대시보드 → 각 서비스 → "Deployments" → "View Logs"
 2. `DATABASE_URL` 환경 변수 확인
 3. Railway 대시보드에서 PostgreSQL 재시작
 
-### 문제 3: Celery가 작동하지 않음
-
-**해결:**
-1. Redis 서비스 확인
-2. `CELERY_BROKER_URL` 환경 변수 확인
-3. Worker 로그에서 에러 확인
-
-### 문제 4: API 키 에러
+### 문제 3: API 키 에러
 
 **해결:**
 1. 환경 변수에 실제 API 키 입력했는지 확인
@@ -312,7 +226,7 @@ Railway 대시보드 → 각 서비스 → "Deployments" → "View Logs"
 2. **테스트**: 로컬 Docker Compose 사용
 3. **프로덕션**: Railway 사용
 
----
+----
 
 ## 자동 배포 (CI/CD)
 
@@ -372,4 +286,3 @@ Value: hama-backend-production.up.railway.app
 
 - [Railway 공식 문서](https://docs.railway.app/)
 - [FastAPI 배포 가이드](https://fastapi.tiangolo.com/deployment/)
-- [Celery 배포](https://docs.celeryq.dev/en/stable/userguide/deployment.html)

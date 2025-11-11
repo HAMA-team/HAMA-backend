@@ -46,8 +46,6 @@ src/
 │   ├── integrations/
 │   │   ├── kis_service.py      # 외부 API 어댑터
 │   │   └── dart_service.py
-│   └── cache/
-│       └── redis_cache.py
 └── interfaces/
     └── api/                    # FastAPI 라우터 → application 계층 호출
 ```
@@ -68,7 +66,7 @@ src/
 
 4. **전역 싱글톤 제거**  
    - FastAPI `Depends` 및 스타트업 훅에서 의존성 등록.  
-   - Celery Worker, LangGraph 초기화 코드도 동일한 팩토리/컨테이너에서 가져오도록 통일.
+   - LangGraph 초기화 코드도 동일한 팩토리/컨테이너에서 가져오도록 통일.
 
 5. **추가 도메인 적용**  
    - 차례로 `artifact`, `user_profile` 등 나머지 서비스에도 동일한 패턴을 반영.
@@ -76,10 +74,9 @@ src/
 ## 리스크 및 완화
 - **마이그레이션 기간 중 순환 참조 위험**: 각 단계에서 인터페이스를 먼저 정의하고 구현을 별도 모듈로 분리해 순환 의존을 방지합니다.
 - **테스트 체계 영향**: 기존 테스트가 ORM 모델에 의존하므로, 도메인 엔티티 도입 시 어댑터 테스트를 추가해야 합니다. 우선 `tests/test_api` 및 `tests/test_agents`에 대한 회귀 테스트를 우선 실행합니다.
-- **배포 영향**: 모듈 경로 변경에 따른 ImportError가 발생할 수 있으므로, 단계별 PR에서 FastAPI 라우터와 Celery 초기화 코드를 모두 검증합니다.
+- **배포 영향**: 모듈 경로 변경에 따른 ImportError가 발생할 수 있으므로, 단계별 PR에서 FastAPI 라우터 초기화 코드를 모두 검증합니다.
 
 ## 즉각적인 액션 아이템
 1. 폴더 구조 초안 및 `pyproject.toml` 패키지 경로 업데이트 설계.
 2. Stock 도메인 스파이크 작업 분량 추정 후 TODO 리스트화.
-3. FastAPI 의존성 주입 패턴(`Depends`)과 Celery 초기화 패턴 정리 문서 초안 작성.
-
+3. FastAPI 의존성 주입 패턴(`Depends`) 정리 문서 초안 작성.

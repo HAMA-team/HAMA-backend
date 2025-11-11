@@ -84,7 +84,6 @@ Level 3 (Advisor) → 모든 결정 승인 필요
 | **한국투자증권 API** | ✅ 연동 완료 | 실시간 시세, 차트, 호가 |
 | **DART API** | ✅ 연동 완료 | 재무제표, 공시, 기업 정보 |
 | **한국은행 API** | ✅ 연동 완료 | 금리, 거시경제 지표 |
-| **Redis** | ✅ 작동 중 | 캐싱 (TTL 60초) |
 | **네이버 금융** | ⏸️ Phase 2 | 뉴스 크롤링 |
 
 ### 4. **RESTful API** (FastAPI)
@@ -168,7 +167,6 @@ if state.next:  # Interrupt 발생
 - **FastAPI** 0.104+ - 고성능 비동기 웹 프레임워크
 - **Python** 3.12
 - **PostgreSQL** - 관계형 데이터베이스 (19개 테이블)
-- **Redis** - 캐싱 시스템
 
 ### **AI Framework**
 - **LangGraph** 0.2+ - 에이전트 오케스트레이션
@@ -199,7 +197,7 @@ if state.next:  # Interrupt 발생
 ### **Option A: Docker Compose로 실행** ⭐
 
 **장점:**
-- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, Redis, FastAPI, Celery)
+- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, FastAPI)
 - ✅ 환경 격리
 - ✅ 팀원 온보딩 간편
 
@@ -234,7 +232,6 @@ docker-compose ps
 - FastAPI: http://localhost:8000
 - Swagger 문서: http://localhost:8000/docs
 - PostgreSQL: localhost:5432
-- Redis: localhost:6379
 
 **5. 중지/재시작**
 ```bash
@@ -255,7 +252,6 @@ docker-compose down -v
 **사전 요구사항**
 - Python 3.12+
 - PostgreSQL 13+
-- Redis 6+
 - API 키:
   - Anthropic API Key
   - DART API Key (선택)
@@ -291,15 +287,9 @@ OPENAI_API_KEY=your_openai_key_here  # 선택
 # Database
 DATABASE_URL=postgresql://user:password@localhost:5432/hama_db
 
-# Redis
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
 # DART API (선택)
 DART_API_KEY=your_dart_api_key_here
 
-# 캐시 TTL
-CACHE_TTL_MARKET_DATA=60
 ```
 
 ### **4. 데이터베이스 설정**
@@ -482,7 +472,6 @@ HAMA-backend/
 │   │   ├── kis_service.py            ✅ 한국투자증권 API
 │   │   ├── dart_service.py           ✅ DART API
 │   │   ├── bok_service.py            ✅ 한국은행 API
-│   │   ├── cache_manager.py          ✅ Redis 캐싱
 │   │   ├── portfolio_optimizer.py    ✅ 포트폴리오 최적화
 │   │   ├── portfolio_service.py      ✅ 포트폴리오 관리
 │   │   ├── approval_service.py       ✅ 승인 처리
@@ -588,7 +577,6 @@ python tests/test_research_data_collection.py
   - [x] 한국투자증권 API (실시간 시세)
   - [x] DART API (재무제표, 공시)
   - [x] 한국은행 API (금리, 경제지표)
-- [x] Redis 캐싱 시스템
 - [x] 종목명 추출 개선 (GPT-5 기반)
 - [x] 15+ 서비스 레이어 구현
 - [x] 프론트엔드 통합 가이드
@@ -651,8 +639,7 @@ Railway로 손쉽게 배포할 수 있습니다 (무료 티어 제공).
 
 **3단계: 서비스 추가**
 - PostgreSQL 데이터베이스 추가
-- Redis 추가
-- FastAPI, Celery Worker, Celery Beat 배포
+- FastAPI 서비스 배포
 
 **4단계: 환경 변수 설정**
 - Railway 대시보드에서 API 키 등록

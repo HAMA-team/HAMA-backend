@@ -23,10 +23,10 @@
 
 ## 3. 체크포인터 환경 스위칭
 
-- **목표**: 테스트/개발에서는 인메모리, 운영에서는 SQLite 또는 Redis 기반 체크포인터를 사용한다.
+- **목표**: 현재는 인메모리 체크포인터를 사용하되, 향후 SQLite 등 외부 저장소로 확장할 수 있도록 구조를 유지한다.
 - **근거**: LangGraph 체크포인터 패키지들이 정식으로 제공되며 환경별 전환을 권장한다. ([PyPI][3])
 - **실행 계획**
-  - `settings.graph_checkpoint_backend` 값을 `"memory" | "sqlite" | "redis"`로 제한하고, 이에 따라 적절한 Saver를 생성한다.
+  - `settings.graph_checkpoint_backend` 값을 `"memory"`(또는 향후 `"sqlite"`)로 제한하고, 이에 따라 적절한 Saver를 생성한다.
   - `compile_graph`에서 문자열 키(`backend_key`)만 `lru_cache`의 인자로 사용해 캐시 충돌을 피한다.
   - 서브그래프에는 별도 체크포인터를 지정하지 않고 상위 Supervisor의 설정을 그대로 활용한다. ([LangChain][6])
 

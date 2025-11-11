@@ -17,7 +17,6 @@ from src.api.error_handlers import setup_error_handlers
 from src.config.settings import settings
 from src.models.database import SessionLocal, init_db
 from src.services import init_kis_service
-from src.utils.llm_factory import initialize_semantic_cache
 
 tags_metadata = [
     {
@@ -57,9 +56,6 @@ tags_metadata = [
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """FastAPI lifespan 이벤트 핸들러"""
-    # RedisSemanticCache 초기화 (LLM 응답 캐싱)
-    initialize_semantic_cache()
-
     # KIS 서비스 초기화
     kis_env = "real" if settings.ENV.lower() == "production" else "demo"
     await init_kis_service(env=kis_env)
@@ -76,7 +72,7 @@ app = FastAPI(
         "- **Chat Interface**: AI 대화 및 실시간 Thinking Trace 스트리밍\n"
         "- **HITL (Human-in-the-Loop)**: 매매 승인 시스템\n"
         "- **Portfolio Management**: 포트폴리오 조회 및 차트 데이터\n"
-        "- **Real-time Data**: Celery 기반 실시간 주가 캐싱\n\n"
+        "- **Real-time Data**: KIS API 기반 실시간 시세 조회\n\n"
         "## 인증\n"
         "Phase 1에서는 인증 없이 사용 가능합니다. (Phase 2에서 JWT 인증 추가 예정)\n\n"
         "## 에러 코드\n"

@@ -12,7 +12,6 @@ import requests
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from src.config.settings import settings
-from src.services.cache_manager import cache_manager
 
 
 class BOKService:
@@ -41,11 +40,6 @@ class BOKService:
         Returns:
             기준금리 데이터 리스트
         """
-        cache_key = f"bok:base_rate:{start_date}:{end_date}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            return cached
-
         if not self.api_key:
             raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
 
@@ -61,10 +55,7 @@ class BOKService:
         data = response.json()
 
         if "StatisticSearch" in data:
-            rows = data["StatisticSearch"]["row"]
-            # 캐싱 (1일)
-            cache_manager.set(cache_key, rows, ttl=86400)
-            return rows
+            return data["StatisticSearch"]["row"]
 
         return []
 
@@ -83,11 +74,6 @@ class BOKService:
         Returns:
             CPI 데이터 리스트
         """
-        cache_key = f"bok:cpi:{start_date}:{end_date}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            return cached
-
         if not self.api_key:
             raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
 
@@ -103,10 +89,7 @@ class BOKService:
         data = response.json()
 
         if "StatisticSearch" in data:
-            rows = data["StatisticSearch"]["row"]
-            # 캐싱 (1일)
-            cache_manager.set(cache_key, rows, ttl=86400)
-            return rows
+            return data["StatisticSearch"]["row"]
 
         return []
 
@@ -125,11 +108,6 @@ class BOKService:
         Returns:
             환율 데이터 리스트
         """
-        cache_key = f"bok:exchange_rate:{start_date}:{end_date}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            return cached
-
         if not self.api_key:
             raise RuntimeError("BOK API key가 설정되지 않았습니다. 환경 변수 BOK_API_KEY를 확인하세요.")
 
@@ -145,10 +123,7 @@ class BOKService:
         data = response.json()
 
         if "StatisticSearch" in data:
-            rows = data["StatisticSearch"]["row"]
-            # 캐싱 (1시간)
-            cache_manager.set(cache_key, rows, ttl=3600)
-            return rows
+            return data["StatisticSearch"]["row"]
 
         return []
 

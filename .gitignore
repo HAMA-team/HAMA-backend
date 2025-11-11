@@ -69,8 +69,6 @@ ngrok.log
 ngrok.yml
 
 # Celery
-celerybeat-schedule
-celerybeat.pid
 
 # Redis
 dump.rdb

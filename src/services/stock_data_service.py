@@ -17,7 +17,6 @@ from src.repositories import (
     stock_repository,
     stock_indicator_repository,
 )
-from src.services.cache_manager import cache_manager
 from src.services.kis_service import kis_service
 from src.utils.indicators import calculate_all_indicators
 
@@ -53,8 +52,7 @@ class StockDataService:
     """
 
     def __init__(self):
-        self.cache = cache_manager
-        # realtime_cache_service는 순환 import 방지를 위해 메서드 내에서 import
+        pass
 
     async def _listing_from_db(self, market: Optional[str]) -> Optional[pd.DataFrame]:
         def _fetch():
@@ -177,10 +175,6 @@ class StockDataService:
         else:
             logger.warning("⚠️ [DB] 저장할 유효한 레코드 없음")
 
-    @staticmethod
-    def _cache_listing_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
-        return df.to_dict("records")
-
     async def _prices_from_db(self, stock_code: str, days: int) -> Optional[pd.DataFrame]:
         start = (datetime.now() - timedelta(days=days + 5)).date()
 
@@ -289,76 +283,34 @@ class StockDataService:
             payload,
         )
 
-    @staticmethod
-    def _cache_prices_payload(df: pd.DataFrame) -> List[Dict[str, Any]]:
-        reset = df.reset_index()
-        if "Date" not in reset.columns:
-            reset = reset.rename(columns={"index": "Date"})
-
-        def _serialize(value: Any) -> Any:
-            if isinstance(value, (datetime, date)):
-                return value.isoformat()
-            return value
-
-        for column in reset.columns:
-            reset[column] = reset[column].apply(_serialize)
-
-        return reset.to_dict("records")
-
     async def get_realtime_price(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """
-        실시간 주가 조회 (Redis 캐시 우선)
+        실시간 주가 조회 (KIS API 직접 호출)
 
         Args:
             stock_code: 종목 코드 (예: "005930")
-
-        Returns:
-            {
-                "stock_code": "005930",
-                "stock_name": "삼성전자",
-                "price": 72000,
-                "change": 1000,
-                "change_rate": 1.41,
-                "volume": 15234567,
-                "timestamp": "2025-10-27T..."
-            }
-            없으면 None
         """
-        # 순환 import 방지
-        from src.services.realtime_cache_service import realtime_cache_service
-
-        # 1. Redis 캐시 우선 조회
-        cached = await realtime_cache_service.get_cached_price(stock_code)
-
-        if cached:
-            print(f"✅ [Realtime] 캐시 히트: {stock_code}")
-            return cached
-
-        # 2. 캐시 미스 → KIS API Fallback
-        print(f"⚠️ [Realtime] 캐시 미스 → API 호출: {stock_code}")
+        from src.services.kis_service import kis_service
 
         try:
-            from src.services.kis_service import kis_service
-
             price_data = await kis_service.get_stock_price(stock_code)
-
-            if price_data:
-                # API 응답을 캐시 형식으로 변환
-                return {
-                    "stock_code": stock_code,
-                    "stock_name": price_data.get("stock_name", ""),
-                    "price": price_data.get("current_price", 0),
-                    "change": price_data.get("change_price", 0),
-                    "change_rate": price_data.get("change_rate", 0.0),
-                    "volume": price_data.get("volume", 0),
-                    "timestamp": datetime.now().isoformat(),
-                }
-            else:
-                return None
-
-        except Exception as e:
-            print(f"❌ [Realtime] API 호출 실패: {stock_code} - {e}")
+        except Exception as exc:  # pragma: no cover - 네트워크 예외 로깅
+            logger.error("❌ [Realtime] 실시간 시세 조회 실패: %s - %s", stock_code, exc)
             return None
+
+        if not price_data:
+            logger.warning("⚠️ [Realtime] 시세 데이터를 찾을 수 없음: %s", stock_code)
+            return None
+
+        return {
+            "stock_code": stock_code,
+            "stock_name": price_data.get("stock_name", ""),
+            "price": price_data.get("current_price", 0),
+            "change": price_data.get("change_price", 0),
+            "change_rate": price_data.get("change_rate", 0.0),
+            "volume": price_data.get("volume", 0),
+            "timestamp": datetime.now().isoformat(),
+        }
 
     async def get_stock_price(
         self, stock_code: str, days: int = 30
@@ -373,27 +325,9 @@ class StockDataService:
         Returns:
             DataFrame: 주가 데이터 (Open, High, Low, Close, Volume)
         """
-        # 캐시 키
-        cache_key = f"stock_price:{stock_code}:{days}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            print(f"✅ 캐시 히트: {cache_key}")
-            cached_df = pd.DataFrame(cached)
-            if "Date" in cached_df.columns:
-                cached_df["Date"] = pd.to_datetime(cached_df["Date"])
-                cached_df = cached_df.set_index("Date")
-            return cached_df
-
         # DB 조회
         db_df = await self._prices_from_db(stock_code, days)
         if db_df is not None and not db_df.empty:
-            self.cache.set(
-                cache_key,
-                self._cache_prices_payload(db_df),
-                ttl=settings.CACHE_TTL_MARKET_DATA,
-            )
             await self._save_latest_indicators(stock_code, db_df)
             return db_df
 
@@ -411,12 +345,6 @@ class StockDataService:
 
             if df is not None and len(df) > 0:
                 # KIS API는 이미 표준 컬럼명 사용 (Open, High, Low, Close, Volume)
-                # 캐싱 (60초 TTL)
-                self.cache.set(
-                    cache_key,
-                    self._cache_prices_payload(df),
-                    ttl=settings.CACHE_TTL_MARKET_DATA,
-                )
                 await self._save_prices_to_db(stock_code, df)
                 await self._save_latest_indicators(stock_code, df)
                 logger.info(f"✅ 주가 데이터 조회 성공 (KIS API): {stock_code}")
@@ -440,12 +368,6 @@ class StockDataService:
                 if "Change" in df.columns:
                     df = df[["Open", "High", "Low", "Close", "Volume"]]
 
-                # 캐싱 (60초 TTL)
-                self.cache.set(
-                    cache_key,
-                    self._cache_prices_payload(df),
-                    ttl=settings.CACHE_TTL_MARKET_DATA,
-                )
                 await self._save_prices_to_db(stock_code, df)
                 await self._save_latest_indicators(stock_code, df)
                 logger.info(f"✅ 주가 데이터 조회 성공 (FinanceDataReader): {stock_code}")
@@ -468,34 +390,14 @@ class StockDataService:
         Returns:
             DataFrame: 종목 리스트 (Code, Name, Market)
         """
-        # 캐시 키
-        cache_key = f"stock_listing:{market}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            logger.info(f"✅ 캐시 히트: {cache_key}")
-            cached_df = pd.DataFrame(cached)
-            return cached_df
-
         # DB 조회
         db_listing = await self._listing_from_db(market)
         if db_listing is not None and not db_listing.empty:
-            self.cache.set(
-                cache_key,
-                self._cache_listing_payload(db_listing),
-                ttl=86400,
-            )
             return db_listing
 
         # FinanceDataReader로 종목 리스트 조회
         fdr_df = await self._listing_from_fdr(market)
         if fdr_df is not None and not fdr_df.empty:
-            self.cache.set(
-                cache_key,
-                self._cache_listing_payload(fdr_df),
-                ttl=86400,
-            )
             await self._save_listing_to_db(market, fdr_df)
             logger.info(f"✅ 종목 리스트 조회 성공 (FinanceDataReader): {market}, {len(fdr_df)}개")
             return fdr_df
@@ -517,13 +419,6 @@ class StockDataService:
         Returns:
             종목 코드 (매칭 성공 시) 또는 None
         """
-        # 캐시 확인
-        cache_key = f"stock_name_mapping:{user_input}:{market}"
-        cached_code = self.cache.get(cache_key)
-        if cached_code:
-            logger.info(f"✅ [LLM Matching] 캐시 히트: {user_input} -> {cached_code}")
-            return cached_code
-
         # 후보 종목 선정 전략:
         # LLM에게 충분한 컨텍스트를 제공하되, 너무 많으면 비용/성능 문제
         # 상위 300개 종목을 사용 (시가총액 순으로 정렬되어 있다고 가정)
@@ -611,8 +506,6 @@ class StockDataService:
 
             # 신뢰도 체크
             if result.confidence >= 0.5 and result.matched_stock_code:
-                # 캐싱 (1일 TTL)
-                self.cache.set(cache_key, result.matched_stock_code, ttl=86400)
                 logger.info(f"✅ [LLM Matching] 매칭 성공: {user_input} -> {result.matched_stock_code}")
                 return result.matched_stock_code
             else:
@@ -754,19 +647,6 @@ class StockDataService:
         if not index_code:
             raise ValueError(f"지원하지 않는 지수: {index_name}. 사용 가능: {list(INDEX_CODES.keys())}")
 
-        # 캐시 키
-        cache_key = f"market_index:{index_name}:{days}"
-
-        # 캐시 확인 (1시간 TTL)
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            logger.info(f"✅ [Index] 캐시 히트: {cache_key}")
-            cached_df = pd.DataFrame(cached)
-            if "Date" in cached_df.columns:
-                cached_df["Date"] = pd.to_datetime(cached_df["Date"])
-                cached_df = cached_df.set_index("Date")
-            return cached_df
-
         # 1순위: KIS API
         try:
             logger.info(f"📊 [Index] KIS API로 지수 조회: {index_name} ({index_code})")
@@ -777,12 +657,6 @@ class StockDataService:
             )
 
             if df is not None and not df.empty:
-                # 캐싱 (1시간 TTL)
-                self.cache.set(
-                    cache_key,
-                    df.reset_index().to_dict("records"),
-                    ttl=settings.CACHE_TTL_MARKET_INDEX
-                )
                 logger.info(f"✅ [Index] 지수 데이터 조회 성공 (KIS API): {index_name} ({len(df)}일)")
                 return df
 
@@ -824,12 +698,6 @@ class StockDataService:
                 if "Change" in df.columns:
                     df = df[["Open", "High", "Low", "Close", "Volume"]]
 
-                # 캐싱 (1시간 TTL)
-                self.cache.set(
-                    cache_key,
-                    df.reset_index().to_dict("records"),
-                    ttl=settings.CACHE_TTL_MARKET_INDEX
-                )
                 logger.info(f"✅ [Index] 지수 데이터 조회 성공 (FinanceDataReader): {index_name} ({len(df)}일)")
                 return df
             else:
@@ -861,15 +729,6 @@ class StockDataService:
                 "BPS": None (KIS API 미제공)
             }
         """
-        # 캐시 키
-        cache_key = f"fundamental:{stock_code}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            logger.info(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         try:
             # KIS API로 현재가 조회 (PER/PBR 포함)
             price_data = await kis_service.get_stock_price(stock_code)
@@ -884,8 +743,6 @@ class StockDataService:
                     "BPS": None,  # KIS API 미제공 (주당순자산가치)
                 }
 
-                # 캐싱 (1시간 TTL - 펀더멘털은 자주 변하지 않음)
-                self.cache.set(cache_key, fundamental, ttl=3600)
                 logger.info(f"✅ 펀더멘털 데이터 조회 성공 (KIS API): {stock_code}")
                 return fundamental
             else:
@@ -914,15 +771,6 @@ class StockDataService:
                 "shares_outstanding": None (KIS API 미제공)
             }
         """
-        # 캐시 키
-        cache_key = f"market_cap:{stock_code}"
-
-        # 캐시 확인
-        cached = self.cache.get(cache_key)
-        if cached is not None:
-            logger.info(f"✅ 캐시 히트: {cache_key}")
-            return cached
-
         try:
             # KIS API로 현재가 조회 (시가총액, 거래량 포함)
             price_data = await kis_service.get_stock_price(stock_code)
@@ -935,8 +783,6 @@ class StockDataService:
                     "shares_outstanding": None,  # KIS API 미제공 (상장주식수)
                 }
 
-                # 캐싱 (1시간 TTL)
-                self.cache.set(cache_key, market_cap_data, ttl=3600)
                 logger.info(f"✅ 시가총액 데이터 조회 성공 (KIS API): {stock_code}")
                 return market_cap_data
             else:

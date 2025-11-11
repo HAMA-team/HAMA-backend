@@ -27,7 +27,6 @@ from requests.exceptions import RequestException
 
 from src.config.settings import settings
 from src.constants.kis_constants import KIS_BASE_URLS, KIS_ENDPOINTS, KIS_TR_IDS, INDEX_CODES
-from src.services.cache_manager import cache_manager
 
 logger = logging.getLogger(__name__)
 
@@ -154,15 +153,7 @@ class KISService:
         Raises:
             KISAuthError: 인증 실패 시
         """
-        # 캐시에서 토큰 확인
-        cache_key = f"kis_token:{self.env}:{self.app_key}"
-        cached_token = cache_manager.get(cache_key)
-
-        if cached_token:
-            logger.debug("✅ Using cached KIS access token")
-            return cached_token
-
-        # 토큰이 유효한지 확인
+        # 메모리에 보관 중인 토큰이 아직 유효한지 확인
         if self._access_token and self._token_expires_at:
             if datetime.now() < self._token_expires_at - timedelta(minutes=5):
                 logger.debug("✅ Using existing KIS access token")
@@ -203,12 +194,9 @@ class KISService:
             if not access_token:
                 raise KISAuthError("No access_token in response")
 
-            # 토큰 저장
+            # 토큰 저장 (발급 시점 기준으로 유효 기간 관리)
             self._access_token = access_token
             self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
-
-            # Redis 캐싱 (TTL: expires_in - 5분)
-            cache_manager.set(cache_key, access_token, ttl=max(expires_in - 300, 60))
 
             logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")
             return access_token
@@ -412,13 +400,6 @@ class KISService:
         """
         logger.info(f"📈 Fetching stock price: {stock_code}")
 
-        # 캐싱 (10초 TTL)
-        cache_key = f"kis_stock_price:{stock_code}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            logger.debug(f"✅ Using cached price for {stock_code}")
-            return cached
-
         tr_id = KIS_TR_IDS["stock_price"]
 
         params = {
@@ -445,9 +426,6 @@ class KISService:
             "market_cap": int(output.get("hts_avls", 0)) if output.get("hts_avls") else None,  # 시가총액
         }
 
-        # 캐싱 (10초 TTL)
-        cache_manager.set(cache_key, response, ttl=10)
-
         logger.info(f"✅ Stock price fetched: {stock_code} = {response['current_price']:,}원")
         return response
 
@@ -472,13 +450,6 @@ class KISService:
             또는 None (조회 실패 시)
         """
         logger.info(f"📊 [KIS] 일자별 주가 조회: {stock_code} ({start_date} ~ {end_date})")
-
-        # 캐싱 (60초 TTL)
-        cache_key = f"kis_daily_price:{stock_code}:{start_date}:{end_date}:{period}"
-        cached = cache_manager.get(cache_key)
-        if cached is not None:
-            logger.debug(f"✅ 캐시 히트: {cache_key}")
-            return cached
 
         tr_id = KIS_TR_IDS["stock_daily_price"]
 
@@ -525,9 +496,6 @@ class KISService:
 
             # 날짜 오름차순 정렬
             df.sort_index(inplace=True)
-
-            # 캐싱 (60초 TTL)
-            cache_manager.set(cache_key, df, ttl=60)
 
             logger.info(f"✅ [KIS] 일자별 주가 조회 완료: {stock_code} ({len(df)}일)")
             return df
@@ -658,13 +626,6 @@ class KISService:
         """
         logger.info(f"📊 [KIS] 지수 조회: {index_code}")
 
-        # 캐시 확인
-        cache_key = f"kis_index_price:{index_code}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            logger.debug(f"✅ [KIS] 지수 캐시 히트: {index_code}")
-            return cached
-
         # API 호출
         params = {
             "FID_COND_MRKT_DIV_CODE": "U",  # 업종
@@ -694,9 +655,6 @@ class KISService:
             "timestamp": datetime.now().isoformat(),
         }
 
-        # 캐싱 (60초)
-        cache_manager.set(cache_key, response, ttl=60)
-
         logger.info(f"✅ [KIS] 지수 조회 완료: {index_code} = {response['current_price']}")
         return response
 
@@ -723,13 +681,6 @@ class KISService:
             KISAPIError: API 호출 실패 시
         """
         logger.info(f"📊 [KIS] 지수 일자별 조회: {index_code} (period={period}, days={days})")
-
-        # 캐시 확인
-        cache_key = f"kis_index_daily:{index_code}:{period}:{days}"
-        cached = cache_manager.get(cache_key)
-        if cached:
-            logger.debug(f"✅ [KIS] 지수 일자별 캐시 히트: {index_code}")
-            return pd.DataFrame(cached)
 
         # 날짜 계산
         if start_date is None:
@@ -778,13 +729,6 @@ class KISService:
         df = pd.DataFrame(records)
         df = df.sort_values("Date")
         df = df.set_index("Date")
-
-        # 캐싱 (1시간)
-        cache_manager.set(
-            cache_key,
-            df.reset_index().to_dict("records"),
-            ttl=3600
-        )
 
         logger.info(f"✅ [KIS] 지수 일자별 조회 완료: {index_code} ({len(df)}일)")
         return df
