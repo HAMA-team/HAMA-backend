@@ -22,6 +22,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+uv.lock
 
 # Environment
 .env
@@ -73,3 +74,6 @@ celerybeat.pid
 
 # Redis
 dump.rdb
+
+# LangGraph
+.langgraph_api

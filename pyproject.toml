@@ -43,4 +43,5 @@ dependencies = [
     "setuptools==80.9.0",
     "sqlalchemy==2.0.44",
     "uvicorn[standard]==0.38.0",
+    "langgraph-cli==0.4.7",
 ]
