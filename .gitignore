@@ -73,3 +73,6 @@ celerybeat.pid
 
 # Redis
 dump.rdb
+
+# LangGraph
+.langgraph_api
