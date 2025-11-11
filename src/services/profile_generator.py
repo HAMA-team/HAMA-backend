@@ -9,10 +9,9 @@ from typing import Optional, List, Dict, Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from src.config.settings import settings
+from src.utils.llm_factory import get_claude_llm
 
 logger = logging.getLogger(__name__)
 
@@ -181,12 +180,8 @@ JSON으로 다음 필드를 반환하세요:
 위 정보를 바탕으로 투자자 프로파일을 생성하세요.""")
     ])
 
-    # 3. LLM 호출
-    llm = ChatOpenAI(
-        model="gpt-4o",
-        temperature=0.3,
-        api_key=settings.OPENAI_API_KEY
-    )
+    # 3. LLM 호출 (Claude Haiku 4.5 고정)
+    llm = get_claude_llm(temperature=0.3, max_tokens=1500)
 
     structured_llm = llm.with_structured_output(GeneratedProfile)
     profile_chain = profile_prompt | structured_llm

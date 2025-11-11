@@ -236,7 +236,7 @@ async def stream_multi_agent_execution(
             for chunk in _event_to_sse_chunks(event, stream_thinking):
                 yield chunk
 
-        state = await configured_app.aget_state()
+        state = await configured_app.aget_state(config)
         pending_nodes = getattr(state, "next", None)
 
         if pending_nodes:

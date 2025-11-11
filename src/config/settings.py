@@ -42,11 +42,11 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash-exp"
 
     # LLM Mode: openai (기본), anthropic, google 등
-    LLM_MODE: str = "openai"  # openai (기본), anthropic, google 등
+    LLM_MODE: str = "anthropic"  # openai, anthropic (기본), google 등
 
     # Router 전용 모델 (정확한 라우팅을 위해 강력한 모델 사용)
-    ROUTER_MODEL_PROVIDER: str = "openai"  # anthropic, openai, google
-    ROUTER_MODEL: str = "gpt-5"  # 종목명 인식 개선을 위해 gpt-4o 사용
+    ROUTER_MODEL_PROVIDER: str = "anthropic"  # anthropic (기본), openai, google
+    ROUTER_MODEL: str = "claude-haiku-4-5-20251001"  # 종목명 인식 개선을 위해 Claude 사용
 
 
     # Web Search
@@ -76,9 +76,9 @@ class Settings(BaseSettings):
         elif mode in ["google", "gemini"]:
             return "google"
 
-        # 레거시 모드 매핑 (기본값: OpenAI 우선)
-        # production, demo 등 모든 환경에서 OpenAI를 기본으로 사용
-        return "openai"
+        # 레거시 모드 매핑 (기본값: Claude 우선)
+        # production, demo 등 모든 환경에서 Claude를 기본으로 사용
+        return "anthropic"
 
     @property
     def llm_model_name(self) -> str:

@@ -166,7 +166,7 @@ def get_openai_llm(
     """강제로 OpenAI 사용 (모드 무시)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
-    model_name = model if model is not None else "gpt-4o-mini"
+    model_name = model if model is not None else "gpt-5-chat-latest"
 
     if not settings.OPENAI_API_KEY:
         raise ValueError(
@@ -271,17 +271,16 @@ def get_portfolio_risk_llm(
 def get_default_agent_llm(
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
-) -> ChatOpenAI:
-    """기본 에이전트 LLM (GPT-5-mini)"""
+) -> ChatAnthropic:
+    """기본 에이전트 LLM (Claude Haiku 4.5)"""
     temp = temperature if temperature is not None else settings.LLM_TEMPERATURE
     tokens = max_tokens if max_tokens is not None else settings.MAX_TOKENS
-    model_name = "gpt-5-mini"  # GPT-5-mini
+    model_name = settings.CLAUDE_MODEL
 
-    if not settings.OPENAI_API_KEY:
+    if not settings.ANTHROPIC_API_KEY:
         raise ValueError(
-            "OPENAI_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
+            "ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요."
         )
 
     loop_token = _loop_token()
-    return _build_llm("openai", model_name, float(temp), int(tokens), loop_token)
-
+    return _build_llm("anthropic", model_name, float(temp), int(tokens), loop_token)

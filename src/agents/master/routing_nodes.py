@@ -12,13 +12,14 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
 from src.agents.router.router_agent import route_query
 from src.config.settings import settings
 from src.schemas.graph_state import GraphState
 from src.services.stock_data_service import stock_data_service
+from src.utils.llm_factory import get_claude_llm
 from src.utils.stock_name_extractor import extract_stock_names_from_query
+from src.utils.text_utils import ensure_plain_text
 from src.workers.market_data import get_stock_price, get_index_price
 
 logger = logging.getLogger(__name__)
@@ -49,10 +50,12 @@ async def _resolve_stock_code_from_query(query: str) -> Optional[str]:
 async def routing_node(state: GraphState) -> Dict[str, Any]:
     """Router 프롬프트를 Supervisor 진입 노드로 재사용한다."""
 
-    query = state.get("query")
+    raw_query = state.get("query")
+    query = ensure_plain_text(raw_query).strip()
+
     if not query and state.get("messages"):
         last_message = state["messages"][-1]
-        query = getattr(last_message, "content", "")
+        query = ensure_plain_text(getattr(last_message, "content", "")).strip()
 
     if not query:
         logger.warning("⚠️ [RoutingNode] 빈 쿼리 - Supervisor가 직접 처리")
@@ -78,6 +81,7 @@ async def routing_node(state: GraphState) -> Dict[str, Any]:
 
     update: Dict[str, Any] = {
         "routing_decision": decision.model_dump(exclude_none=True),
+        "query": query,
         "depth_level": decision.depth_level,
         "personalization": personalization or None,
         "agents_to_call": list(dict.fromkeys(decision.agents_to_call)),
@@ -203,11 +207,9 @@ async def _render_worker_response(message: str, state: GraphState) -> str:
         ]
     )
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
+    llm = get_claude_llm(
         temperature=0.4,
-        max_completion_tokens=400,
-        api_key=settings.OPENAI_API_KEY,
+        max_tokens=400,
     )
 
     rendered = await (prompt | llm).ainvoke(

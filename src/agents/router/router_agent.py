@@ -12,10 +12,11 @@ from typing import Optional, Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, ConfigDict
 
 from src.config.settings import settings
+from src.utils.llm_factory import get_claude_llm
+from src.utils.text_utils import ensure_plain_text
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class RoutingDecision(BaseModel):
 
 
 async def route_query(
-    query: str,
+    query: Any,
     user_profile: dict,
     conversation_history: Optional[list] = None,
     config: Optional[RunnableConfig] = None,
@@ -170,11 +171,13 @@ async def route_query(
     Returns:
         RoutingDecision: 라우팅 결정
     """
+    normalized_query = ensure_plain_text(query)
+
     if conversation_history is None:
         conversation_history = []
 
     # 빈 쿼리 검증
-    query = query.strip()
+    query = normalized_query.strip()
     if not query:
         logger.warning("⚠️ [Router] 빈 질문 감지 - Supervisor가 직접 처리")
         return RoutingDecision(
@@ -205,7 +208,10 @@ async def route_query(
         history_lines = []
         for msg in conversation_history:
             role = "사용자" if msg["role"] == "user" else "AI"
-            history_lines.append(f"{role}: {msg['content']}")
+            content = ensure_plain_text(msg.get("content"))
+            if not content.strip():
+                continue
+            history_lines.append(f"{role}: {content}")
         conversation_context = "\n".join(history_lines)
         logger.info(f"📜 [Router] 대화 히스토리 포맷팅 완료 ({len(conversation_history)}개 메시지)")
         logger.info(f"  히스토리 내용:\n{conversation_context[:500]}{'...' if len(conversation_context) > 500 else ''}")
@@ -342,11 +348,9 @@ async def route_query(
             logger.info("💬 [Router] 간단한 질문 - 직접 답변 생성")
 
             # 간단한 답변용 LLM (structured output 없음, 빠른 모델)
-            simple_llm = ChatOpenAI(
-                model="gpt-4o-mini",  # 빠르고 저렴한 모델
+            simple_llm = get_claude_llm(
                 temperature=0.7,
-                max_completion_tokens=500,  # 간단한 답변용
-                api_key=settings.OPENAI_API_KEY,
+                max_tokens=500,
             )
 
             # 대화 히스토리 포함 프롬프트 (맥락 참고)
@@ -368,7 +372,10 @@ async def route_query(
                 logger.info(f"💬 [Router] simple_llm에 대화 히스토리 {len(conversation_history)}개 추가")
                 for msg in conversation_history:
                     role = "human" if msg["role"] == "user" else "ai"
-                    simple_messages.append((role, msg["content"]))
+                    content = ensure_plain_text(msg.get("content"))
+                    if not content.strip():
+                        continue
+                    simple_messages.append((role, content))
 
             # 현재 질문 추가
             simple_messages.append(("human", "{query}"))

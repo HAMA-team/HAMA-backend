@@ -9,10 +9,9 @@ from typing import Optional, List, Dict, Any
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from src.config.settings import settings
+from src.utils.llm_factory import get_claude_llm
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +108,9 @@ JSON으로 다음을 반환:
 프로파일 업데이트가 필요한지 판단하세요.""")
     ])
 
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
+    llm = get_claude_llm(
         temperature=0,
-        api_key=settings.OPENAI_API_KEY
+        max_tokens=800,
     )
 
     structured_llm = llm.with_structured_output(ProfileUpdate)

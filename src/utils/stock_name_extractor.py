@@ -1,13 +1,13 @@
 """
 종목명 추출 유틸리티
 
-GPT-5 LLM을 사용하여 사용자 쿼리에서 종목명을 정확하게 추출합니다.
+Claude Haiku 4.5 LLM을 사용하여 사용자 쿼리에서 종목명을 정확하게 추출합니다.
 """
 import logging
 import re
 from typing import List
 
-from src.utils.llm_factory import get_openai_llm
+from src.utils.llm_factory import get_claude_llm
 from src.utils.json_parser import safe_json_parse
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 async def extract_stock_names_from_query(query: str) -> List[str]:
     """
-    사용자 쿼리에서 종목명을 추출합니다 (GPT-5 기반).
+    사용자 쿼리에서 종목명을 추출합니다 (Claude 기반).
 
     Args:
         query: 사용자 쿼리 (예: "sk 하이닉스 전망 분석해줘", "삼성전자와 SK하이닉스 비교해줘")
@@ -41,9 +41,9 @@ async def extract_stock_names_from_query(query: str) -> List[str]:
         logger.info(f"✅ [StockExtractor] 종목 코드 발견: {codes}")
         return codes
 
-    # 2. GPT-5 LLM으로 종목명 추출
+    # 2. Claude LLM으로 종목명 추출
     try:
-        llm = get_openai_llm(temperature=0, max_tokens=500, model="gpt-5")
+        llm = get_claude_llm(temperature=0, max_tokens=500)
 
         prompt = f"""당신은 한국 주식 시장 전문가입니다. 사용자 쿼리에서 **종목명만** 추출하세요.
 

@@ -60,13 +60,13 @@ async def test_llm_models():
         print(f"   ❌ Error: {e}")
 
     # 5. Default Agent LLM 확인
-    print("\n5. Trading + 기타 Agent LLM (GPT-5-mini):")
+    print("\n5. Trading + 기타 Agent LLM (gpt-5-chat-latest):")
     try:
         default_llm = get_default_agent_llm(temperature=0, max_tokens=100)
         model_name = getattr(default_llm, 'model', None) or getattr(default_llm, 'model_name', None)
         print(f"   ✅ Model: {model_name}")
         print(f"   ✅ Type: {type(default_llm).__name__}")
-        assert model_name == "gpt-5-mini", f"Expected gpt-5-mini, got {model_name}"
+        assert model_name == "gpt-5-chat-latest", f"Expected gpt-5-chat-latest, got {model_name}"
     except Exception as e:
         print(f"   ❌ Error: {e}")
 
@@ -80,10 +80,10 @@ async def test_llm_models():
     print("     - Strategy Agent       : claude-haiku-4-5-20251001")
     print("     - Portfolio Agent      : claude-haiku-4-5-20251001")
     print("     - Risk Agent           : claude-haiku-4-5-20251001")
-    print("\n  ⚡ OpenAI 에이전트 (GPT-5-mini):")
-    print("     - Trading Agent        : gpt-5-mini")
-    print("     - Monitoring Agent     : gpt-5-mini")
-    print("     - Report Gen Agent     : gpt-5-mini")
+    print("\n  ⚡ OpenAI 에이전트 (gpt-5-chat-latest):")
+    print("     - Trading Agent        : gpt-5-chat-latest")
+    print("     - Monitoring Agent     : gpt-5-chat-latest")
+    print("     - Report Gen Agent     : gpt-5-chat-latest")
     print("\n  🎯 비용 절감 효과:")
     print("     - Sonnet → Haiku 변경으로 ~90% 비용 절감")
     print("     - 프롬프트 캐싱으로 추가 90% 비용 절감 (반복 호출 시)")

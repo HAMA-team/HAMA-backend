@@ -8,7 +8,6 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 import FinanceDataReader as fdr
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 from src.config.settings import settings
@@ -19,6 +18,7 @@ from src.repositories import (
 )
 from src.services.kis_service import kis_service
 from src.utils.indicators import calculate_all_indicators
+from src.utils.llm_factory import get_claude_llm
 
 logger = logging.getLogger(__name__)
 
@@ -480,13 +480,8 @@ class StockDataService:
 가장 유사한 종목을 찾아주세요.""")
         ])
 
-        # LLM 초기화 (빠르고 저렴한 모델 사용)
-        llm = ChatOpenAI(
-            model="gpt-4o-mini",
-            temperature=0,
-            max_completion_tokens=500,
-            api_key=settings.OPENAI_API_KEY,
-        )
+        # LLM 초기화 (Claude Haiku 4.5 사용)
+        llm = get_claude_llm(temperature=0, max_tokens=500)
 
         structured_llm = llm.with_structured_output(StockMatchResult)
         chain = prompt | structured_llm
