@@ -616,7 +616,7 @@ async def get_portfolio_chart_data(portfolio_id: str):
         holdings = portfolio_data.get("holdings", [])
         cash_balance = _float(portfolio_data.get("cash_balance", 0))
 
-        # 2. 실시간 주가 조회 (Redis 캐시 우선)
+        # 2. 실시간 주가 조회 (캐시 우선)
         stocks_data = []
         total_investment = 0.0
         total_market_value = 0.0

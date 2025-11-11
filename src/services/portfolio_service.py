@@ -258,7 +258,9 @@ class PortfolioService:
                 stocks,
             )
 
-            cash_balance_dec = cash_balance
+            # portfolio.cash_balance를 우선 사용 (KIS 동기화는 CASH position을 만들지 않음)
+            portfolio_cash = self._decimal(portfolio.cash_balance, Decimal("0"))
+            cash_balance_dec = portfolio_cash if portfolio_cash > 0 else cash_balance
             total_value_dec = self._decimal(portfolio.total_value)
             if total_value_dec is None or total_value_dec <= Decimal("0"):
                 total_value_dec = total_market_value + cash_balance_dec
@@ -429,7 +431,8 @@ class PortfolioService:
         codes: List[str],
     ) -> Dict[str, float]:
         try:
-            kospi = await stock_data_service.get_stock_price("KS11", days=len(returns_df) + 10)
+            # 지수 전용 메서드 사용 (get_stock_price는 종목용)
+            kospi = await stock_data_service.get_market_index("KOSPI", days=len(returns_df) + 10)
         except Exception:
             kospi = None
 

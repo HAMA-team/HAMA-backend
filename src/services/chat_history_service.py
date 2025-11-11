@@ -25,12 +25,15 @@ class ChatHistoryService:
         *,
         conversation_id: uuid.UUID,
         user_id: uuid.UUID,
-        automation_level: int,
         metadata: Optional[Dict[str, Any]] = None,
         summary: Optional[str] = None,
         last_agent: Optional[str] = None,
     ) -> ChatSession:
-        """Create or update a chat session row."""
+        """
+        Create or update a chat session row.
+
+        Note: automation_level 제거됨. hitl_config는 user_settings 또는 session_metadata에서 관리됩니다.
+        """
 
         def _upsert() -> ChatSession:
             with self._session_factory() as session:  # type: Session
@@ -45,14 +48,12 @@ class ChatHistoryService:
                     chat_session = ChatSession(
                         conversation_id=conversation_id,
                         user_id=user_id,
-                        automation_level=automation_level,
                         session_metadata=metadata,
                         summary=summary,
                         last_agent=last_agent,
                     )
                     session.add(chat_session)
                 else:
-                    chat_session.automation_level = automation_level
                     chat_session.session_metadata = metadata or chat_session.session_metadata
                     chat_session.summary = summary or chat_session.summary
                     chat_session.last_agent = last_agent or chat_session.last_agent

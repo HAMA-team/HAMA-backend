@@ -19,7 +19,7 @@ Phase 2 통합 사항을 검토한 결과, 현재 코드베이스는 KIS 주문 
 ## 3. BOK API 및 거시 지표 활용
 - [ ] `src/services/bok_service.py`가 하드코딩한 API 키를 `settings.BOK_API_KEY`로 대체하고 `.env` 로딩 경고 추가
 - [ ] BOK 응답 포맷을 표준화(`pydantic` 모델)하여 LangGraph 노드 사이에서 일관된 데이터 구조로 사용
-- [ ] 거시 지표 스냅샷을 DB/Redis에 주기적으로 적재하여 Agent 호출 시 API 부하를 줄이고 히스토리를 생성
+- [ ] 거시 지표 스냅샷을 DB/캐시에 주기적으로 적재하여 Agent 호출 시 API 부하를 줄이고 히스토리를 생성
 - [ ] 기준금리/환율 등 지표를 시각화하여 `docs/cache/` 또는 대시보드 API에서 재사용할 수 있도록 유틸 생성
 - [ ] 테스트: BOK API가 없는 환경을 고려해 `tests/test_services/test_bok_service.py`에 VCR 또는 로컬 샘플 응답 검증 추가
 

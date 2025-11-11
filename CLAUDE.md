@@ -61,7 +61,7 @@ Research Strategy Risk Trading Portfolio General
 - ✅ LangGraph Supervisor 패턴 아키텍처
 - ✅ 6개 서브그래프 에이전트 구현
 - ✅ 실제 데이터 연동 (pykrx, DART API)
-- ✅ Redis 캐싱 시스템
+- ✅ 인메모리 캐싱 시스템
 - ✅ HITL API (`/chat`, `/approve`)
 - 🔄 테스트 커버리지 확대 중
 
@@ -165,7 +165,7 @@ tests/
 **현재 연동 완료 (Phase 1):**
 - ✅ **pykrx**: 주가, 거래량, 종목 리스트 (FinanceDataReader 대체)
 - ✅ **DART API**: 재무제표, 공시, 기업 정보
-- ✅ **Redis**: 캐싱 (TTL 60초)
+- ✅ **인메모리 캐싱**: TTL 60초
 
 **Phase 2 예정:**
 - ⏸️ **한국투자증권 API**: 실시간 시세, 차트, 호가

@@ -183,3 +183,57 @@ async def test_market_cap_data():
         print(f"   - 상장주식수: {market_cap['shares_outstanding']:,}주")
     else:
         print(f"   - 상장주식수: N/A (KIS API 미지원)")
+
+
+@pytest.mark.asyncio
+async def test_llm_stock_name_matching():
+    """LLM 기반 종목명 매칭 테스트"""
+    print("\n=== Test 7: LLM 기반 종목명 매칭 ===")
+
+    # 테스트 케이스: 한글명 → 영문명 매칭
+    test_cases = [
+        ("네이버", "035420"),  # 네이버 → NAVER
+        ("삼전", "005930"),    # 삼전 → 삼성전자
+        ("카카오", "035720"),  # 카카오 → 카카오
+    ]
+
+    for user_input, expected_code in test_cases:
+        print(f"\n  테스트: '{user_input}' → {expected_code}")
+
+        # KOSPI 먼저 시도
+        result = await stock_data_service.get_stock_by_name(user_input, market="KOSPI")
+
+        # KOSPI에서 못 찾으면 KOSDAQ 시도
+        if not result:
+            result = await stock_data_service.get_stock_by_name(user_input, market="KOSDAQ")
+
+        assert result is not None, f"'{user_input}' 종목 코드를 찾을 수 없음"
+        assert result == expected_code, f"잘못된 매칭: '{user_input}' → {result} (예상: {expected_code})"
+
+        print(f"  ✅ 매칭 성공: '{user_input}' → {result}")
+
+    print(f"\n✅ LLM 기반 종목명 매칭 테스트 완료")
+
+
+@pytest.mark.asyncio
+async def test_llm_matching_cache():
+    """LLM 매칭 캐싱 테스트"""
+    print("\n=== Test 8: LLM 매칭 캐싱 ===")
+
+    user_input = "네이버"
+
+    # 첫 번째 요청 (LLM 호출)
+    print(f"  첫 번째 요청: '{user_input}'")
+    result1 = await stock_data_service.get_stock_by_name(user_input, market="KOSPI")
+    assert result1 is not None, f"'{user_input}' 매칭 실패"
+
+    # 두 번째 요청 (캐시 사용)
+    print(f"  두 번째 요청: '{user_input}' (캐시 사용 예상)")
+    result2 = await stock_data_service.get_stock_by_name(user_input, market="KOSPI")
+    assert result2 is not None, f"'{user_input}' 캐시 조회 실패"
+
+    # 결과 일치 확인
+    assert result1 == result2, f"캐시 결과 불일치: {result1} != {result2}"
+
+    print(f"  ✅ 캐싱 정상 동작: '{user_input}' → {result1}")
+    print(f"\n✅ LLM 매칭 캐싱 테스트 완료")

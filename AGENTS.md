@@ -20,7 +20,7 @@ Follow PEP 8 with four-space indentation, snake_case modules, and PascalCase cla
 Commits typically use Conventional-style prefixes (`Feat:`, `Fix:`, `Test:`); keep scopes tight and messages in the imperative mood. PRs should outline intent, list touched subsystems (agents, services, API), include proof of validation (`pytest`, local curl traces), and flag any configuration or schema changes. Request reviewers only after checks pass and secrets are scrubbed.
 
 ## Security & Configuration Tips
-Secrets load through `.env` into `Settings`; never commit live API keys, KIS credentials, or DART tokens. Guard optional integrations (Redis, LangSmith, KIS) behind configuration toggles or mocks under `src/services` so the agents remain testable in offline environments.
+Secrets load through `.env` into `Settings`; never commit live API keys, KIS credentials, or DART tokens. Guard optional integrations (LangSmith, KIS) behind configuration toggles or mocks under `src/services` so the agents remain testable in offline environments.
 
 ## 커뮤니케이션 원칙
 모든 사고 과정, 리뷰, 답변은 한국어로 작성합니다. 코드 주석 등 외부 시스템 제약이 있는 경우를 제외하고는 한국어 사용을 유지해 팀 간 컨텍스트를 일관되게 공유하세요.

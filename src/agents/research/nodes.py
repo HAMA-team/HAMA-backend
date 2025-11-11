@@ -1401,7 +1401,6 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     price_data = state.get("price_data") or {}
     technical_indicators = state.get("technical_indicators") or {}
     fundamental = state.get("fundamental_data") or {}
-    # investor = state.get("investor_trading_data") or {}  # pykrx 제거로 인해 사용 불가
     market_cap = state.get("market_cap_data") or {}
     stock_code = state.get("stock_code") or "N/A"
 

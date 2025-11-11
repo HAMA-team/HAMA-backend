@@ -108,34 +108,41 @@ Changelog: Phase 1 구현 완료 상태 반영, HITL 시스템 확장 반영
 
 ### 4.1 Multi-Agent Architecture
 
-**현재 구현 아키텍처 (LangGraph Supervisor 패턴)**
+**현재 구현 아키텍처 (Router 기반 단순화 구조)**
 
 ```
                     사용자 (Chat Interface)
                            ↕
-                    Router Agent
-               (질문 분석 및 에이전트 선택)
-                   Claude Sonnet 4.5 (or Haiku 4.5)
-                           ↓
-                  Supervisor (Master Agent)
-             (LangGraph Supervisor 패턴 기반 조율)
-              - 동적 라우팅 (LLM 기반)
-              - 병렬/순차 실행 관리
-              - 결과 통합
+                    Router Agent ⭐
+                (단일 진입점 - 질문 분석 및 실행 조율)
+                   Claude Sonnet 4.5
+                - 3단계 우선순위 라우팅:
+                  1) Worker 직접 호출 (초고속)
+                  2) 직접 답변 (간단한 질문)
+                  3) 에이전트 호출 (분석/전략/실행)
+                - 종목명 추출 & 개인화 설정
+                - 대화 히스토리 처리
                            ↓
         ┌─────────┬────────┼────────┬─────────┬─────────┐
         ↓         ↓        ↓        ↓         ↓         ↓
    Research  Strategy   Risk   Trading Portfolio Monitoring
-   (7 Workers)(3 Spec) (단일) (HITL)  (3 Nodes)  (배경)
+  (8 Workers)(6 Spec) (단일) (3 Nodes)(3 Nodes)  (배경 전용)
+   [HITL]    [HITL]          [HITL]   [HITL]
 
-   [Report Generator] ← 구현 완료, Supervisor 통합 진행 중
-
+   Report Generator ← 구현 완료, 미등록
 ```
 
+**아키텍처 변경 이력 (2025-11-09):**
+- ❌ **Supervisor 제거**: Router와 중복 라우팅, /multi-stream이 메인이므로 불필요
+- ❌ **/chat 엔드포인트 제거**: 레거시, /multi-stream으로 통합
+- ✅ **Router Agent 강화**: 단일 진입점으로 모든 라우팅 처리
+- ✅ **Trading Agent 단순화**: 9 노드 → 3 노드 (58% 코드 감소, LLM 호출 80% 감소)
+
 **기술 스택:**
-- **Supervisor**: `langgraph-supervisor` 라이브러리
+- **API**: `/multi-stream` (SSE 스트리밍)
 - **Router**: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
-- **Checkpointer**: Redis (프로덕션) / Memory (개발)
+- **Agents**: LangGraph Subgraph 패턴
+- **Checkpointer**: PostgreSQL (프로덕션) / Memory (개발)
 
 ### 4.2 주요 에이전트 상세
 
@@ -211,7 +218,7 @@ Changelog: Phase 1 구현 완료 상태 반영, HITL 시스템 확장 반영
 **기술 스택**
 - 프레임워크: `langgraph-supervisor` 라이브러리
 - LLM: ROUTER_MODEL 설정 (기본: GPT-4o)
-- Checkpointer: Redis / Memory
+- Checkpointer: PostgreSQL / Memory
 - Recursion Limit: 50 (Supervisor 패턴 최적화)
 
 ### 리서치 에이전트
@@ -735,8 +742,8 @@ HITL 개입 (자동화 레벨에 따라)
 | Frontend | Next.js (React) | Phase 2 |
 | Database | PostgreSQL | 동기 세션 |
 | Vector DB | Pinecone (DART RAG) | Phase 2 |
-| Checkpointer | Redis / Memory | Redis (프로덕션) |
-| Cache | Redis | TTL 60초 |
+| Checkpointer | PostgreSQL / Memory | PostgreSQL (프로덕션) |
+| Cache | 인메모리 | TTL 60초 |
 
 ---
 
@@ -832,7 +839,7 @@ HITL 개입 (자동화 레벨에 따라)
 
 **데이터 & 서비스**
 5. ✅ 데이터 연동 (pykrx, KIS, DART, BOK)
-6. ✅ Redis 캐싱 시스템 (TTL 60초)
+6. ✅ 인메모리 캐싱 시스템 (TTL 60초)
 7. ✅ 15+ 서비스 레이어 구현
 8. ✅ 종목명 추출 개선 (Claude Sonnet 4.5 기반)
 

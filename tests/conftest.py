@@ -327,23 +327,18 @@ def event_loop():
 @pytest.fixture(autouse=True)
 def reset_llm_cache():
     """
-    각 테스트 전 LLM 및 Graph 캐시를 초기화합니다.
+    각 테스트 전 LLM 캐시를 초기화합니다.
 
-    lru_cache로 캐싱된 LLM 인스턴스와 Graph가 이전 event loop를 참조하여
+    lru_cache로 캐싱된 LLM 인스턴스가 이전 event loop를 참조하여
     'Event loop is closed' 에러를 발생시키는 것을 방지합니다.
     """
     from src.utils.llm_factory import _build_llm
-    from src.agents.graph_master import get_compiled_graph, _load_agent
 
     _build_llm.cache_clear()
-    get_compiled_graph.cache_clear()
-    _load_agent.cache_clear()
 
     yield
 
     _build_llm.cache_clear()
-    get_compiled_graph.cache_clear()
-    _load_agent.cache_clear()
 
 
 @pytest.fixture(autouse=True)
