@@ -14,13 +14,9 @@ from src.agents.graph_master import build_graph
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph_sdk.schema import Command
-from src.services import chat_history_service, portfolio_service
-from src.services.portfolio_preview_service import (
-    calculate_portfolio_preview,
-    calculate_weight_change
-)
+from src.services import chat_history_service
+from src.services.hitl_interrupt_service import handle_hitl_interrupt
 from src.services.user_profile_service import UserProfileService
-from src.schemas.hitl import ApprovalRequest as HITLApprovalRequest
 from src.schemas.hitl_config import (
     HITLConfig,
     PRESET_COPILOT,
@@ -38,74 +34,6 @@ from src.models.chat import ChatSession
 router = APIRouter()
 
 DEMO_USER_UUID = settings.demo_user_uuid
-
-
-def _save_approval_request_to_db(
-    db: Session,
-    user_id: uuid.UUID,
-    request_type: str,
-    approval_data: dict,
-    hitl_config: HITLConfig,
-) -> Optional[uuid.UUID]:
-    """
-    ApprovalRequest를 DB에 저장합니다.
-
-    Args:
-        db: DB 세션
-        user_id: 사용자 ID
-        request_type: 요청 타입 (trade_approval, rebalance_approval)
-        approval_data: 승인 요청 데이터
-        hitl_config: HITL 설정
-
-    Returns:
-        저장된 request_id (UUID) 또는 None (실패 시)
-    """
-    try:
-        # 요청 제목 생성
-        if request_type == "trade_approval":
-            stock_name = approval_data.get("stock_name", approval_data.get("stock_code", ""))
-            action = approval_data.get("action", "거래")
-            request_title = f"{stock_name} {action} 승인 요청"
-        elif request_type == "rebalance_approval":
-            request_title = "포트폴리오 리밸런싱 승인 요청"
-        else:
-            request_title = "승인 요청"
-
-        # 제안 내용 구성
-        proposed_actions = approval_data.copy()
-
-        # 리스크 경고 추출
-        risk_warnings = []
-        if "risk_warning" in approval_data and approval_data["risk_warning"]:
-            risk_warnings.append(approval_data["risk_warning"])
-
-        # DB 모델 생성
-        approval_request = ApprovalRequestModel(
-            user_id=user_id,
-            request_type=request_type,
-            request_title=request_title,
-            request_description=approval_data.get("message"),
-            proposed_actions=proposed_actions,
-            risk_warnings=risk_warnings if risk_warnings else None,
-            alternatives=approval_data.get("alternatives"),
-            status="pending",
-            triggering_agent=approval_data.get("type", request_type).split("_")[0],  # "trade" or "rebalance"
-            automation_level=config_to_level(hitl_config),
-            urgency="normal",
-            expires_at=datetime.utcnow() + timedelta(hours=24),  # 24시간 후 만료
-        )
-
-        db.add(approval_request)
-        db.commit()
-        db.refresh(approval_request)
-
-        logger.info(f"✅ ApprovalRequest 저장 완료: {approval_request.request_id}")
-        return approval_request.request_id
-
-    except Exception as e:
-        logger.error(f"❌ ApprovalRequest 저장 실패: {e}")
-        db.rollback()
-        return None
 
 
 def _ensure_uuid(value: Optional[str]) -> uuid.UUID:
@@ -247,7 +175,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         )
 
         # Build graph with automation level
-        app = build_graph(automation_level=legacy_level, backend_key="redis")
+        app = build_graph(automation_level=legacy_level)
 
         # Config for checkpointer
         config: RunnableConfig = {
@@ -280,6 +208,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "trade_result": None,
             "summary": None,
             "final_response": None,
+            "routing_decision": None,
+            "personalization": None,
+            "worker_action": None,
+            "worker_params": None,
+            "direct_answer": None,
+            "clarification_needed": False,
+            "clarification_message": None,
+            "conversation_history": [],
         }
 
         # Run Langgraph
@@ -288,143 +224,28 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         # Check for interrupt
         state = await configured_app.aget_state()
 
-        if state.next:  # Interrupt 발생 (다음 노드가 있음)
-            interrupts = state.tasks
-            interrupt_info = None
-
-            if interrupts:
-                interrupt_task = interrupts[0]
-                interrupt_info = interrupt_task.interrupts[0] if interrupt_task.interrupts else None
-
-            # Interrupt 데이터 파싱
-            interrupt_data = interrupt_info.value if interrupt_info else {}
-
-            # 기본 approval_request (기존 형식)
-            approval_request = {
-                "type": "trade_approval",
-                "thread_id": conversation_id,
-                "pending_node": state.next[0] if state.next else None,
-                "interrupt_data": interrupt_data,
-                "message": "매매 주문을 승인하시겠습니까?",
-            }
-
-            # Interrupt 타입에 따라 처리
-            interrupt_type = interrupt_data.get("type", "")
-
-            # 매매 주문인 경우 상세 정보 계산
-            if interrupt_type == "trade_approval" or (interrupt_data and interrupt_data.get("action") in ["buy", "sell"]):
-                try:
-                    # 포트폴리오 조회
-                    snapshot = await portfolio_service.get_portfolio_snapshot()
-
-                    if snapshot and snapshot.portfolio_data:
-                        portfolio_data = snapshot.portfolio_data
-                        holdings = portfolio_data.get("holdings", [])
-                        total_value = float(portfolio_data.get("total_value", 0))
-                        cash = float(portfolio_data.get("cash_balance", 0))
-
-                        # 현재/예상 비중 계산
-                        current_weight, expected_weight = await calculate_weight_change(
-                            current_holdings=holdings,
-                            new_order=interrupt_data,
-                            total_value=total_value,
-                            cash=cash
-                        )
-
-                        # 예상 포트폴리오 미리보기
-                        portfolio_preview = await calculate_portfolio_preview(
-                            current_holdings=holdings,
-                            new_order=interrupt_data,
-                            total_value=total_value,
-                            cash=cash
-                        )
-
-                        # 리스크 경고 생성
-                        risk_warning = None
-                        if expected_weight > 0.4:
-                            risk_warning = f"⚠️ 단일 종목 {expected_weight*100:.1f}% 집중 - 분산 투자를 권장합니다"
-
-                        # HITLApprovalRequest 구조로 변환
-                        approval_request = HITLApprovalRequest(
-                            action=interrupt_data.get("action", "buy"),
-                            stock_code=interrupt_data.get("stock_code", ""),
-                            stock_name=interrupt_data.get("stock_name", ""),
-                            quantity=interrupt_data.get("quantity", 0),
-                            price=interrupt_data.get("price", 0),
-                            total_amount=interrupt_data.get("total_amount", 0),
-                            current_weight=current_weight,
-                            expected_weight=expected_weight,
-                            risk_warning=risk_warning,
-                        alternatives=None,  # TODO: Risk Agent에서 생성
-                            expected_portfolio_preview=portfolio_preview.dict() if portfolio_preview else None
-                        ).dict()
-
-                except Exception as e:
-                    logger.warning(f"HITL 상세 정보 계산 실패: {e}")
-                    # 실패 시 기본 형식 유지
-
-            # 리밸런싱 승인인 경우
-            elif interrupt_type == "rebalance_approval":
-                try:
-                    # 리밸런싱 상세 정보는 interrupt_data에 이미 포함되어 있음
-                    approval_request = {
-                        "type": "rebalance_approval",
-                        "thread_id": conversation_id,
-                        "pending_node": state.next[0] if state.next else None,
-                        "order_id": interrupt_data.get("order_id"),
-                        "rebalancing_needed": interrupt_data.get("rebalancing_needed", False),
-                        "trades_required": interrupt_data.get("trades_required", []),
-                        "proposed_allocation": interrupt_data.get("proposed_allocation", []),
-                        "expected_return": interrupt_data.get("expected_return"),
-                        "expected_volatility": interrupt_data.get("expected_volatility"),
-                        "sharpe_ratio": interrupt_data.get("sharpe_ratio"),
-                        "constraint_violations": interrupt_data.get("constraint_violations", []),
-                        "market_condition": interrupt_data.get("market_condition", "중립장"),
-                        "message": interrupt_data.get("message", "리밸런싱을 승인하시겠습니까?"),
-                    }
-                except Exception as e:
-                    logger.warning(f"리밸런싱 승인 정보 파싱 실패: {e}")
-                    # 실패 시 기본 형식 유지
-
-            # DB에 승인 요청 저장
-            request_id = _save_approval_request_to_db(
-                db=db,
-                user_id=DEMO_USER_UUID,
-                request_type=interrupt_type,
-                approval_data=approval_request,
-                automation_level=legacy_level
-            )
-            if request_id:
-                approval_request["request_id"] = str(request_id)
-                logger.info(f"✅ ApprovalRequest DB 저장 완료: {request_id}")
-            else:
-                logger.warning("⚠️ ApprovalRequest DB 저장 실패 (계속 진행)")
-
-            message_text = "🔔 사용자 승인이 필요합니다."
-
-            await chat_history_service.append_message(
-                conversation_id=conversation_uuid,
-                role="assistant",
-                content=message_text,
-                metadata={"requires_approval": True, "approval_request": approval_request},
-            )
-            await chat_history_service.upsert_session(
-                conversation_id=conversation_uuid,
-                user_id=DEMO_USER_UUID,
-                automation_level=legacy_level,
-                metadata={"interrupted": True},
-            )
-
-            return ChatResponse(
-                message=message_text,
+        if state.next:  # Interrupt 발생
+            hitl_result = await handle_hitl_interrupt(
+                state=state,
+                conversation_uuid=conversation_uuid,
                 conversation_id=conversation_id,
-                requires_approval=True,
-                approval_request=approval_request,
-                metadata={
-                    "interrupted": True,
-                    "automation_level": legacy_level,
-                },
+                user_id=DEMO_USER_UUID,
+                db=db,
+                automation_level=legacy_level,
+                hitl_config=hitl_config,
             )
+
+            if hitl_result:
+                return ChatResponse(
+                    message=hitl_result["message"],
+                    conversation_id=conversation_id,
+                    requires_approval=True,
+                    approval_request=hitl_result["approval_request"],
+                    metadata={
+                        "interrupted": True,
+                        "automation_level": legacy_level,
+                    },
+                )
 
         # No interrupt - 정상 완료
         data = result.get("final_response", {})
@@ -753,8 +574,8 @@ async def approve_action(
             metadata=decision_metadata,
         )
 
-        # Redis checkpointer는 async를 지원하지 않으므로 memory 사용
-        app = build_graph(automation_level=legacy_level, backend_key="memory")
+        # 메모리 체크포인터를 사용해 그래프 상태를 복구
+        app = build_graph(automation_level=legacy_level)
 
         config: RunnableConfig = {
             "configurable": {

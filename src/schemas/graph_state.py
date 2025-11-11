@@ -76,6 +76,30 @@ class GraphState(TypedDict):
     supervisor_reasoning: Optional[str]
     """Supervisor의 에이전트 선택 이유"""
 
+    routing_decision: Optional[Dict[str, Any]]
+    """Router 프롬프트 출력 전체 (디버깅/감사 로그용)"""
+
+    depth_level: Optional[str]
+    """분석 깊이 (brief/detailed/comprehensive)"""
+
+    personalization: Optional[Dict[str, Any]]
+    """개인화 설정 (사용자 전문성, 지표 강조 등)"""
+
+    worker_action: Optional[str]
+    """직접 호출할 워커 이름 (stock_price/index_price 등)"""
+
+    worker_params: Optional[Dict[str, Any]]
+    """워커 파라미터"""
+
+    direct_answer: Optional[str]
+    """Router가 직접 생성한 답변"""
+
+    clarification_needed: Optional[bool]
+    """추가 정보가 필요한 경우 True"""
+
+    clarification_message: Optional[str]
+    """질의 명확화를 위한 안내 문구"""
+
     # ==================== 에이전트 결과 ====================
 
     agent_results: Annotated[Dict[str, Any], operator.or_]
@@ -113,3 +137,6 @@ class GraphState(TypedDict):
 
     final_response: Optional[Dict[str, Any]]
     """최종 응답 데이터 (기존 호환용)"""
+
+    conversation_history: Optional[List[Dict[str, Any]]]
+    """최근 대화 히스토리 (Router 컨텍스트용)"""

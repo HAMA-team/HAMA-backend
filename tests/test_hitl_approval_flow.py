@@ -21,7 +21,7 @@ async def test_hitl_approval_flow():
     print("="*60)
 
     # 1. Copilot 모드로 그래프 빌드 (승인 필요)
-    app = build_graph(automation_level=2, backend_key="memory")
+    app = build_graph(automation_level=2)
 
     user_id = str(uuid4())
     conversation_id = str(uuid4())

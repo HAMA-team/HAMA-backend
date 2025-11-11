@@ -20,23 +20,22 @@ from typing import Any, Dict, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
+from langgraph.graph import StateGraph, END
 try:
     from langgraph.checkpoints.memory import MemorySaver
 except ImportError:  # pragma: no cover - 호환성 유지
     from langgraph.checkpoint.memory import MemorySaver  # type: ignore
-
-try:  # Redis saver is optional
-    from langgraph.checkpoints.redis import RedisSaver  # type: ignore
-except ImportError:  # pragma: no cover - optional dependency
-    try:
-        from langgraph.checkpoint.redis import RedisSaver  # type: ignore
-    except ImportError:
-        RedisSaver = None  # type: ignore[assignment]
 from langgraph_supervisor import create_supervisor
 
 from src.config.settings import settings
 from src.schemas.graph_state import GraphState
-from src.utils.llm_factory import get_llm
+from src.agents.master.routing_nodes import (
+    routing_node,
+    worker_dispatch_node,
+    direct_answer_node,
+    clarification_node,
+    determine_routing_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +193,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 사용자 요청을 분석하여 위 원칙에 따라 라우팅하세요.
 """
 
-    supervisor = create_supervisor(
+    supervisor_graph = create_supervisor(
         agents=[
             _load_agent("src.agents.research", "research_agent"),
             _load_agent("src.agents.strategy", "strategy_agent"),
@@ -209,19 +208,44 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
         state_schema=GraphState,  # MasterState로 에이전트 간 데이터 공유
     )
 
+    supervisor_app = supervisor_graph.compile(name="supervisor_agent")
+
     logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s)", automation_level)
 
-    return supervisor
+    return supervisor_app
 
 
 def build_state_graph(automation_level: int = 2):
     """
-    Supervisor 기반 Langgraph 정의를 반환합니다.
-
-    그래프 정의 단계에서는 순수하게 구조만 생성하고 부수효과를 최소화합니다.
+    Routing → Worker/Direct 처리 → Supervisor 실행을 포함한 Langgraph 정의를 생성합니다.
     """
-    # build_supervisor 내부에서 ROUTER_MODEL을 사용하므로 llm=None으로 전달
-    return build_supervisor(automation_level=automation_level, llm=None)
+    supervisor_graph = build_supervisor(automation_level=automation_level, llm=None)
+
+    workflow = StateGraph(GraphState)
+    workflow.add_node("routing", routing_node)
+    workflow.add_node("worker_dispatch", worker_dispatch_node)
+    workflow.add_node("direct_answer", direct_answer_node)
+    workflow.add_node("clarification", clarification_node)
+    workflow.add_node("supervisor", supervisor_graph)
+
+    workflow.set_entry_point("routing")
+    workflow.add_conditional_edges(
+        "routing",
+        determine_routing_path,
+        {
+            "worker_dispatch": "worker_dispatch",
+            "direct_answer": "direct_answer",
+            "clarification": "clarification",
+            "supervisor": "supervisor",
+        },
+    )
+
+    workflow.add_edge("worker_dispatch", END)
+    workflow.add_edge("direct_answer", END)
+    workflow.add_edge("clarification", END)
+    workflow.add_edge("supervisor", END)
+
+    return workflow
 
 
 def _resolve_backend_key(backend: Optional[str] = None) -> str:
@@ -232,50 +256,17 @@ def _resolve_backend_key(backend: Optional[str] = None) -> str:
 
 def _create_checkpointer(backend_key: str):
     """
-    backend_key에 따라 적절한 체크포인터 인스턴스를 생성합니다.
-
-    Note: PostgresSaver는 context manager이므로 __enter__()를 호출하여
-    실제 인스턴스를 얻습니다. 연결은 프로세스 종료 시까지 유지됩니다.
+    현재 환경에서는 Redis/Postgres 체크포인터를 사용하지 않고
+    항상 인메모리 Saver를 반환한다.
     """
     key = backend_key.lower()
 
-    # PostgreSQL checkpointer는 비동기 context manager로 구현되어
-    # 현재 동기 캐싱 구조에서는 사용이 복잡함
-    # 프로덕션에서는 Redis checkpointer 사용 권장
-    if key == "postgres":
+    if key != "memory":
         logger.warning(
-            "PostgreSQL checkpointer는 비동기 초기화가 필요하여 지원하지 않습니다. "
-            "Redis checkpointer 사용을 권장합니다."
+            "Graph checkpoint backend '%s'는 지원되지 않아 MemorySaver로 대체합니다.",
+            backend_key,
         )
-        return MemorySaver()
 
-    if key == "redis":
-        if RedisSaver is None:  # pragma: no cover - 선택적 의존성 누락
-            raise ImportError("langgraph-checkpoint-redis 패키지가 필요합니다.")
-
-        conn_manager = RedisSaver.from_conn_string(settings.REDIS_URL)
-
-        if hasattr(conn_manager, "__enter__"):
-            return conn_manager.__enter__()
-
-        if hasattr(conn_manager, "__aenter__"):
-            async def _enter_async():
-                async with RedisSaver.from_conn_string(settings.REDIS_URL) as saver:
-                    return saver
-
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(_enter_async())
-
-            raise RuntimeError(
-                "비동기 RedisSaver 초기화가 필요합니다. 애플리케이션 시작 시 "
-                "별도의 부트스트랩 단계에서 체크포인터를 준비하세요."
-            )
-
-        raise RuntimeError("RedisSaver 컨텍스트 매니저를 초기화할 수 없습니다.")
-
-    # 기본값: 인메모리 Saver
     return MemorySaver()
 
 
@@ -366,6 +357,17 @@ async def run_graph(
         "messages": [HumanMessage(content=query)],
         "query": query,
         "request_id": request_id,
+        "agents_to_call": [],
+        "agents_called": [],
+        "agent_results": {},
+        "routing_decision": None,
+        "personalization": None,
+        "worker_action": None,
+        "worker_params": None,
+        "direct_answer": None,
+        "clarification_needed": False,
+        "clarification_message": None,
+        "conversation_history": [],
     }
 
     logger.info("🚀 [Graph] 실행 시작: %s...", query[:50])
