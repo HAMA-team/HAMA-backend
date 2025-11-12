@@ -4,7 +4,16 @@ Portfolio 차트 관련 스키마
 Frontend 차트 컴포넌트(Treemap, Pie, Bar)용 데이터 구조
 """
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Dict
+from typing import List, Dict, TypedDict
+
+
+class PortfolioHolding(TypedDict, total=False):
+    """포트폴리오 내 단일 자산 정보"""
+
+    stock_code: str
+    stock_name: str
+    weight: float
+    value: float
 
 
 class StockChartData(BaseModel):

@@ -197,7 +197,6 @@ async def handle_hitl_interrupt(
     await chat_history_service.upsert_session(
         conversation_id=conversation_uuid,
         user_id=user_id,
-        automation_level=automation_level,
         metadata={"interrupted": True},
     )
 

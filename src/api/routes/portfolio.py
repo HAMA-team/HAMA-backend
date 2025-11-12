@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
-from src.agents.portfolio.nodes import rebalance_plan_node
+# TODO: portfolio agent 삭제됨 - rebalance_plan_node를 tool로 재구현 필요
+# from src.agents.portfolio.nodes import rebalance_plan_node
 from src.services import (
     KISAPIError,
     KISAuthError,
@@ -528,16 +529,24 @@ async def rebalance_portfolio(portfolio_id: str):
         total_value=total_value,
     )
 
-    state = await rebalance_plan_node(
-        {
-            "current_holdings": current_holdings,
-            "proposed_allocation": proposed_allocation,
-            "total_value": total_value,
-            "automation_level": 2,
-        }
-    )
+    # TODO: rebalance_plan_node를 tool로 재구현 필요
+    # state = await rebalance_plan_node(
+    #     {
+    #         "current_holdings": current_holdings,
+    #         "proposed_allocation": proposed_allocation,
+    #         "total_value": total_value,
+    #         "automation_level": 2,
+    #     }
+    # )
+    # trades = state.get("trades_required", [])
 
-    trades = state.get("trades_required", [])
+    # 임시: 빈 결과 반환
+    state = {
+        "rebalancing_needed": False,
+        "hitl_required": False,
+        "trades_required": [],
+    }
+    trades = []
 
     return {
         "portfolio_id": str(snapshot.portfolio_data.get("portfolio_id") or portfolio_id),

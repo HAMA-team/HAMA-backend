@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.agents.graph_master import build_graph
+from src.subgraphs.graph_master import build_graph
 from src.services.user_profile_service import user_profile_service
 from src.services import chat_history_service
 from src.services.hitl_interrupt_service import handle_hitl_interrupt
@@ -183,7 +183,6 @@ async def stream_multi_agent_execution(
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=demo_user_uuid,
-            automation_level=automation_level,
             metadata={"hitl_preset": hitl_config.preset},
         )
         await chat_history_service.append_message(

@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Union, Coroutine
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.agents.research.state import ResearchState
 from src.config.settings import settings
 from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse

@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 
-from src.agents.research import research_agent
+from src.subgraphs.research_subgraph import research_agent
 from src.services import stock_data_service
 
 router = APIRouter()

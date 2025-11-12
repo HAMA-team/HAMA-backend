@@ -8,7 +8,7 @@ import logging
 from typing import Dict, List, Optional
 from decimal import Decimal
 
-from src.agents.portfolio.state import PortfolioHolding
+from src.schemas.portfolio import PortfolioHolding
 from src.services.stock_data_service import stock_data_service
 
 logger = logging.getLogger(__name__)

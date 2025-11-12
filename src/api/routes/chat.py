@@ -10,7 +10,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from src.agents.graph_master import build_graph
+from src.subgraphs.graph_master import build_graph
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph_sdk.schema import Command
@@ -122,18 +122,8 @@ class ChatSessionSummary(BaseModel):
     last_message: Optional[str] = None
     last_message_at: Optional[str] = None
     hitl_config: HITLConfig = Field(default_factory=PRESET_COPILOT.model_copy)
-    automation_level: Optional[int] = Field(
-        default=None,
-        description="[Deprecated] 호환성 유지를 위한 automation_level 필드",
-    )
     message_count: int
     created_at: Optional[str] = None
-
-    @model_validator(mode="after")
-    def _populate_legacy_level(self) -> "ChatSessionSummary":
-        if self.automation_level is None:
-            self.automation_level = config_to_level(self.hitl_config)
-        return self
 
 
 @router.post("/", response_model=ChatResponse)
@@ -166,7 +156,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=legacy_level,
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -339,7 +328,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=legacy_level,
             metadata=message_metadata,
             summary=data.get("summary"),
             last_agent=(data.get("agents_called") or [None])[-1] if data.get("agents_called") else None,
@@ -438,7 +426,6 @@ async def list_chat_sessions(limit: int = Query(50, ge=1, le=100)):
                 title=title,
                 last_message=last_message_text,
                 last_message_at=_serialize_datetime(last_message_at),
-                automation_level=session.automation_level or 2,
                 message_count=message_count,
                 created_at=_serialize_datetime(session.created_at),
             )
@@ -565,7 +552,6 @@ async def approve_action(
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
-            automation_level=legacy_level,
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -639,7 +625,6 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=legacy_level,
                 metadata={"decision": "approved"},
                 summary=final_response.get("summary"),
             )
@@ -674,7 +659,6 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=legacy_level,
                 metadata={"decision": "rejected"},
                 summary="사용자가 거부함",
             )
@@ -708,7 +692,6 @@ async def approve_action(
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                automation_level=legacy_level,
                 metadata={"decision": "modified"},
                 summary=final_response.get("summary"),
             )

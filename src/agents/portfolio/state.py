@@ -7,15 +7,7 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 from src.schemas.hitl_config import HITLConfig
-
-
-class PortfolioHolding(TypedDict, total=False):
-    """포트폴리오 내 단일 자산 정보"""
-
-    stock_code: str
-    stock_name: str
-    weight: float
-    value: float
+from src.schemas.portfolio import PortfolioHolding
 
 
 class RebalanceInstruction(TypedDict, total=False):
