@@ -135,6 +135,7 @@ class KISService:
         # 토큰 관리
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
+        self._token_lock = asyncio.Lock()  # 토큰 발급 동시성 제어
 
         # Rate Limiter 설정 (초당 1회)
         self._rate_limiter = RateLimiter(calls_per_second=1.0)
@@ -145,7 +146,7 @@ class KISService:
 
     async def _get_access_token(self) -> str:
         """
-        OAuth 2.0 액세스 토큰 발급 (캐싱)
+        OAuth 2.0 액세스 토큰 발급 (캐싱 + Race Condition 방지)
 
         Returns:
             access_token: 액세스 토큰
@@ -153,60 +154,68 @@ class KISService:
         Raises:
             KISAuthError: 인증 실패 시
         """
-        # 메모리에 보관 중인 토큰이 아직 유효한지 확인
+        # Lock 없이 빠른 체크 (대부분의 경우)
         if self._access_token and self._token_expires_at:
             if datetime.now() < self._token_expires_at - timedelta(minutes=5):
                 logger.debug("✅ Using existing KIS access token")
                 return self._access_token
 
-        # 새 토큰 발급
-        logger.info("🔑 Requesting new KIS access token...")
+        # Lock을 획득하여 동시 발급 방지
+        async with self._token_lock:
+            # Lock 내부에서 다시 한번 체크 (다른 요청이 이미 발급했을 수 있음)
+            if self._access_token and self._token_expires_at:
+                if datetime.now() < self._token_expires_at - timedelta(minutes=5):
+                    logger.debug("✅ Using existing KIS access token (after lock)")
+                    return self._access_token
 
-        if not self.app_key or not self.app_secret:
-            raise KISAuthError("KIS_APP_KEY and KIS_APP_SECRET must be configured in .env")
+            # 새 토큰 발급
+            logger.info("🔑 Requesting new KIS access token...")
 
-        url = f"{self.base_url}{KIS_ENDPOINTS['auth']}"
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "text/plain",
-            "charset": "UTF-8"
-        }
-        data = {
-            "grant_type": "client_credentials",
-            "appkey": self.app_key,
-            "appsecret": self.app_secret,
-        }
+            if not self.app_key or not self.app_secret:
+                raise KISAuthError("KIS_APP_KEY and KIS_APP_SECRET must be configured in .env")
 
-        try:
-            # 비동기로 실행
-            response = await asyncio.to_thread(
-                requests.post, url, json=data, headers=headers, timeout=10
-            )
+            url = f"{self.base_url}{KIS_ENDPOINTS['auth']}"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "text/plain",
+                "charset": "UTF-8"
+            }
+            data = {
+                "grant_type": "client_credentials",
+                "appkey": self.app_key,
+                "appsecret": self.app_secret,
+            }
 
-            if response.status_code != 200:
-                logger.error(f"❌ KIS auth failed: {response.status_code} - {response.text}")
-                raise KISAuthError(f"Token request failed: {response.status_code}")
+            try:
+                # 비동기로 실행
+                response = await asyncio.to_thread(
+                    requests.post, url, json=data, headers=headers, timeout=10
+                )
 
-            result = response.json()
-            access_token = result.get("access_token")
-            expires_in = result.get("expires_in", 86400)  # 기본 24시간
+                if response.status_code != 200:
+                    logger.error(f"❌ KIS auth failed: {response.status_code} - {response.text}")
+                    raise KISAuthError(f"Token request failed: {response.status_code}")
 
-            if not access_token:
-                raise KISAuthError("No access_token in response")
+                result = response.json()
+                access_token = result.get("access_token")
+                expires_in = result.get("expires_in", 86400)  # 기본 24시간
 
-            # 토큰 저장 (발급 시점 기준으로 유효 기간 관리)
-            self._access_token = access_token
-            self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                if not access_token:
+                    raise KISAuthError("No access_token in response")
 
-            logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")
-            return access_token
+                # 토큰 저장 (발급 시점 기준으로 유효 기간 관리)
+                self._access_token = access_token
+                self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
-        except RequestException as e:
-            logger.error(f"❌ KIS auth request failed: {e}")
-            raise KISAuthError(f"Request failed: {e}") from e
-        except json.JSONDecodeError as e:
-            logger.error(f"❌ KIS auth response parsing failed: {e}")
-            raise KISAuthError(f"JSON decode failed: {e}") from e
+                logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")
+                return access_token
+
+            except RequestException as e:
+                logger.error(f"❌ KIS auth request failed: {e}")
+                raise KISAuthError(f"Request failed: {e}") from e
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ KIS auth response parsing failed: {e}")
+                raise KISAuthError(f"JSON decode failed: {e}") from e
 
     async def _api_call(
         self,

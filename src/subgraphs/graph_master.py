@@ -17,6 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph_supervisor import create_supervisor
 
 from src.subgraphs.research_subgraph import research_agent
+from src.subgraphs.quantitative_subgraph import quantitative_agent
 from src.subgraphs.tools import get_all_tools
 from src.config.settings import settings
 from src.schemas.graph_state import GraphState
@@ -76,12 +77,17 @@ execute_trade 호출 전 반드시:
 사용자: "PER이 뭐야?"
 → [tool 호출 없이 직접 답변] "PER(주가수익비율)은..."
 
-## 예시 3: 심층 분석 위임
-사용자: "삼성전자 종합 분석해줘"
+## 예시 3: 정성적 분석 위임
+사용자: "삼성전자 최근 뉴스 분석해줘"
 → resolve_ticker("삼성전자")
-→ transfer_to_research_agent(query="삼성전자 종합 분석", ticker="005930", depth="deep_dive")
+→ transfer_to_research_agent(query="삼성전자 뉴스 분석", ticker="005930")
 
-## 예시 4: 매매 실행 (HITL)
+## 예시 4: 정량적 분석 위임
+사용자: "삼성전자 재무제표 분석해줘"
+→ resolve_ticker("삼성전자")
+→ transfer_to_quantitative_agent(query="삼성전자 재무제표 분석", ticker="005930")
+
+## 예시 5: 매매 실행 (HITL)
 사용자: "삼성전자 10주 매수해줘"
 → resolve_ticker("삼성전자")
 → get_portfolio_positions()
@@ -137,9 +143,9 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
     prompt = build_supervisor_prompt(automation_level)
 
     # SubGraphs 등록 (이미 compile된 상태)
-    # TODO: Quantitative SubGraph 추가 예정
     agents = [
-        research_agent,  # Research SubGraph (정성적 분석)
+        research_agent,      # Research SubGraph (정성적 분석)
+        quantitative_agent,  # Quantitative SubGraph (정량적 분석)
     ]
 
     logger.info(f"👥 [Supervisor] SubGraphs 로드 완료: {len(agents)}개")
@@ -166,23 +172,6 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
 # ==================== Graph 컴파일 ====================
 
-def _create_checkpointer():
-    """
-    체크포인터 생성 (현재는 인메모리만 지원)
-
-    Returns:
-        MemorySaver: 인메모리 체크포인터
-    """
-    backend = getattr(settings, "GRAPH_CHECKPOINT_BACKEND", "memory").lower()
-
-    if backend != "memory":
-        logger.warning(
-            "Graph checkpoint backend '%s'는 지원되지 않아 MemorySaver로 대체합니다.",
-            backend,
-        )
-
-    return MemorySaver()
-
 
 @lru_cache(maxsize=16)
 def get_compiled_graph(automation_level: int):
@@ -196,11 +185,14 @@ def get_compiled_graph(automation_level: int):
         CompiledStateGraph: 컴파일된 graph
     """
     supervisor_workflow = build_supervisor(automation_level=automation_level)
-    checkpointer = _create_checkpointer()
-    compiled_graph = supervisor_workflow.compile(checkpointer=checkpointer)
+
+    # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
+    compiled_graph = supervisor_workflow.compile(
+        checkpointer=MemorySaver()
+    )
 
     logger.info(
-        "🔧 [Graph] 컴파일 완료 (automation_level=%s)",
+        "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=MemorySaver)",
         automation_level,
     )
 
