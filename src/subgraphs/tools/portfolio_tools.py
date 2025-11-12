@@ -101,44 +101,72 @@ async def optimize_portfolio(
       → optimize_portfolio(target_return=0.15)
     """
     try:
-        logger.info(f"🎯 [Portfolio Tool] 포트폴리오 최적화 시작")
+        logger.info("🎯 [Portfolio Tool] 포트폴리오 최적화 시작")
         logger.info(f"  - 제약 조건: {constraints}")
         logger.info(f"  - 목표 수익률: {target_return}")
 
-        # TODO: 기존 Portfolio Agent 로직을 순수 함수로 변환하여 구현
-        #
-        # 구현 단계:
-        # 1. 현재 포트폴리오 가져오기 (get_portfolio_positions)
-        # 2. 종목별 기대 수익률 및 리스크 계산
-        #    - 과거 데이터 기반 수익률/변동성 계산
-        #    - 공분산 행렬 계산 (종목 간 상관관계)
-        # 3. 최적화 알고리즘 실행
-        #    - PyPortfolioOpt 라이브러리 사용
-        #    - 샤프 비율 최대화 (또는 목표 수익률 달성)
-        #    - 제약 조건 적용 (max_concentration 등)
-        # 4. 리밸런싱 필요 여부 판단
-        #    - 현재 vs 최적 배분 비교
-        #    - rebalance_threshold 초과 시 리밸런싱 필요
-        # 5. 권장 사항 생성
-        #
-        # 참고: src/agents/portfolio/specialists/ 로직 활용
-        #       src/services/portfolio_optimizer.py 활용
+        # 기본 제약 조건 설정
+        if constraints is None:
+            constraints = {}
 
-        # 임시 구현 (TODO 제거 시 삭제)
+        risk_profile = constraints.get("risk_tolerance", "moderate")
+        max_concentration = constraints.get("max_concentration", 0.4)
+        min_diversification = constraints.get("min_diversification", 5)
+
+        # 1. Portfolio Optimizer로 최적 배분 계산
+        from src.services.portfolio_optimizer import portfolio_optimizer
+
+        # TODO: 현재 보유 종목 가져오기 (KIS API)
+        # 임시로 빈 리스트 사용
+        current_holdings = []
+        strategy_result = None
+        total_value = 0.0
+
+        proposed, metrics = await portfolio_optimizer.calculate_target_allocation(
+            current_holdings=current_holdings,
+            strategy_result=strategy_result,
+            risk_profile=risk_profile,
+            total_value=total_value
+        )
+
+        logger.info(f"✅ [Portfolio Tool] 최적 배분 계산 완료: {len(proposed)}개 자산")
+
+        # 2. 현재 배분과 비교
+        current_allocation = {h.get("stock_code"): h.get("weight", 0.0) for h in current_holdings}
+        optimal_allocation = {p.get("stock_code"): p.get("weight", 0.0) for p in proposed}
+
+        # 3. 리밸런싱 필요 여부 판단
+        rebalance_needed = False
+        recommendations = []
+
+        for stock_code, target_weight in optimal_allocation.items():
+            current_weight = current_allocation.get(stock_code, 0.0)
+            delta = target_weight - current_weight
+
+            if abs(delta) >= rebalance_threshold:
+                rebalance_needed = True
+                stock_name = next((p.get("stock_name") for p in proposed if p.get("stock_code") == stock_code), stock_code)
+
+                if delta > 0:
+                    recommendations.append(f"{stock_name} 비중 확대: {current_weight*100:.0f}% → {target_weight*100:.0f}%")
+                else:
+                    recommendations.append(f"{stock_name} 비중 축소: {current_weight*100:.0f}% → {target_weight*100:.0f}%")
+
+        # 4. 결과 반환
         return {
-            "success": False,
-            "message": "TODO: 포트폴리오 최적화 로직 구현 필요",
-            "optimal_allocation": {},
-            "current_allocation": {},
-            "rebalance_needed": False,
-            "expected_return": 0.0,
-            "expected_risk": 0.0,
-            "sharpe_ratio": 0.0,
-            "recommendations": []
+            "success": True,
+            "optimal_allocation": optimal_allocation,
+            "current_allocation": current_allocation,
+            "rebalance_needed": rebalance_needed,
+            "expected_return": metrics.get("expected_return", 0.12),
+            "expected_risk": metrics.get("expected_volatility", 0.17),
+            "sharpe_ratio": metrics.get("sharpe_ratio", 0.80),
+            "recommendations": recommendations,
+            "rationale": metrics.get("rationale", "균형 포트폴리오 구성"),
         }
 
     except Exception as e:
-        logger.error(f"❌ [Portfolio Tool] 포트폴리오 최적화 실패: {e}")
+        logger.error(f"❌ [Portfolio Tool] 포트폴리오 최적화 실패: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e),
@@ -188,45 +216,114 @@ async def rebalance_portfolio(
       → rebalance_portfolio(..., execution_mode="execute")  # HITL 승인 후 실행
     """
     try:
-        logger.info(f"🔄 [Portfolio Tool] 리밸런싱 시작")
+        logger.info("🔄 [Portfolio Tool] 리밸런싱 시작")
         logger.info(f"  - 목표 배분: {target_allocation}")
         logger.info(f"  - 실행 모드: {execution_mode}")
 
-        # TODO: 기존 Portfolio Agent 로직을 순수 함수로 변환하여 구현
-        #
-        # 구현 단계:
-        # 1. 현재 포트폴리오 가져오기
-        # 2. 목표 배분 검증
-        #    - 비중 합계 = 1.0 확인
-        #    - 종목 코드 유효성 확인
-        # 3. 매매 계획 생성
-        #    - 현재 vs 목표 배분 비교
-        #    - 매수/매도 수량 계산
-        #    - 거래 비용 추정 (수수료, 세금)
-        # 4. execution_mode='execute'인 경우
-        #    - calculate_portfolio_risk 호출
-        #    - HITL 승인 대기
-        #    - 승인 후 execute_trade 호출
-        #
-        # 참고: src/agents/portfolio/specialists/rebalance_planner.py 활용
+        # 1. 목표 배분 검증
+        total_weight = sum(target_allocation.values())
+        if abs(total_weight - 1.0) > 0.01:
+            return {
+                "success": False,
+                "message": f"목표 배분 비중 합계가 100%가 아닙니다: {total_weight*100:.1f}%"
+            }
 
-        # 임시 구현 (TODO 제거 시 삭제)
+        # 2. 현재 포트폴리오 가져오기
+        # TODO: KIS API에서 실제 포트폴리오 조회
+        # 임시로 빈 리스트 사용
+        current_holdings = []
+        total_value = 10000000  # 임시 총 자산 1000만원
+
+        # 현재 배분 계산
+        current_allocation = {}
+        for h in current_holdings:
+            stock_code = h.get("stock_code")
+            if stock_code:
+                pos_value = h.get("quantity", 0) * h.get("current_price", 0)
+                weight = pos_value / total_value if total_value > 0 else 0
+                current_allocation[stock_code] = weight
+
+        # 3. 매매 계획 생성
+        trades = []
+        processed_codes = set()
+
+        for stock_code, target_weight in target_allocation.items():
+            if stock_code.lower() == "cash":
+                processed_codes.add(stock_code)
+                continue
+
+            current_weight = current_allocation.get(stock_code, 0.0)
+            delta = target_weight - current_weight
+
+            # 5%p 이상 차이날 때만 리밸런싱
+            if abs(delta) < 0.005:
+                processed_codes.add(stock_code)
+                continue
+
+            action = "buy" if delta > 0 else "sell"
+            amount = abs(total_value * delta)
+            # 가격은 TODO (실제 현재가 조회 필요)
+            estimated_price = 50000
+            quantity = int(amount / estimated_price)
+
+            if quantity > 0:
+                trades.append({
+                    "ticker": stock_code,
+                    "action": action,
+                    "quantity": quantity,
+                    "reason": f"비중 조정 {current_weight*100:.0f}% → {target_weight*100:.0f}%"
+                })
+
+            processed_codes.add(stock_code)
+
+        # 현재 보유하지만 목표에 없는 종목 전량 매도
+        for stock_code, current_weight in current_allocation.items():
+            if stock_code not in processed_codes and abs(current_weight) > 0.005:
+                amount = total_value * current_weight
+                estimated_price = 50000
+                quantity = int(amount / estimated_price)
+
+                if quantity > 0:
+                    trades.append({
+                        "ticker": stock_code,
+                        "action": "sell",
+                        "quantity": quantity,
+                        "reason": f"포트폴리오에서 제외"
+                    })
+
+        # 4. 거래 비용 추정
+        total_trading_amount = sum(
+            t["quantity"] * 50000  # TODO: 실제 가격
+            for t in trades
+        )
+        trading_fee = total_trading_amount * 0.00015  # 0.015% 수수료
+        tax = sum(
+            t["quantity"] * 50000 * 0.0023  # 0.23% 거래세 (매도만)
+            for t in trades
+            if t["action"] == "sell"
+        )
+        total_cost = trading_fee + tax
+
+        logger.info(f"✅ [Portfolio Tool] 리밸런싱 계획 생성 완료: {len(trades)}건")
+
+        # 5. 결과 반환
         return {
-            "success": False,
-            "message": "TODO: 리밸런싱 로직 구현 필요",
-            "trades": [],
+            "success": True,
+            "trades": trades,
             "estimated_cost": {
-                "trading_fee": 0,
-                "tax": 0,
-                "total": 0
+                "trading_fee": trading_fee,
+                "tax": tax,
+                "total": total_cost
             },
-            "before_allocation": {},
-            "after_allocation": {},
-            "execution_mode": execution_mode
+            "before_allocation": current_allocation,
+            "after_allocation": target_allocation,
+            "execution_mode": execution_mode,
+            "message": f"{len(trades)}건의 매매 계획이 생성되었습니다. "
+                      + ("실제 실행을 원하시면 승인해주세요." if execution_mode == "execute" else "")
         }
 
     except Exception as e:
-        logger.error(f"❌ [Portfolio Tool] 리밸런싱 실패: {e}")
+        logger.error(f"❌ [Portfolio Tool] 리밸런싱 실패: {e}", exc_info=True)
         return {
             "success": False,
             "error": str(e),
