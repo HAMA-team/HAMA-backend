@@ -760,11 +760,23 @@ async def init_kis_service(env: str = "demo") -> None:
     """
     KIS 서비스 초기화 (앱 시작 시 호출)
 
+    기존 인스턴스를 재사용하고 환경 설정만 업데이트합니다.
+    이렇게 하면 이미 import된 모듈들이 같은 인스턴스를 계속 사용할 수 있습니다.
+
     Args:
         env: 환경 ("real" or "demo")
     """
-    global kis_service, _kis_proxy_module
-    kis_service = KISService(env=env)
+    global kis_service
+
+    # 기존 인스턴스의 설정 업데이트 (새 인스턴스를 만들지 않음!)
+    kis_service.env = env
+    kis_service.base_url = KIS_BASE_URLS["prod"] if env == "real" else KIS_BASE_URLS["demo"]
+
+    # 토큰 초기화 (새로운 환경에서는 토큰도 새로 발급)
+    kis_service._access_token = None
+    kis_service._token_expires_at = None
+
+    logger.info(f"🔄 [KIS] 환경 변경: {env}, base_url={kis_service.base_url}")
 
     # 토큰 미리 발급 (검증)
     try:
@@ -773,6 +785,3 @@ async def init_kis_service(env: str = "demo") -> None:
     except KISAuthError as e:
         logger.warning(f"⚠️ KIS authentication failed: {e}")
         logger.info("KIS API will be unavailable. Please check KIS_APP_KEY and KIS_APP_SECRET in .env")
-    setattr(kis_service, "kis_service", kis_service)
-    if isinstance(_kis_proxy_module, _KISServiceModule):
-        setattr(_kis_proxy_module, "_service", kis_service)
