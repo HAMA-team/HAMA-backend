@@ -8,11 +8,10 @@ import re
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Union, Coroutine
+from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.config.settings import settings
 from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse
 from src.utils.indicators import calculate_all_indicators
@@ -27,10 +26,21 @@ from src.constants.analysis_depth import (
 )
 
 from .state import ResearchState
+from .tools import (
+    get_stock_price_tool,
+    get_stock_by_name_tool,
+    get_fundamental_data_tool,
+    get_market_cap_data_tool,
+    get_market_index_tool,
+    search_corp_code_tool,
+    get_financial_statement_tool,
+    get_company_info_tool,
+    get_macro_summary_tool,
+)
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_WORKERS = {"data", "bull", "bear", "insight", "macro", "technical", "trading_flow", "information"}
+ALLOWED_WORKERS = {"data", "bull", "bear", "macro", "technical", "trading_flow", "information"}
 
 
 def _json_default(value: Any) -> Union[float, str, list]:
@@ -104,11 +114,11 @@ async def _extract_stock_code(state: ResearchState) -> str:
             if stock_names:
                 stock_name = stock_names[0]  # 첫 번째 종목 사용
 
-                # 종목명으로 코드 검색
+                # 종목명으로 코드 검색 (Tool 사용)
                 markets = ["KOSPI", "KOSDAQ", "KONEX"]
                 for market in markets:
                     try:
-                        code = await stock_data_service.get_stock_by_name(stock_name, market=market)
+                        code = await get_stock_by_name_tool.ainvoke({"stock_name": stock_name, "market": market})
                         if code:
                             logger.info(f"✅ [Research] 종목 코드 추출 성공: {stock_name} -> {code}")
                             return code
@@ -151,7 +161,7 @@ def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             elif "macro" in worker_raw:
                 worker = "macro"
             else:
-                worker = "insight"
+                worker = "data"  # fallback
         else:
             worker = worker_raw
 
@@ -253,7 +263,6 @@ async def query_intent_classifier_node(state: ResearchState) -> ResearchState:
             "macro": ["macro"],
             "bull": ["bull"],
             "bear": ["bear"],
-            "insight": ["insight"],
         }
 
         for area in llm_focus_areas:
@@ -349,7 +358,6 @@ async def planner_node(state: ResearchState) -> ResearchState:
         "macro": "거시경제 분석 (금리, 환율, 경기 동향)",
         "bull": "강세 시나리오 분석 (상승 가능성 및 근거)",
         "bear": "약세 시나리오 분석 (하락 리스크 및 근거)",
-        "insight": "종합 인사이트 정리 (핵심 포인트 요약)",
     }
 
     # LLM에게 제공할 worker 정보
@@ -378,7 +386,7 @@ async def planner_node(state: ResearchState) -> ResearchState:
 1. 추천된 worker 중에서 선택하세요 (위 목록 참고)
 2. {analysis_depth} 레벨에 맞는 적절한 worker 수를 선택하세요
 3. 집중 영역({", ".join(focus_areas) if focus_areas else "없음"})이 있다면 우선적으로 포함하세요
-4. worker는 순차적으로 실행됩니다 (data → technical → trading_flow → ... → insight)
+4. worker는 순차적으로 실행됩니다 (data → technical → trading_flow → ...)
 
 JSON 형식으로만 답변하세요:
 {{
@@ -466,29 +474,48 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
     logger.info("📊 [Research/Data] 데이터 수집 시작: %s", stock_code)
 
     try:
-        price_df = await stock_data_service.get_stock_price(stock_code, days=30)
-        if price_df is None or len(price_df) == 0:
+        # 분석 깊이에 따라 주가 데이터 기간 동적 설정
+        analysis_depth = state.get("analysis_depth", "standard")
+        days_map = {
+            "quick": 60,            # 빠른 분석 (2개월)
+            "standard": 180,        # 표준 분석 (6개월)
+            "comprehensive": 365,   # 종합 분석 (1년)
+        }
+        days = days_map.get(analysis_depth, 180)
+
+        # Tool을 사용하여 주가 데이터 조회
+        price_result = await get_stock_price_tool.ainvoke({"stock_code": stock_code, "days": days})
+        if "error" in price_result:
             raise RuntimeError(f"주가 데이터 조회 실패: {stock_code}")
 
-        price_data = {
-            "stock_code": stock_code,
-            "days": len(price_df),
-            "prices": price_df.reset_index().to_dict("records"),
-            "latest_close": float(price_df.iloc[-1]["Close"]),
-            "latest_volume": int(price_df.iloc[-1]["Volume"]),
-            "source": "FinanceDataReader",
-        }
+        # Tool 결과에서 price_df 재구성 (기존 로직 유지를 위해)
+        import pandas as pd
+        price_df = pd.DataFrame(price_result["prices"])
+        if "날짜" in price_df.columns:
+            price_df = price_df.set_index("날짜")
+        elif "Date" in price_df.columns:
+            price_df = price_df.set_index("Date")
 
-        corp_code = await dart_service.search_corp_code_by_stock_code(stock_code)
+        price_data = price_result
+
+        # Tool을 사용하여 DART 데이터 조회
+        corp_code = await search_corp_code_tool.ainvoke({"stock_code": stock_code})
         if corp_code:
-            financial_statements = await dart_service.get_financial_statement(
-                corp_code, bsns_year="2023"
-            )
-            company_info = await dart_service.get_company_info(corp_code)
+            # 재무제표 연도를 동적으로 설정 (상반기면 전년도, 하반기면 당해년도)
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            # 1~6월: 전년도 재무제표, 7~12월: 당해년도 재무제표
+            bsns_year = str(current_year - 1 if current_month < 7 else current_year)
+
+            financial_statements = await get_financial_statement_tool.ainvoke({
+                "corp_code": corp_code,
+                "bsns_year": bsns_year
+            })
+            company_info = await get_company_info_tool.ainvoke({"corp_code": corp_code})
             financial_data = {
                 "stock_code": stock_code,
                 "corp_code": corp_code,
-                "year": "2023",
+                "year": bsns_year,  # 동적 연도
                 "statements": financial_statements or {},
                 "source": "DART",
             }
@@ -504,12 +531,23 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             company_data = None
 
         technical_indicators = calculate_all_indicators(price_df)
-        fundamental_data = await stock_data_service.get_fundamental_data(stock_code)
-        market_cap_data = await stock_data_service.get_market_cap_data(stock_code)
+
+        # Tool을 사용하여 기본 재무 데이터 조회
+        fundamental_data = await get_fundamental_data_tool.ainvoke({"stock_code": stock_code})
+        market_cap_data = await get_market_cap_data_tool.ainvoke({"stock_code": stock_code})
         # investor_trading_data 제거됨 (KIS API 미지원)
 
         try:
-            market_df = await stock_data_service.get_market_index("KOSPI", days=30)
+            # Tool을 사용하여 시장 지수 조회
+            market_result = await get_market_index_tool.ainvoke({"index_name": "KOSPI", "days": 30})
+            if "error" in market_result:
+                raise RuntimeError(market_result["error"])
+
+            market_df = pd.DataFrame(market_result["data"])
+            if "날짜" in market_df.columns:
+                market_df = market_df.set_index("날짜")
+            elif "Date" in market_df.columns:
+                market_df = market_df.set_index("Date")
             market_data = {
                 "index": "KOSPI",
                 "current": float(market_df.iloc[-1]["Close"])
@@ -588,15 +626,37 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
     fundamental = state.get("fundamental_data") or {}
     market_cap = state.get("market_cap_data") or {}
     price = state.get("price_data") or {}
+    financial_data = state.get("financial_data") or {}
+    company_data = state.get("company_data") or {}
+
+    # 업종 정보 추출
+    company_info = company_data.get("info", {})
+    corp_name = company_info.get("corp_name", "N/A")
+    industry = company_info.get("induty_code", "N/A")
+    financial_year = financial_data.get("year", "N/A")
 
     prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요.
 
-종목코드: {stock_code}
-현재가: {price.get('latest_close')}
-시가총액: {market_cap.get('market_cap')}
-펀더멘털: {_dumps(fundamental)}
-기술적 지표: {_dumps(technical)} 
-시장 지수: {_dumps(market)} 
+**기업 정보:**
+- 종목코드: {stock_code}
+- 기업명: {corp_name}
+- 업종: {industry}
+
+**현재 시장 데이터:**
+- 현재가: {price.get('latest_close')}
+- 시가총액: {market_cap.get('market_cap')}
+- 주가 데이터 기간: {price.get('days')}일
+
+**재무 데이터:**
+- 재무제표 연도: {financial_year}
+- 펀더멘털: {_dumps(fundamental)}
+
+**기술적 분석:**
+- 기술적 지표: {_dumps(technical)}
+- 시장 지수: {_dumps(market)}
+
+**분석 지침:**
+해당 업종의 최신 시장 동향과 사이클을 고려하여 분석하세요.
 
 JSON 형식으로 답변하세요:
 {{
@@ -681,15 +741,39 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
     technical = state.get("technical_indicators") or {}
     market = state.get("market_index_data") or {}
     fundamental = state.get("fundamental_data") or {}
+    market_cap = state.get("market_cap_data") or {}
     price = state.get("price_data") or {}
+    financial_data = state.get("financial_data") or {}
+    company_data = state.get("company_data") or {}
+
+    # 업종 정보 추출
+    company_info = company_data.get("info", {})
+    corp_name = company_info.get("corp_name", "N/A")
+    industry = company_info.get("induty_code", "N/A")
+    financial_year = financial_data.get("year", "N/A")
 
     prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 리스크 시나리오를 제시하세요.
 
-종목코드: {stock_code}
-현재가: {price.get('latest_close')}
-펀더멘털: {_dumps(fundamental)}
-기술적 지표: {_dumps(technical)} 
-시장 지수: {_dumps(market)} 
+**기업 정보:**
+- 종목코드: {stock_code}
+- 기업명: {corp_name}
+- 업종: {industry}
+
+**현재 시장 데이터:**
+- 현재가: {price.get('latest_close')}
+- 시가총액: {market_cap.get('market_cap')}
+- 주가 데이터 기간: {price.get('days')}일
+
+**재무 데이터:**
+- 재무제표 연도: {financial_year}
+- 펀더멘털: {_dumps(fundamental)}
+
+**기술적 분석:**
+- 기술적 지표: {_dumps(technical)}
+- 시장 지수: {_dumps(market)}
+
+**분석 지침:**
+해당 업종의 최신 시장 동향과 사이클을 고려하여 리스크를 분석하세요.
 
 JSON 형식으로 답변하세요:
 {{
@@ -781,13 +865,10 @@ async def macro_worker_node(state: ResearchState) -> ResearchState:
     logger.info("🌍 [Research/Macro] 거시경제 분석 시작: %s", stock_code)
 
     try:
-        # 1. BOK API로 거시경제 데이터 수집
-        from src.services.macro_data_service import macro_data_service
-
-        macro_data = macro_data_service.macro_summary()
-        if not macro_data.get("base_rate"):
-            await macro_data_service.refresh_all()
-            macro_data = macro_data_service.macro_summary()
+        # 1. Tool을 사용하여 거시경제 데이터 수집
+        macro_data = await get_macro_summary_tool.ainvoke({})
+        if "error" in macro_data:
+            raise RuntimeError(f"거시경제 데이터 조회 실패: {macro_data['error']}")
 
         # 2. 종목 정보 추출 (기업명, 업종 등)
         company_data = state.get("company_data") or {}
@@ -873,82 +954,6 @@ JSON 형식으로 답변하세요:
                 "messages": [AIMessage(content=f"거시경제 분석을 건너뜁니다: {exc}")],
             }
         )
-
-
-async def insight_worker_node(state: ResearchState) -> ResearchState:
-    if state.get("error"):
-        return state
-
-    task = state.get("current_task")
-    stock_code = state.get("stock_code") or await _extract_stock_code(state)
-
-    logger.info("🧠 [Research/Insight] 인사이트 정리 시작: %s", stock_code)
-
-    llm = get_llm(max_tokens=1500, temperature=0.2)
-
-    context = {
-        "price": {
-            "latest_close": state.get("price_data", {}).get("latest_close"),
-            "latest_volume": state.get("price_data", {}).get("latest_volume"),
-        },
-        "fundamental": state.get("fundamental_data"),
-        "technical": state.get("technical_indicators", {}),
-        "bull": state.get("bull_analysis"),
-        "bear": state.get("bear_analysis"),
-        # "investor": investor_trading_data 제거됨 (KIS API 미지원)
-        "macro": state.get("macro_analysis"),
-    }
-
-    prompt = f"""당신은 시니어 애널리스트입니다. 다음 정보를 기반으로 핵심 인사이트를 도출하세요.
-
-컨텍스트: 
-{_dumps(context)} 
-
-**특히 거시경제 환경(macro)을 고려하여 종목의 리스크와 기회를 평가하세요.**
-
-JSON 형식으로 답변하세요:
-{{
-  "key_takeaways": ["핵심 포인트 3~5개"],
-  "risks": ["중요 리스크"],
-  "follow_up_questions": ["추가 조사 필요 사안"]
-}}
-"""
-
-    try:
-        response = await llm.ainvoke(prompt)
-        insight = safe_json_parse(response.content, "Research/Insight")
-        if not isinstance(insight, dict):
-            insight = {}
-
-        for key in ("key_takeaways", "risks", "follow_up_questions"):
-            value = insight.get(key)
-            if isinstance(value, str):
-                insight[key] = [value]
-            elif not isinstance(value, list):
-                insight[key] = []
-
-        summary = "핵심 인사이트 정리 완료"
-        message = AIMessage(
-            content=(
-                "핵심 인사이트 요약:\n"
-                + "\n".join(f"- {point}" for point in insight.get("key_takeaways", [])[:4])
-            )
-        )
-
-        payload: ResearchState = {
-            "insight_summary": insight,
-            "messages": [message],
-        }
-        return _task_complete(state, task, summary, payload)
-    except Exception as exc:
-        logger.error("❌ [Research/Insight] 실패: %s", exc)
-        return {
-            "error": str(exc),
-            "current_task": None,
-            "messages": [
-                AIMessage(content=f"인사이트 정리 중 오류가 발생했습니다: {exc}")
-            ],
-        }
 
 
 async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:

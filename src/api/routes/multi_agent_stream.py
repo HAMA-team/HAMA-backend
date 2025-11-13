@@ -37,8 +37,51 @@ class MultiAgentStreamRequest(BaseModel):
     stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
+def _serialize_for_json(data: Any) -> Any:
+    """
+    LangChain 객체를 JSON 직렬화 가능한 형태로 변환
+
+    ToolMessage, AIMessage 등 LangChain 객체를 재귀적으로 딕셔너리로 변환합니다.
+    """
+    if data is None:
+        return None
+
+    # Pydantic 모델 (BaseMessage 등)
+    if hasattr(data, "model_dump"):
+        try:
+            return data.model_dump()
+        except Exception:
+            pass
+
+    if hasattr(data, "dict"):
+        try:
+            return data.dict()
+        except Exception:
+            pass
+
+    # 리스트 처리 (재귀적으로)
+    if isinstance(data, list):
+        return [_serialize_for_json(item) for item in data]
+
+    # 딕셔너리 처리 (재귀적으로)
+    if isinstance(data, dict):
+        return {key: _serialize_for_json(value) for key, value in data.items()}
+
+    # 기본 타입 (str, int, float, bool, None)
+    if isinstance(data, (str, int, float, bool, type(None))):
+        return data
+
+    # 나머지는 문자열로 변환 (fallback)
+    try:
+        return str(data)
+    except Exception:
+        return None
+
+
 def _sse(event: str, payload: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    # payload를 JSON 직렬화 가능하도록 변환
+    serializable_payload = _serialize_for_json(payload)
+    return f"event: {event}\ndata: {json.dumps(serializable_payload, ensure_ascii=False)}\n\n"
 
 
 def _event_agent_name(event: dict) -> Optional[str]:
@@ -81,13 +124,26 @@ def _event_to_sse_chunks(event: dict, stream_thinking: bool) -> List[str]:
     event_type = event.get("event")
     agent = _event_agent_name(event)
 
+    # 메타데이터 추출
+    metadata = event.get("metadata") or {}
+    node_name = metadata.get("langgraph_node")
+    step = metadata.get("langgraph_step")
+
+    # 툴/체인 이름
+    name = event.get("name")
+
+    # ==================== Chain 이벤트 ====================
     if event_type == "on_chain_start" and agent:
         if agent == "routing":
             chunks.append(_sse("master_routing", {"status": "analyzing"}))
         elif agent == "worker_dispatch":
             chunks.append(_sse("worker_start", {"agent": "worker"}))
         else:
-            chunks.append(_sse("agent_start", {"agent": agent}))
+            chunks.append(_sse("agent_start", {
+                "agent": agent,
+                "node": node_name,
+                "step": step
+            }))
 
     elif event_type == "on_chain_end" and agent:
         output = _normalize_output(event.get("data", {}).get("output"))
@@ -117,21 +173,72 @@ def _event_to_sse_chunks(event: dict, stream_thinking: bool) -> List[str]:
                 )
             )
         else:
-            chunks.append(_sse("agent_complete", {"agent": agent}))
+            chunks.append(_sse("agent_complete", {
+                "agent": agent,
+                "node": node_name,
+                "step": step
+            }))
 
+    # ==================== LLM 이벤트 ====================
     elif event_type == "on_chat_model_start" and agent:
         model = event.get("name") or event.get("data", {}).get("name")
-        chunks.append(_sse("agent_llm_start", {"agent": agent, "model": model}))
+        chunks.append(_sse("agent_llm_start", {
+            "agent": agent,
+            "node": node_name,
+            "model": model
+        }))
 
     elif event_type == "on_chat_model_stream" and stream_thinking:
         chunk = event.get("data", {}).get("chunk")
         if chunk:
             content = chunk.get("content") if isinstance(chunk, dict) else str(chunk)
             if content:
-                chunks.append(_sse("agent_thinking", {"agent": agent, "content": content}))
+                chunks.append(_sse("agent_thinking", {
+                    "agent": agent,
+                    "node": node_name,
+                    "content": content
+                }))
 
     elif event_type == "on_chat_model_end" and agent:
-        chunks.append(_sse("agent_llm_end", {"agent": agent}))
+        chunks.append(_sse("agent_llm_end", {
+            "agent": agent,
+            "node": node_name
+        }))
+
+    # ==================== 툴 이벤트 (새로 추가) ====================
+    elif event_type == "on_tool_start":
+        tool_name = name or "unknown_tool"
+        input_data = event.get("data", {}).get("input")
+        chunks.append(_sse("tools_start", {
+            "tool": tool_name,
+            "agent": agent,
+            "node": node_name,
+            "input": input_data
+        }))
+
+    elif event_type == "on_tool_end":
+        tool_name = name or "unknown_tool"
+        output_data = event.get("data", {}).get("output")
+
+        # 툴 출력 데이터 요약 (너무 크면 프론트엔드 성능 저하)
+        # output이 문자열이고 길면 앞부분만 전송
+        output_summary = output_data
+        if isinstance(output_data, str) and len(output_data) > 500:
+            output_summary = output_data[:500] + "... (truncated)"
+        elif isinstance(output_data, dict):
+            # 딕셔너리는 그대로 전송 (직렬화는 _sse에서 처리)
+            output_summary = output_data
+        elif isinstance(output_data, list) and len(output_data) > 10:
+            # 리스트가 너무 길면 첫 10개만
+            output_summary = output_data[:10]
+
+        chunks.append(_sse("tools_complete", {
+            "tool": tool_name,
+            "agent": agent,
+            "node": node_name,
+            "status": "complete",
+            "output": output_summary
+        }))
 
     return chunks
 
@@ -309,18 +416,44 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
     - `master_start`: Master Agent 시작
     - `master_routing`: 어떤 에이전트들을 호출할지 결정
     - `agent_start`: 서브 에이전트 시작
-    - `agent_node`: 에이전트 내부 노드 실행 상태
+        - `agent`: 에이전트 이름 (예: "Research_Agent", "Quantitative_Agent")
+        - `node`: 노드 이름 (예: "planner", "data_worker")
+        - `step`: 스텝 번호
     - `agent_llm_start`: LLM 호출 시작
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+        - `model`: 모델 이름 (예: "gpt-4o")
+    - `agent_thinking`: LLM 응답 스트리밍 (stream_thinking=True일 때)
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+        - `content`: 생성된 텍스트 조각
     - `agent_llm_end`: LLM 호출 완료
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+    - `tools_start`: 툴 실행 시작
+        - `tool`: 툴 이름 (예: "get_current_price", "get_financial_data")
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+        - `input`: 툴 입력 데이터
+    - `tools_complete`: 툴 실행 완료
+        - `tool`: 툴 이름
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+        - `status`: "complete"
+        - `output`: 툴 출력 데이터
     - `agent_complete`: 서브 에이전트 완료
-    - `master_aggregating`: Master가 결과 집계 중
+        - `agent`: 에이전트 이름
+        - `node`: 노드 이름
+        - `step`: 스텝 번호
     - `master_complete`: 전체 완료
+    - `hitl_interrupt`: HITL 승인 요청
     - `error`: 에러 발생
     - `done`: 스트리밍 종료
 
     **Frontend 사용 예시 (React):**
     ```javascript
     const [agentStatus, setAgentStatus] = useState({});
+    const [currentTools, setCurrentTools] = useState([]);
 
     const eventSource = new EventSource('/api/v1/chat/multi-stream', {
         method: 'POST',
@@ -333,32 +466,53 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
     eventSource.addEventListener('master_routing', (event) => {
         const data = JSON.parse(event.data);
         console.log('호출할 에이전트:', data.agents);
-        // UI에 표시: Research, Strategy, Risk 에이전트 활성화
+        // UI에 표시: Research, Quantitative 에이전트 활성화
     });
 
     eventSource.addEventListener('agent_start', (event) => {
         const data = JSON.parse(event.data);
+        console.log(`[${data.agent}] ${data.node} 노드 시작 (Step ${data.step})`);
         setAgentStatus(prev => ({
             ...prev,
             [data.agent]: 'running'
         }));
-        // UI: Research Agent 카드에 "실행 중" 표시
+        // UI: Research Agent 카드에 "실행 중 - planner" 표시
     });
 
-    eventSource.addEventListener('agent_node', (event) => {
+    eventSource.addEventListener('tools_start', (event) => {
         const data = JSON.parse(event.data);
-        console.log(`${data.agent} - ${data.node}: ${data.status}`);
-        // UI: "데이터 수집 중...", "Bull 분석 중..." 등 표시
+        console.log(`[${data.agent}/${data.node}] 툴 실행: ${data.tool}`);
+        setCurrentTools(prev => [...prev, data.tool]);
+        // UI: "get_financial_data 실행 중..." 표시
+    });
+
+    eventSource.addEventListener('tools_complete', (event) => {
+        const data = JSON.parse(event.data);
+        console.log(`[${data.agent}/${data.node}] 툴 완료: ${data.tool}`);
+        setCurrentTools(prev => prev.filter(t => t !== data.tool));
+        // UI: "get_financial_data 완료 ✓" 표시
+    });
+
+    eventSource.addEventListener('agent_llm_start', (event) => {
+        const data = JSON.parse(event.data);
+        console.log(`[${data.agent}/${data.node}] LLM 호출: ${data.model}`);
+        // UI: "AI 분석 중... (gpt-4o)" 표시
+    });
+
+    eventSource.addEventListener('agent_thinking', (event) => {
+        const data = JSON.parse(event.data);
+        // 실시간 LLM 응답 스트리밍 (ChatGPT처럼)
+        appendThinkingContent(data.agent, data.node, data.content);
     });
 
     eventSource.addEventListener('agent_complete', (event) => {
         const data = JSON.parse(event.data);
+        console.log(`[${data.agent}] 완료 (Step ${data.step})`);
         setAgentStatus(prev => ({
             ...prev,
             [data.agent]: 'complete'
         }));
-        console.log('결과:', data.result);
-        // UI: Research Agent 카드에 "완료" + 결과 요약 표시
+        // UI: Research Agent 카드에 "완료 ✓" 표시
     });
 
     eventSource.addEventListener('master_complete', (event) => {
@@ -374,23 +528,28 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
 
     **Frontend UI 예시:**
     ```
-    [Master Agent]
-    ├─ 📊 Research Agent ✅
-    │   ├─ planner ✅
-    │   ├─ data_worker ✅
-    │   ├─ bull_worker ✅
-    │   ├─ bear_worker ✅
-    │   ├─ insight_worker ✅
-    │   └─ synthesis ✅
-    │   결과: SELL, 목표가 90,000원
+    [Supervisor] 분석 시작...
+    ├─ [Routing] Research Agent 선택 ✓
     │
-    ├─ 🎯 Strategy Agent ✅
-    │   └─ 전략: MOMENTUM
+    ├─ 📊 [Research Agent] 실행 중...
+    │   ├─ [planner] 분석 계획 수립 중... ✓
+    │   ├─ [data_worker] 데이터 수집 중...
+    │   │   ├─ [get_financial_data] 재무 데이터 조회 중... ✓
+    │   │   └─ [get_price_data] 가격 데이터 조회 중... ✓
+    │   ├─ [bull_worker] 긍정 시나리오 분석 (LLM) ✓
+    │   ├─ [bear_worker] 부정 시나리오 분석 (LLM) ✓
+    │   └─ [synthesis] 종합 분석 (LLM) ✓
+    │   → 결과: SELL, 목표가 90,000원
     │
-    └─ ⚠️ Risk Agent ✅
-        └─ 리스크: MEDIUM
+    ├─ 📈 [Quantitative Agent] 실행 중...
+    │   ├─ [financial_analyzer] 재무 분석 중...
+    │   │   └─ [calculate_ratios] PER, PBR 계산 중... ✓
+    │   └─ [valuation] 밸류에이션 (LLM) ✓
+    │   → 결과: 고평가 (PER 25.3)
+    │
+    └─ [Supervisor] 최종 응답 생성 중... ✓
 
-    최종 답변: 현재 삼성전자는 SELL 추천입니다...
+    ✅ 완료: 현재 삼성전자는 고평가 구간으로 SELL 추천입니다...
     ```
     """
     user_id = request.user_id or str(uuid.uuid4())

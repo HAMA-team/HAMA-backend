@@ -52,8 +52,8 @@ ANALYSIS_DEPTH_LEVELS: Dict[str, AnalysisDepthConfig] = {
         "name": "종합 분석",
         "description": "모든 관점에서 심층 분석",
         "required_workers": ["data", "technical", "trading_flow", "information"],
-        "optional_workers": ["macro", "bull", "bear", "insight"],
-        "max_workers": 8,
+        "optional_workers": ["macro", "bull", "bear"],
+        "max_workers": 7,  # insight 제거로 8 → 7
         "estimated_time": "60-90초",
         "use_cases": [
             "신규 종목 발굴",

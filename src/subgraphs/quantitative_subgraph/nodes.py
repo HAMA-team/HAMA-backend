@@ -10,6 +10,12 @@ from langchain_core.messages import AIMessage
 
 from src.subgraphs.quantitative_subgraph.state import QuantitativeState
 from src.utils.llm_factory import get_default_agent_llm as get_llm
+from src.subgraphs.research_subgraph.tools import (
+    get_stock_price_tool,
+    get_fundamental_data_tool,
+    search_corp_code_tool,
+    get_financial_statement_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 async def data_collector_node(state: QuantitativeState) -> Dict[str, Any]:
     """
-    재무제표 및 시장 데이터 수집
+    재무제표 및 시장 데이터 수집 (Tool 사용)
 
     DART API: 재무제표
     pykrx: 시장 데이터, 기술적 지표
@@ -34,23 +40,46 @@ async def data_collector_node(state: QuantitativeState) -> Dict[str, Any]:
     logger.info(f"📊 [Quantitative/DataCollector] 데이터 수집 시작: {stock_code}")
 
     try:
-        # 1. 재무제표 수집 (DART API)
-        from src.services.dart_service import dart_service
+        # 1. Tool을 사용하여 DART 기업 코드 검색
+        corp_code = await search_corp_code_tool.ainvoke({"stock_code": stock_code})
 
-        financial_statements = await dart_service.get_financial_statements(stock_code)
+        financial_statements = {}
+        if corp_code:
+            # 재무제표 연도 설정
+            from datetime import datetime
+            current_year = datetime.now().year
+            current_month = datetime.now().month
+            bsns_year = str(current_year - 1 if current_month < 7 else current_year)
 
-        # 2. 시장 데이터 수집 (pykrx)
-        from src.services.stock_data_service import stock_data_service
+            # Tool을 사용하여 재무제표 조회
+            financial_statements = await get_financial_statement_tool.ainvoke({
+                "corp_code": corp_code,
+                "bsns_year": bsns_year
+            })
+        else:
+            logger.warning(f"⚠️ [Quantitative/DataCollector] DART 기업 코드 없음: {stock_code}")
 
+        # 2. Tool을 사용하여 시장 데이터 수집
         # 주가 데이터
-        price_data = await stock_data_service.get_stock_price(stock_code, period_days=180)
+        price_result = await get_stock_price_tool.ainvoke({"stock_code": stock_code, "days": 180})
 
-        # 펀더멘털 지표
-        valuation_metrics = await stock_data_service.get_fundamental_data(stock_code)
+        if "error" in price_result:
+            raise RuntimeError(f"주가 데이터 조회 실패: {stock_code}")
+
+        # Tool 결과에서 price_df 재구성 (기술적 지표 계산용)
+        import pandas as pd
+        price_df = pd.DataFrame(price_result["prices"])
+        if "날짜" in price_df.columns:
+            price_df = price_df.set_index("날짜")
+        elif "Date" in price_df.columns:
+            price_df = price_df.set_index("Date")
+
+        # Tool을 사용하여 펀더멘털 지표 조회
+        valuation_metrics = await get_fundamental_data_tool.ainvoke({"stock_code": stock_code})
 
         # 기술적 지표 계산
         from src.utils.indicators import calculate_all_indicators
-        technical_indicators = calculate_all_indicators(price_data) if price_data else {}
+        technical_indicators = calculate_all_indicators(price_df) if price_df is not None and len(price_df) > 0 else {}
 
         logger.info(f"✅ [Quantitative/DataCollector] 데이터 수집 완료")
 

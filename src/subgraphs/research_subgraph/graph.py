@@ -15,7 +15,6 @@ from .nodes import (
     macro_worker_node,
     bull_worker_node,
     bear_worker_node,
-    insight_worker_node,
     technical_analyst_worker_node,
     trading_flow_analyst_worker_node,
     information_analyst_worker_node,
@@ -27,13 +26,13 @@ logger = logging.getLogger(__name__)
 
 def _route_task(
     state: ResearchState,
-) -> Literal["data", "macro", "bull", "bear", "insight", "technical", "trading_flow", "information", "done"]:
+) -> Literal["data", "macro", "bull", "bear", "technical", "trading_flow", "information", "done"]:
     task = state.get("current_task")
     if not task:
         return "done"
     worker = str(task.get("worker", "")).lower()
-    if worker not in {"data", "macro", "bull", "bear", "insight", "technical", "trading_flow", "information"}:
-        return "insight"
+    if worker not in {"data", "macro", "bull", "bear", "technical", "trading_flow", "information"}:
+        return "done"  # 알 수 없는 worker는 종료
     return worker  # type: ignore[return-value]
 
 
@@ -56,7 +55,6 @@ def build_research_subgraph():
     - macro_worker: 거시경제 분석
     - bull_worker: 강세 시나리오
     - bear_worker: 약세 시나리오
-    - insight_worker: 인사이트 정리
     """
     workflow = StateGraph(ResearchState)
 
@@ -71,7 +69,6 @@ def build_research_subgraph():
     workflow.add_node("macro_worker", macro_worker_node)
     workflow.add_node("bull_worker", bull_worker_node)
     workflow.add_node("bear_worker", bear_worker_node)
-    workflow.add_node("insight_worker", insight_worker_node)
     workflow.add_node("synthesis", synthesis_node)
 
     # 시작점
@@ -91,7 +88,6 @@ def build_research_subgraph():
             "macro": "macro_worker",
             "bull": "bull_worker",
             "bear": "bear_worker",
-            "insight": "insight_worker",
             "done": "synthesis",
         },
     )
@@ -105,7 +101,6 @@ def build_research_subgraph():
         "macro_worker",
         "bull_worker",
         "bear_worker",
-        "insight_worker",
     ):
         workflow.add_edge(worker, "task_router")
 
