@@ -311,7 +311,3 @@ class StockIndicator(Base):
 
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(TIMESTAMP, server_default=func.now(), onupdate=func.now())
-
-    __table_args__ = (
-        {"sqlite_autoincrement": True},
-    )

@@ -121,6 +121,7 @@ class Settings(BaseSettings):
     # Langgraph persistence
     LANGGRAPH_CHECKPOINT_TTL_MINUTES: int = 43200  # 30일
     LANGGRAPH_CHECKPOINT_REFRESH_ON_READ: bool = True
+    USE_POSTGRES_CHECKPOINTER: bool = False  # True=PostgresSaver (영속성), False=MemorySaver (개발용)
 
     # CORS
     CORS_ORIGINS: str = (

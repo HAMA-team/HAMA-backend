@@ -7,11 +7,6 @@ import logging
 
 from langgraph.graph import StateGraph, END
 
-try:
-    from langgraph.checkpoint.memory import MemorySaver
-except ImportError:
-    from langgraph.checkpoints.memory import MemorySaver
-
 from src.subgraphs.quantitative_subgraph.state import QuantitativeState
 from src.subgraphs.quantitative_subgraph.nodes import (
     data_collector_node,
@@ -50,9 +45,9 @@ def build_quantitative_subgraph() -> StateGraph:
 
 
 # Supervisor 패턴용 export (컴파일된 SubGraph)
+# checkpointer는 Supervisor에서 자동 상속되므로 생략
 quantitative_subgraph = build_quantitative_subgraph().compile(
-    name="quantitative_agent",
-    checkpointer=MemorySaver()
+    name="quantitative_agent"
 )
 
 # Alias for backward compatibility

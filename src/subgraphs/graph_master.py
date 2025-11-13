@@ -12,7 +12,6 @@ from functools import lru_cache
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.memory import MemorySaver
 
 from langgraph_supervisor import create_supervisor
 
@@ -184,16 +183,21 @@ def get_compiled_graph(automation_level: int):
     Returns:
         CompiledStateGraph: 컴파일된 graph
     """
+    from src.utils.checkpointer_factory import get_checkpointer
+
     supervisor_workflow = build_supervisor(automation_level=automation_level)
 
     # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
+    checkpointer = get_checkpointer()
     compiled_graph = supervisor_workflow.compile(
-        checkpointer=MemorySaver()
+        checkpointer=checkpointer
     )
 
+    checkpointer_type = type(checkpointer).__name__
     logger.info(
-        "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=MemorySaver)",
+        "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=%s)",
         automation_level,
+        checkpointer_type,
     )
 
     return compiled_graph
