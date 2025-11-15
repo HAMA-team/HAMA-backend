@@ -15,12 +15,11 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from src.subgraphs.graph_master import build_graph
 from src.services.user_profile_service import user_profile_service
 from src.services import chat_history_service
 from src.services.hitl_interrupt_service import handle_hitl_interrupt
 from src.models.database import get_db_context
-from src.utils.hitl_compat import automation_level_to_hitl_config
+from src.schemas.hitl_config import HITLConfig
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -33,7 +32,8 @@ class MultiAgentStreamRequest(BaseModel):
     message: str
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
-    automation_level: int = Field(default=2, ge=1, le=3)
+    hitl_config: HITLConfig = Field(default_factory=HITLConfig)
+    intervention_required: bool = Field(default=False, description="분석/전략 단계부터 HITL 필요 여부")
     stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 
@@ -271,7 +271,8 @@ async def stream_multi_agent_execution(
     message: str,
     user_id: str,
     conversation_id: str,
-    automation_level: int,
+    hitl_config: HITLConfig,
+    intervention_required: bool,
     stream_thinking: bool = True
 ) -> AsyncGenerator[str, None]:
     """LangGraph Supervisor 실행을 SSE로 래핑"""
@@ -285,12 +286,11 @@ async def stream_multi_agent_execution(
 
         conversation_uuid = uuid.UUID(conversation_id)
         demo_user_uuid = settings.demo_user_uuid
-        hitl_config = automation_level_to_hitl_config(automation_level)
 
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=demo_user_uuid,
-            metadata={"hitl_preset": hitl_config.preset},
+            metadata={"intervention_required": intervention_required},
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -310,7 +310,14 @@ async def stream_multi_agent_execution(
         except Exception as history_error:  # pragma: no cover - 히스토리 조회 실패는 치명적이지 않음
             logger.warning("⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: %s", history_error)
 
-        app = build_graph(automation_level=automation_level)
+        # 비동기 checkpointer 사용 (astream_events를 위해 필수)
+        from src.utils.checkpointer_factory import get_async_checkpointer
+        from src.subgraphs.graph_master import build_supervisor
+
+        async_checkpointer = await get_async_checkpointer()
+        supervisor_workflow = build_supervisor(intervention_required=intervention_required)
+        app = supervisor_workflow.compile(checkpointer=async_checkpointer)
+
         config: RunnableConfig = {"configurable": {"thread_id": conversation_id}}
         configured_app = app.with_config(config)
 
@@ -319,7 +326,7 @@ async def stream_multi_agent_execution(
             "user_id": user_id or str(demo_user_uuid),
             "conversation_id": conversation_id,
             "hitl_config": hitl_config.model_dump(),
-            "automation_level": automation_level,
+            "intervention_required": intervention_required,
             "user_profile": user_profile,
             "intent": None,
             "query": message,
@@ -354,7 +361,7 @@ async def stream_multi_agent_execution(
                     conversation_id=conversation_id,
                     user_id=demo_user_uuid,
                     db=db,
-                    automation_level=automation_level,
+                    intervention_required=intervention_required,
                     hitl_config=hitl_config,
                 )
 
@@ -560,7 +567,8 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
             message=request.message,
             user_id=user_id,
             conversation_id=conversation_id,
-            automation_level=request.automation_level,
+            hitl_config=request.hitl_config,
+            intervention_required=request.intervention_required,
             stream_thinking=request.stream_thinking
         ),
         media_type="text/event-stream",
