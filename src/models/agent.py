@@ -149,7 +149,6 @@ class ApprovalRequest(Base):
 
     # AI 메타데이터
     triggering_agent = Column(String(50))
-    automation_level = Column(Integer)
     urgency = Column(String(20), index=True)
 
     created_at = Column(TIMESTAMP, server_default=func.now(), index=True)
