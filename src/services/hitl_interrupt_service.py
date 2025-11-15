@@ -128,25 +128,52 @@ async def handle_hitl_interrupt(
 
     elif interrupt_type == "trade_approval" or interrupt_data.get("action") in {"buy", "sell"}:
         try:
-            snapshot = await portfolio_service.get_portfolio_snapshot()
-            portfolio_data = snapshot.portfolio_data if snapshot else {}
-            holdings = portfolio_data.get("holdings", []) if portfolio_data else []
-            total_value = float(portfolio_data.get("total_value", 0) or 0)
-            cash = float(portfolio_data.get("cash_balance", 0) or 0)
+            # Portfolio Simulator 패턴: interrupt_data에 이미 전/후 데이터가 있으면 사용
+            portfolio_before = interrupt_data.get("portfolio_before")
+            portfolio_after = interrupt_data.get("portfolio_after")
+            risk_before = interrupt_data.get("risk_before")
+            risk_after = interrupt_data.get("risk_after")
 
-            current_weight, expected_weight = await calculate_weight_change(
-                current_holdings=holdings,
-                new_order=interrupt_data,
-                total_value=total_value,
-                cash=cash,
-            )
+            # 전/후 데이터가 없으면 fallback (기존 방식)
+            if not portfolio_before or not portfolio_after:
+                snapshot = await portfolio_service.get_portfolio_snapshot()
+                portfolio_data = snapshot.portfolio_data if snapshot else {}
+                holdings = portfolio_data.get("holdings", []) if portfolio_data else []
+                total_value = float(portfolio_data.get("total_value", 0) or 0)
+                cash = float(portfolio_data.get("cash_balance", 0) or 0)
 
-            portfolio_preview = await calculate_portfolio_preview(
-                current_holdings=holdings,
-                new_order=interrupt_data,
-                total_value=total_value,
-                cash=cash,
-            )
+                current_weight, expected_weight = await calculate_weight_change(
+                    current_holdings=holdings,
+                    new_order=interrupt_data,
+                    total_value=total_value,
+                    cash=cash,
+                )
+
+                portfolio_preview = await calculate_portfolio_preview(
+                    current_holdings=holdings,
+                    new_order=interrupt_data,
+                    total_value=total_value,
+                    cash=cash,
+                )
+            else:
+                # Portfolio Simulator에서 계산된 데이터 사용
+                stock_code = interrupt_data.get("stock_code", "")
+
+                # 비중 변화 계산
+                holdings_before = portfolio_before.get("holdings", [])
+                holdings_after = portfolio_after.get("holdings", [])
+
+                current_weight = next(
+                    (h.get("weight", 0) for h in holdings_before if h.get("stock_code") == stock_code),
+                    0.0
+                )
+                expected_weight = next(
+                    (h.get("weight", 0) for h in holdings_after if h.get("stock_code") == stock_code),
+                    0.0
+                )
+
+                # portfolio_preview는 portfolio_after 사용
+                portfolio_preview = None
 
             risk_warning = None
             if expected_weight > 0.4:
@@ -169,6 +196,16 @@ async def handle_hitl_interrupt(
             approval_request["type"] = "trade_approval"
             approval_request["message"] = interrupt_data.get("message", "매매 주문을 승인하시겠습니까?")
             approval_request["pending_node"] = pending_nodes[0] if pending_nodes else None
+
+            # Portfolio Simulator 패턴: 전/후 비교 데이터 추가
+            if portfolio_before:
+                approval_request["portfolio_before"] = portfolio_before
+            if portfolio_after:
+                approval_request["portfolio_after"] = portfolio_after
+            if risk_before:
+                approval_request["risk_before"] = risk_before
+            if risk_after:
+                approval_request["risk_after"] = risk_after
 
         except Exception as exc:  # pragma: no cover - 포트폴리오 계산 실패 시 로깅 후 진행
             logger.warning("⚠️ 매매 승인 데이터 계산 실패: %s", exc)
