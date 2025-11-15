@@ -44,8 +44,12 @@ class GraphState(TypedDict):
     hitl_config: HITLConfig | Dict[str, Any]
     """자동화 레벨 프리셋 및 단계별 HITL 설정"""
 
-    automation_level: int
-    """[Deprecated] 레거시 automation_level (1-3). hitl_config에서 파생."""
+    intervention_required: bool
+    """
+    분석/전략 단계부터 HITL 필요 여부
+    - False: 매매만 HITL 필요 (기본값)
+    - True: 분석/전략/포트폴리오도 HITL 필요
+    """
 
     user_profile: Optional[Dict[str, Any]]
     """사용자 프로파일 (preferred_depth, expertise_level, technical_level, trading_style 등)"""

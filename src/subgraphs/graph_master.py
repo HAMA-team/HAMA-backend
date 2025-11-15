@@ -87,17 +87,6 @@ async def prepare_trade_node(state: GraphState) -> GraphState:
     logger.info("🛒 [Trading/Prepare] 매매 주문 준비: %s %s %d주 @ %d원",
                action, stock_code, quantity, price)
 
-    # 자동 승인 체크 (automation_level=1)
-    automation_level = state.get("automation_level", 2)
-    if automation_level == 1:
-        logger.info("🤖 [Trading/Prepare] 자동 승인 (Level 1)")
-        return {
-            "trade_approved": True,
-            "trade_prepared": True,
-            "trade_total_amount": total_amount,
-            "messages": [AIMessage(content=f"자동 승인: {stock_name} {quantity}주 {action}")],
-        }
-
     # Interrupt 발생 (사용자 승인 대기)
     approval_id = str(uuid.uuid4())
 
@@ -171,12 +160,9 @@ async def execute_trade_node(state: GraphState) -> GraphState:
 
 # ==================== Supervisor Prompt ====================
 
-def build_supervisor_prompt(automation_level: int) -> str:
+def build_supervisor_prompt() -> str:
     """
     Supervisor 시스템 프롬프트 생성 (간결하게 유지)
-
-    Args:
-        automation_level: 자동화 레벨 (1=Pilot, 2=Copilot, 3=Advisor)
 
     Returns:
         str: Supervisor 시스템 프롬프트
@@ -192,7 +178,7 @@ def build_supervisor_prompt(automation_level: int) -> str:
 4. **매매 실행** → 반드시 리스크 분석 후 승인 대기
 
 ## 매매 HITL 플로우 (필수)
-⚠️ automation_level {automation_level} - 모든 매매는 승인 필요
+⚠️ 모든 매매는 사용자 승인 필요
 
 **중요: request_trade tool 사용 (HITL 패턴)**
 매매 요청 시 execute_trade가 아닌 **request_trade**를 사용하세요:
@@ -262,12 +248,12 @@ def build_supervisor_prompt(automation_level: int) -> str:
 
 # ==================== Supervisor 생성 ====================
 
-def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = None):
+def build_supervisor(intervention_required: bool = False, llm: Optional[BaseChatModel] = None):
     """
     Supervisor 생성
 
     Args:
-        automation_level: 자동화 레벨 (1=Pilot, 2=Copilot, 3=Advisor)
+        intervention_required: 분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)
         llm: 사용할 LLM (None이면 설정에서 가져옴)
 
     Returns:
@@ -298,7 +284,7 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
     logger.info(f"🔧 [Supervisor] Tools 로드 완료: {len(tools)}개")
 
     # Supervisor Prompt
-    prompt = build_supervisor_prompt(automation_level)
+    prompt = build_supervisor_prompt()
 
     # SubGraphs 등록 (이미 compile된 상태)
     agents = [
@@ -331,8 +317,8 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
     from langgraph.graph import END
     supervisor_workflow.add_edge("execute_trade", END)
 
-    logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s, agents=%d, tools=%d, trading_nodes=2)",
-                automation_level, len(agents), len(tools))
+    logger.info("✅ [Supervisor] 생성 완료 (intervention_required=%s, agents=%d, tools=%d, trading_nodes=2)",
+                intervention_required, len(agents), len(tools))
 
     return supervisor_workflow
 
@@ -341,19 +327,19 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
 
 @lru_cache(maxsize=16)
-def get_compiled_graph(automation_level: int, use_checkpointer: bool = True):
+def get_compiled_graph(intervention_required: bool, use_checkpointer: bool = True):
     """
     컴파일된 Supervisor graph 반환 (캐싱)
 
     Args:
-        automation_level: 자동화 레벨
+        intervention_required: 분석/전략 단계부터 HITL 필요 여부
         use_checkpointer: True면 PostgreSQL checkpointer 사용, False면 미사용
                          (LangGraph Studio는 자체 persistence 제공하므로 False)
 
     Returns:
         CompiledStateGraph: 컴파일된 graph
     """
-    supervisor_workflow = build_supervisor(automation_level=automation_level)
+    supervisor_workflow = build_supervisor(intervention_required=intervention_required)
 
     if use_checkpointer:
         # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
@@ -365,16 +351,16 @@ def get_compiled_graph(automation_level: int, use_checkpointer: bool = True):
 
         checkpointer_type = type(checkpointer).__name__
         logger.info(
-            "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=%s)",
-            automation_level,
+            "🔧 [Graph] 컴파일 완료 (intervention_required=%s, checkpointer=%s)",
+            intervention_required,
             checkpointer_type,
         )
     else:
         # LangGraph Studio 환경: checkpointer 없이 컴파일
         compiled_graph = supervisor_workflow.compile()
         logger.info(
-            "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=None - LangGraph Studio mode)",
-            automation_level,
+            "🔧 [Graph] 컴파일 완료 (intervention_required=%s, checkpointer=None - LangGraph Studio mode)",
+            intervention_required,
         )
 
     return compiled_graph
@@ -382,12 +368,12 @@ def get_compiled_graph(automation_level: int, use_checkpointer: bool = True):
 
 # ==================== Main Interface ====================
 
-def build_graph(automation_level: int = 2, use_checkpointer: bool = True, **kwargs):
+def build_graph(intervention_required: bool = False, use_checkpointer: bool = True, **kwargs):
     """
     Supervisor graph 생성 (기존 API 호환)
 
     Args:
-        automation_level: 자동화 레벨
+        intervention_required: 분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)
         use_checkpointer: True면 PostgreSQL checkpointer 사용 (기본값)
                          False면 미사용 (LangGraph Studio용)
         **kwargs: 기타 인자 (무시됨 - 하위 호환성 유지)
@@ -397,9 +383,9 @@ def build_graph(automation_level: int = 2, use_checkpointer: bool = True, **kwar
 
     Examples:
         >>> # API 사용 (checkpointer 필요)
-        >>> graph = build_graph(automation_level=2)
+        >>> graph = build_graph(intervention_required=False)
 
         >>> # LangGraph Studio 사용 (checkpointer 불필요)
-        >>> graph = build_graph(automation_level=2, use_checkpointer=False)
+        >>> graph = build_graph(intervention_required=True, use_checkpointer=False)
     """
-    return get_compiled_graph(automation_level=automation_level, use_checkpointer=use_checkpointer)
+    return get_compiled_graph(intervention_required=intervention_required, use_checkpointer=use_checkpointer)

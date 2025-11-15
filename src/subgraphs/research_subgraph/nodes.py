@@ -509,10 +509,12 @@ JSON 형식으로만 답변하세요:
         recommended_scope = "balanced"
         recommended_perspectives = ["fundamental", "technical"]
 
-    # 2. 자동 승인 체크 (automation_level=1)
-    automation_level = state.get("automation_level", 2)
-    if automation_level == 1:
-        logger.info("🤖 [Research/Planner] 자동 승인 (Level 1)")
+    # 2. intervention_required 체크
+    intervention_required = state.get("intervention_required", False)
+
+    if not intervention_required:
+        # 분석 단계는 자동 진행 (매매만 HITL)
+        logger.info("✅ [Research/Planner] 분석 자동 진행 (intervention_required=False)")
 
         workers = _perspectives_to_workers(recommended_perspectives)
         workers = _apply_scope_limit(workers, recommended_scope)
@@ -538,11 +540,11 @@ JSON 형식으로만 답변하세요:
             "pending_tasks": pending_tasks,
             "completed_tasks": [],
             "task_notes": [],
-            "messages": [AIMessage(content=f"자동 승인: {depth_config['name']} 분석을 시작합니다.")],
+            "messages": [AIMessage(content=f"{depth_config['name']} 분석을 시작합니다.")],
             "stock_code": stock_code,
         }
 
-    # 3. INTERRUPT 발생 (사용자 승인 대기)
+    # 3. INTERRUPT 발생 (사용자 승인 대기) - intervention_required=True
     from src.constants.analysis_depth import get_depth_config
 
     depth_config = get_depth_config(recommended_depth)
@@ -1405,6 +1407,16 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     technical_analysis = state.get("technical_analysis") or {}
     trading_flow_analysis = state.get("trading_flow_analysis") or {}
     macro_analysis = state.get("macro_analysis") or {}
+    information_analysis = state.get("information_analysis") or {}
+
+    # Information Analyst 결과 추출 (미구현 시 기본값)
+    if not information_analysis:
+        logger.warning("⚠️ [Research/Synthesis] Information Analyst 미실행 - 기본값 사용")
+        market_sentiment = "중립"
+        risk_level = "보통"
+    else:
+        market_sentiment = information_analysis.get("market_sentiment", "중립")
+        risk_level = information_analysis.get("risk_level", "보통")
 
     current_price = price_data.get("latest_close") or 0
     bull_target = _coerce_number(bull.get("target_price"), current_price * 1.1)

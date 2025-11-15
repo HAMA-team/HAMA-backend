@@ -17,12 +17,7 @@ from langgraph_sdk.schema import Command
 from src.services import chat_history_service
 from src.services.hitl_interrupt_service import handle_hitl_interrupt
 from src.services.user_profile_service import UserProfileService
-from src.schemas.hitl_config import (
-    HITLConfig,
-    PRESET_COPILOT,
-    level_to_config,
-    config_to_level,
-)
+from src.schemas.hitl_config import HITLConfig
 from src.config.settings import settings
 from src.models.database import get_db
 from fastapi import Depends
@@ -76,16 +71,14 @@ class ChatRequest(BaseModel):
         validation_alias=AliasChoices("conversation_id", "conversationId"),
     )
     hitl_config: HITLConfig = Field(
-        default_factory=PRESET_COPILOT.model_copy,
+        default_factory=HITLConfig,
         validation_alias=AliasChoices("hitl_config", "hitlConfig"),
-        description="HITL 단계별 설정 (기본값: Copilot)",
+        description="HITL 단계별 설정",
     )
-    automation_level: Optional[int] = Field(
-        default=None,
-        ge=1,
-        le=3,
-        validation_alias=AliasChoices("automation_level", "automationLevel"),
-        description="[Deprecated] automation_level은 hitl_config로 대체되었습니다.",
+    intervention_required: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("intervention_required", "interventionRequired"),
+        description="분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)",
     )
 
     @field_validator("message")
@@ -95,15 +88,6 @@ class ChatRequest(BaseModel):
         if not v.strip():
             raise ValueError("메시지는 공백만 포함할 수 없습니다")
         return v
-
-    @model_validator(mode="after")
-    def _apply_legacy_level(self) -> "ChatRequest":
-        """
-        legacy automation_level 입력이 존재할 경우 대응되는 프리셋으로 덮어쓴다.
-        """
-        if self.automation_level is not None:
-            self.hitl_config = level_to_config(self.automation_level)
-        return self
 
 
 class ChatResponse(BaseModel):
@@ -121,7 +105,7 @@ class ChatSessionSummary(BaseModel):
     title: str
     last_message: Optional[str] = None
     last_message_at: Optional[str] = None
-    hitl_config: HITLConfig = Field(default_factory=PRESET_COPILOT.model_copy)
+    hitl_config: HITLConfig = Field(default_factory=HITLConfig)
     message_count: int
     created_at: Optional[str] = None
 
@@ -144,7 +128,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         conversation_id = str(conversation_uuid)
 
         hitl_config = request.hitl_config
-        legacy_level = config_to_level(hitl_config)
+        intervention_required = request.intervention_required
 
         # Get user profile for dynamic worker selection
         user_profile_service = UserProfileService()
@@ -163,8 +147,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             content=request.message,
         )
 
-        # Build graph with automation level
-        app = build_graph(automation_level=legacy_level)
+        # Build graph with intervention_required
+        app = build_graph(intervention_required=intervention_required)
 
         # Config for checkpointer
         config: RunnableConfig = {
@@ -181,7 +165,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "user_id": str(DEMO_USER_UUID),
             "conversation_id": conversation_id,
             "hitl_config": hitl_config.model_dump(),
-            "automation_level": legacy_level,
+            "intervention_required": intervention_required,
             "user_profile": user_profile,  # Dynamic worker selection을 위한 사용자 프로파일
             "intent": None,
             "query": request.message,
@@ -220,7 +204,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 conversation_id=conversation_id,
                 user_id=DEMO_USER_UUID,
                 db=db,
-                automation_level=legacy_level,
+                intervention_required=intervention_required,
                 hitl_config=hitl_config,
             )
 
@@ -232,7 +216,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                     approval_request=hitl_result["approval_request"],
                     metadata={
                         "interrupted": True,
-                        "automation_level": legacy_level,
+                        "intervention_required": intervention_required,
                     },
                 )
 
@@ -316,7 +300,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "intent": intent,
             "agents_called": data.get("agents_called", []),
             "hitl_required": hitl_required,
-            "automation_level": legacy_level,
+            "intervention_required": intervention_required,
         }
 
         await chat_history_service.append_message(
@@ -365,7 +349,6 @@ async def get_chat_history(conversation_id: str, limit: int = Query(100, ge=1, l
     return {
         "conversation_id": str(session.conversation_id),
         "user_id": str(session.user_id),
-        "automation_level": session.automation_level,
         "summary": session.summary,
         "metadata": session.session_metadata,
         "created_at": _serialize_datetime(session.created_at),
@@ -545,7 +528,10 @@ async def approve_action(
             .filter(ChatSession.conversation_id == conversation_uuid)
             .first()
         )
-        legacy_level = session_row.automation_level if session_row else 2
+        # intervention_required는 session_metadata에서 가져오거나 기본값 사용
+        intervention_required = False
+        if session_row and session_row.session_metadata:
+            intervention_required = session_row.session_metadata.get("intervention_required", False)
 
         decision_metadata = {
             "decision": approval.decision,
@@ -565,7 +551,7 @@ async def approve_action(
         )
 
         # 메모리 체크포인터를 사용해 그래프 상태를 복구
-        app = build_graph(automation_level=legacy_level)
+        app = build_graph(intervention_required=intervention_required)
 
         config: RunnableConfig = {
             "configurable": {

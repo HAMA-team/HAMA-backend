@@ -262,12 +262,6 @@ class ApprovalDecision(BaseModel):
         ...,
         description="승인 결정"
     )
-    automation_level: int = Field(
-        default=2,
-        ge=1,
-        le=3,
-        description="자동화 레벨"
-    )
     modifications: Optional[dict] = Field(
         None,
         description="수정 내용 (decision=modified일 때)"
@@ -281,8 +275,7 @@ class ApprovalDecision(BaseModel):
         json_schema_extra={
             "example": {
                 "thread_id": "550e8400-e29b-41d4-a716-446655440000",
-                "decision": "approved",
-                "automation_level": 2
+                "decision": "approved"
             }
         }
     )
