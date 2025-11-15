@@ -680,6 +680,110 @@ def _infer_industry(stock_code: str) -> str:
         return "기타"
 
 
+async def _refine_allocation_with_guidance(
+    current_allocation: List[PortfolioHolding],
+    user_guidance: str,
+    current_holdings: List[PortfolioHolding],
+    total_value: float,
+    market_condition: str,
+) -> List[PortfolioHolding]:
+    """
+    사용자 방향성을 해석하여 포트폴리오 allocation 재조정
+
+    Args:
+        current_allocation: AI가 추천한 allocation
+        user_guidance: 사용자의 방향성 제시 (예: 'IT 섹터 늘려줘')
+        current_holdings: 현재 보유 종목
+        total_value: 현재 포트폴리오 총액
+        market_condition: 시장 상황
+
+    Returns:
+        재조정된 allocation
+    """
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
+    from src.prompts import safe_json_parse
+
+    llm = get_llm(temperature=0, max_tokens=2000)
+
+    # 현재 보유 종목 요약
+    holdings_summary = "\n".join([
+        f"- {h.get('stock_name', h.get('stock_code'))}: {h.get('weight', 0)*100:.1f}%"
+        for h in current_holdings
+    ])
+
+    # AI 추천 allocation 요약
+    allocation_summary = "\n".join([
+        f"- {h.get('stock_name', h.get('stock_code'))}: {h.get('weight', 0)*100:.1f}%"
+        for h in current_allocation
+    ])
+
+    prompt = f"""당신은 포트폴리오 리밸런싱 전문가입니다.
+
+**현재 포트폴리오:**
+{holdings_summary}
+
+**AI가 추천한 리밸런싱 계획:**
+{allocation_summary}
+
+**시장 상황:** {market_condition}
+**포트폴리오 총액:** {total_value:,.0f}원
+
+**사용자의 방향성 제시:**
+"{user_guidance}"
+
+사용자의 조언을 반영하여 리밸런싱 계획을 재조정하세요.
+
+**해석 예시:**
+- "IT 섹터 늘려줘" → IT 관련 종목 비중 +5~10%
+- "엔비디아가 유망해보여" → 반도체 업종 비중 증가
+- "삼성전자 줄여줘" → 삼성전자 비중 -5~10%
+- "안정적으로 가자" → 변동성 낮은 종목 위주
+- "현금 비중 늘려줘" → 현금 비중 +10~20%
+
+**제약 조건:**
+- 총 비중 합계 = 100% (1.0)
+- 단일 종목 최대 40%
+- 종목 개수 5~10개 권장
+
+JSON 배열로만 답변하세요:
+[
+  {{
+    "stock_code": "005930",
+    "stock_name": "삼성전자",
+    "weight": 0.25,
+    "target_value": 2500000,
+    "reasoning": "사용자 요청 반영하여 비중 조정"
+  }},
+  ...
+]
+"""
+
+    try:
+        response = await llm.ainvoke(prompt)
+        refined_allocation_raw = safe_json_parse(response.content, "Portfolio/AllocationRefiner")
+
+        # 리스트 추출 (LLM이 dict로 감싸서 반환할 수 있음)
+        if isinstance(refined_allocation_raw, dict):
+            refined_allocation = refined_allocation_raw.get("allocation", [])
+        else:
+            refined_allocation = refined_allocation_raw
+
+        # 비중 합계 검증
+        total_weight = sum(item.get("weight", 0) for item in refined_allocation)
+        if abs(total_weight - 1.0) > 0.05:  # 5% 이상 차이 나면 정규화
+            logger.warning("⚠️ [Portfolio/AllocationRefiner] 비중 합계 오류 (%.2f), 정규화", total_weight)
+            for item in refined_allocation:
+                item["weight"] = item.get("weight", 0) / total_weight
+
+        logger.info("✅ [Portfolio/AllocationRefiner] allocation 재조정 완료: %d개 종목", len(refined_allocation))
+
+        return refined_allocation
+
+    except Exception as exc:
+        logger.warning("⚠️ [Portfolio/AllocationRefiner] allocation 재조정 실패, 원본 유지: %s", exc)
+        return current_allocation
+
+
 async def market_condition_node(state: PortfolioState) -> PortfolioState:
     """
     시장 상황 분석 및 최대 슬롯 조정
@@ -914,17 +1018,44 @@ async def summary_node(state: PortfolioState) -> PortfolioState:
     }
 
 
-def approval_rebalance_node(state: PortfolioState) -> dict:
+async def approval_rebalance_node(state: PortfolioState) -> dict:
     """
     리밸런싱 승인 노드 (HITL Interrupt Point)
 
-    이 노드는 자동화 레벨과 리밸런싱 필요 여부에 따라 사용자 승인을 요청합니다.
-    interrupt_before=["approval_rebalance"]로 설정되어 그래프가 이 노드 전에 일시 정지됩니다.
+    경로 1: 첫 실행 - Interrupt 발생 (사용자 승인 대기)
+    경로 2: 승인 후 재개 - 사용자 방향성 제시 처리
     """
-    # 이미 승인된 경우 스킵
+
+    # ========== 경로 2: 승인 후 재개 ==========
     if state.get("rebalance_approved"):
-        logger.info("⏭️ [Portfolio] 이미 승인된 리밸런싱입니다")
-        return {}
+        logger.info("✅ [Portfolio] 사용자 승인 완료, 리밸런싱 준비")
+
+        # 사용자 방향성 제시 처리
+        user_guidance = state.get("user_rebalance_guidance")
+
+        if user_guidance:
+            logger.info("💬 [Portfolio] 사용자 방향성 제시: %s", user_guidance[:100])
+
+            # LLM을 사용하여 사용자 guidance 해석 및 allocation 재조정
+            refined_allocation = await _refine_allocation_with_guidance(
+                current_allocation=state.get("proposed_allocation", []),
+                user_guidance=user_guidance,
+                current_holdings=state.get("current_holdings", []),
+                total_value=state.get("total_value", 0),
+                market_condition=state.get("market_condition", "중립장"),
+            )
+
+            logger.info("🔄 [Portfolio] 재조정된 allocation: %d개 종목", len(refined_allocation))
+
+            return {
+                "proposed_allocation": refined_allocation,
+                "rebalance_approved": True,
+            }
+
+        # 수정 없음 - 기존 plan 실행
+        return {"rebalance_approved": True}
+
+    # ========== 경로 1: 첫 실행 (Interrupt 발생) ==========
 
     # 리밸런싱이 필요하지 않은 경우
     if not state.get("rebalancing_needed"):
@@ -956,6 +1087,7 @@ def approval_rebalance_node(state: PortfolioState) -> dict:
         "constraint_violations": state.get("constraint_violations") or [],
         "market_condition": state.get("market_condition", "중립장"),
         "message": "리밸런싱을 승인하시겠습니까?",
+        "supports_user_input": True,  # 자유 텍스트 지원
     }
 
     approval: Interrupt = {

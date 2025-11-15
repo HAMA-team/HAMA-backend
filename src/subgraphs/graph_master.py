@@ -8,10 +8,13 @@ Supervisor의 역할:
 4. 매매 전 리스크 분석 및 HITL 승인 관리
 """
 import logging
+import uuid
 from functools import lru_cache
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langgraph_sdk.schema import Interrupt
 
 from langgraph_supervisor import create_supervisor
 
@@ -20,8 +23,150 @@ from src.subgraphs.quantitative_subgraph import quantitative_agent
 from src.subgraphs.tools import get_all_tools
 from src.config.settings import settings
 from src.schemas.graph_state import GraphState
+from src.services import trading_service
 
 logger = logging.getLogger(__name__)
+
+
+# ==================== Trading Nodes ====================
+
+async def prepare_trade_node(state: GraphState) -> GraphState:
+    """
+    매매 준비 노드 - HITL Interrupt 발생
+
+    경로 1: 첫 실행 → Interrupt 발생 (사용자 승인 대기)
+    경로 2: 승인 후 재개 → 사용자 수정사항 반영
+    """
+
+    # ========== 경로 2: 승인 후 재개 ==========
+    if state.get("trade_approved"):
+        logger.info("✅ [Trading/Prepare] 사용자 승인 완료, 매매 준비")
+
+        # 사용자 수정사항 처리
+        modifications = state.get("user_modifications")
+
+        if modifications:
+            logger.info("✏️ [Trading/Prepare] 사용자 수정사항 반영: %s", modifications)
+
+            # 수정 가능한 필드: quantity, price, action
+            quantity = modifications.get("quantity", state.get("trade_quantity"))
+            price = modifications.get("price", state.get("trade_price"))
+            action = modifications.get("action", state.get("trade_action"))
+
+            # 총 금액 재계산
+            total_amount = quantity * price
+
+            logger.info(
+                f"🔄 [Trading/Prepare] 수정된 주문: {action} {quantity}주 @ {price:,}원 = {total_amount:,}원"
+            )
+
+            return {
+                "trade_quantity": quantity,
+                "trade_price": price,
+                "trade_action": action,
+                "trade_total_amount": total_amount,
+                "trade_prepared": True,
+                "messages": [AIMessage(content=f"수정된 주문을 준비했습니다: {action} {quantity}주")],
+            }
+        else:
+            # 수정 없음 - 기존 정보로 진행
+            return {
+                "trade_prepared": True,
+                "messages": [AIMessage(content="매매 주문을 준비했습니다.")],
+            }
+
+    # ========== 경로 1: 첫 실행 (Interrupt 발생) ==========
+
+    action = state.get("trade_action", "buy")
+    stock_code = state.get("stock_code", "")
+    stock_name = state.get("stock_name", stock_code)
+    quantity = state.get("trade_quantity", 0)
+    price = state.get("trade_price", 0)
+    total_amount = quantity * price
+
+    logger.info("🛒 [Trading/Prepare] 매매 주문 준비: %s %s %d주 @ %d원",
+               action, stock_code, quantity, price)
+
+    # 자동 승인 체크 (automation_level=1)
+    automation_level = state.get("automation_level", 2)
+    if automation_level == 1:
+        logger.info("🤖 [Trading/Prepare] 자동 승인 (Level 1)")
+        return {
+            "trade_approved": True,
+            "trade_prepared": True,
+            "trade_total_amount": total_amount,
+            "messages": [AIMessage(content=f"자동 승인: {stock_name} {quantity}주 {action}")],
+        }
+
+    # Interrupt 발생 (사용자 승인 대기)
+    approval_id = str(uuid.uuid4())
+
+    logger.info("⚠️ [Trading/Prepare] INTERRUPT 발생 - 사용자 승인 대기")
+
+    # State 업데이트 (재개 시 사용)
+    state_update: GraphState = {
+        "trade_approval_id": approval_id,
+        "trade_total_amount": total_amount,
+        "messages": [AIMessage(content="매매 승인을 기다립니다...")],
+    }
+
+    # Interrupt payload 생성
+    interrupt_payload = {
+        "type": "trade_approval",
+        "approval_id": approval_id,
+        "action": action,
+        "stock_code": stock_code,
+        "stock_name": stock_name,
+        "quantity": quantity,
+        "price": price,
+        "total_amount": total_amount,
+        "order_type": state.get("trade_order_type", "limit"),
+        "modifiable_fields": ["quantity", "price", "action"],
+        "message": f"{stock_name} {quantity}주를 {price:,}원에 {action}하시겠습니까?",
+    }
+
+    raise Interrupt(state_update, value=interrupt_payload)
+
+
+async def execute_trade_node(state: GraphState) -> GraphState:
+    """
+    매매 실행 노드
+
+    trading_service를 통해 실제 주문 실행 (현재는 시뮬레이션)
+    """
+    action = state.get("trade_action", "buy")
+    stock_code = state.get("stock_code", "")
+    quantity = state.get("trade_quantity", 0)
+    price = state.get("trade_price", 0)
+
+    logger.info("💰 [Trading/Execute] 매매 실행: %s %s %d주 @ %d원",
+               action, stock_code, quantity, price)
+
+    try:
+        # Trading Service를 통해 주문 실행
+        user_id = state.get("user_id", str(uuid.UUID(int=0)))
+        order_result = await trading_service.execute_order(
+            user_id=user_id,
+            stock_code=stock_code,
+            quantity=quantity,
+            action=action,
+            price=price,
+        )
+
+        logger.info("✅ [Trading/Execute] 매매 완료: %s", order_result.get("order_id"))
+
+        return {
+            "trade_order_id": order_result.get("order_id"),
+            "trade_result": order_result,
+            "trade_executed": True,
+            "messages": [AIMessage(content=f"매매 실행 완료: 주문번호 {order_result.get('order_id')}")],
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Trading/Execute] 매매 실패: %s", exc)
+        return {
+            "messages": [AIMessage(content=f"매매 실행 실패: {exc}")],
+        }
 
 
 # ==================== Supervisor Prompt ====================
@@ -49,15 +194,21 @@ def build_supervisor_prompt(automation_level: int) -> str:
 ## 매매 HITL 플로우 (필수)
 ⚠️ automation_level {automation_level} - 모든 매매는 승인 필요
 
-execute_trade 호출 전 반드시:
-1. get_portfolio_positions() 호출
-2. calculate_portfolio_risk() 호출
-3. 리스크 변화를 사용자에게 명시적 보고:
+**중요: request_trade tool 사용 (HITL 패턴)**
+매매 요청 시 execute_trade가 아닌 **request_trade**를 사용하세요:
+
+1. resolve_ticker로 종목 코드 확인
+2. get_portfolio_positions() 호출
+3. calculate_portfolio_risk() 호출
+4. 리스크 변화를 사용자에게 명시적 보고:
    - 현재 리스크: 집중도, 변동성, VaR
    - 매매 후 예상 리스크
    - 경고 사항
-4. 사용자의 **"승인" 또는 "실행"** 명시적 응답 대기
-5. 승인 후에만 execute_trade() 호출
+5. **request_trade(ticker, action, quantity, price)** 호출
+   → 자동으로 사용자 승인 프로세스가 시작됩니다
+   → 승인 후 자동 실행됩니다
+
+⚠️ execute_trade는 deprecated - request_trade를 사용하세요
 </context>
 
 <instructions>
@@ -171,7 +322,16 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
         output_mode="last_message",  # SubGraph 결과 중 마지막 메시지만 반환
     )
 
-    logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s, agents=%d, tools=%d)",
+    # Trading 노드 추가 (서브그래프가 아닌 직접 노드로 등록)
+    supervisor_workflow.add_node("prepare_trade", prepare_trade_node)
+    supervisor_workflow.add_node("execute_trade", execute_trade_node)
+
+    # Trading 노드 라우팅 추가
+    supervisor_workflow.add_edge("prepare_trade", "execute_trade")
+    from langgraph.graph import END
+    supervisor_workflow.add_edge("execute_trade", END)
+
+    logger.info("✅ [Supervisor] 생성 완료 (automation_level=%s, agents=%d, tools=%d, trading_nodes=2)",
                 automation_level, len(agents), len(tools))
 
     return supervisor_workflow
@@ -181,47 +341,65 @@ def build_supervisor(automation_level: int = 2, llm: Optional[BaseChatModel] = N
 
 
 @lru_cache(maxsize=16)
-def get_compiled_graph(automation_level: int):
+def get_compiled_graph(automation_level: int, use_checkpointer: bool = True):
     """
     컴파일된 Supervisor graph 반환 (캐싱)
 
     Args:
         automation_level: 자동화 레벨
+        use_checkpointer: True면 PostgreSQL checkpointer 사용, False면 미사용
+                         (LangGraph Studio는 자체 persistence 제공하므로 False)
 
     Returns:
         CompiledStateGraph: 컴파일된 graph
     """
-    from src.utils.checkpointer_factory import get_checkpointer
-
     supervisor_workflow = build_supervisor(automation_level=automation_level)
 
-    # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
-    checkpointer = get_checkpointer()
-    compiled_graph = supervisor_workflow.compile(
-        checkpointer=checkpointer
-    )
+    if use_checkpointer:
+        # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
+        from src.utils.checkpointer_factory import get_checkpointer
+        checkpointer = get_checkpointer()
+        compiled_graph = supervisor_workflow.compile(
+            checkpointer=checkpointer
+        )
 
-    checkpointer_type = type(checkpointer).__name__
-    logger.info(
-        "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=%s)",
-        automation_level,
-        checkpointer_type,
-    )
+        checkpointer_type = type(checkpointer).__name__
+        logger.info(
+            "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=%s)",
+            automation_level,
+            checkpointer_type,
+        )
+    else:
+        # LangGraph Studio 환경: checkpointer 없이 컴파일
+        compiled_graph = supervisor_workflow.compile()
+        logger.info(
+            "🔧 [Graph] 컴파일 완료 (automation_level=%s, checkpointer=None - LangGraph Studio mode)",
+            automation_level,
+        )
 
     return compiled_graph
 
 
 # ==================== Main Interface ====================
 
-def build_graph(automation_level: int = 2, **kwargs):
+def build_graph(automation_level: int = 2, use_checkpointer: bool = True, **kwargs):
     """
     Supervisor graph 생성 (기존 API 호환)
 
     Args:
         automation_level: 자동화 레벨
+        use_checkpointer: True면 PostgreSQL checkpointer 사용 (기본값)
+                         False면 미사용 (LangGraph Studio용)
         **kwargs: 기타 인자 (무시됨 - 하위 호환성 유지)
 
     Returns:
         CompiledStateGraph: 컴파일된 Supervisor graph
+
+    Examples:
+        >>> # API 사용 (checkpointer 필요)
+        >>> graph = build_graph(automation_level=2)
+
+        >>> # LangGraph Studio 사용 (checkpointer 불필요)
+        >>> graph = build_graph(automation_level=2, use_checkpointer=False)
     """
-    return get_compiled_graph(automation_level=automation_level)
+    return get_compiled_graph(automation_level=automation_level, use_checkpointer=use_checkpointer)

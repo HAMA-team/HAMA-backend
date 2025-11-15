@@ -1,24 +1,24 @@
 """
-LangGraph Checkpointer 팩토리
+LangGraph Checkpointer for PostgreSQL
 
-환경에 따라 MemorySaver 또는 PostgresSaver를 제공
-- Production/Demo: PostgresSaver (영속성)
-- Development/Test: MemorySaver (빠른 개발)
+PostgreSQL 기반 영속성 checkpointer만 제공
+- MemorySaver는 제거됨 (LangGraph Studio와 충돌)
+- Fallback 없이 PostgreSQL 연결 실패 시 에러 반환
 """
 import logging
-from functools import lru_cache
-from typing import Optional
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.checkpoint.memory import MemorySaver
 
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# 전역 checkpointer 및 context manager 유지
+_checkpointer_cm = None
+_checkpointer_instance = None
 
-@lru_cache(maxsize=1)
-def _get_postgres_checkpointer() -> BaseCheckpointSaver:
+
+def get_checkpointer() -> BaseCheckpointSaver:
     """
     PostgresSaver 인스턴스 생성 (싱글톤)
 
@@ -28,8 +28,28 @@ def _get_postgres_checkpointer() -> BaseCheckpointSaver:
     Raises:
         ImportError: langgraph-checkpoint-postgres 미설치 시
         Exception: DB 연결 실패 시
+
+    Examples:
+        >>> checkpointer = get_checkpointer()
+
+    Note:
+        이 함수는 context manager를 내부적으로 관리하여
+        PostgreSQL 연결을 유지합니다.
     """
-    from langgraph.checkpoint.postgres import PostgresSaver
+    global _checkpointer_cm, _checkpointer_instance
+
+    # 이미 초기화된 경우 재사용
+    if _checkpointer_instance is not None:
+        return _checkpointer_instance
+
+    try:
+        from langgraph.checkpoint.postgres import PostgresSaver
+    except ImportError as e:
+        logger.error("❌ [Checkpointer] langgraph-checkpoint-postgres 패키지가 설치되지 않았습니다")
+        raise ImportError(
+            "langgraph-checkpoint-postgres 패키지가 필요합니다. "
+            "다음 명령어로 설치하세요: pip install langgraph-checkpoint-postgres"
+        ) from e
 
     db_uri = settings.database_url
 
@@ -37,50 +57,50 @@ def _get_postgres_checkpointer() -> BaseCheckpointSaver:
     safe_uri = db_uri.split("@")[-1] if "@" in db_uri else "localhost"
     logger.info("🗄️  [Checkpointer] PostgresSaver 초기화: %s", safe_uri)
 
-    # PostgresSaver 생성
-    checkpointer = PostgresSaver.from_conn_string(db_uri)
+    try:
+        # Context manager 생성 및 진입
+        _checkpointer_cm = PostgresSaver.from_conn_string(db_uri)
+        _checkpointer_instance = _checkpointer_cm.__enter__()
 
-    # 최초 실행 시 테이블 생성 (멱등성 보장)
-    # 테이블: checkpoints, checkpoint_writes, checkpoint_blobs
-    checkpointer.setup()
+        # 최초 실행 시 테이블 생성 (멱등성 보장)
+        # 테이블: checkpoints, checkpoint_writes, checkpoint_blobs
+        _checkpointer_instance.setup()
 
-    logger.info("✅ [Checkpointer] PostgresSaver 설정 완료")
+        logger.info("✅ [Checkpointer] PostgresSaver 설정 완료")
 
-    return checkpointer
+        return _checkpointer_instance
+    except Exception as e:
+        logger.error("❌ [Checkpointer] PostgreSQL 연결 실패: %s", str(e))
+        # 연결 실패 시 context manager 정리
+        if _checkpointer_cm is not None:
+            try:
+                _checkpointer_cm.__exit__(None, None, None)
+            except:
+                pass
+            _checkpointer_cm = None
+            _checkpointer_instance = None
+
+        raise RuntimeError(
+            f"PostgreSQL checkpointer 초기화 실패: {str(e)}\n"
+            f"DATABASE_URL 환경변수를 확인하세요: {safe_uri}"
+        ) from e
 
 
-def get_checkpointer(use_postgres: Optional[bool] = None) -> BaseCheckpointSaver:
+def close_checkpointer():
     """
-    환경에 맞는 Checkpointer 반환
+    Checkpointer 연결 종료 (애플리케이션 종료 시 호출)
 
-    Args:
-        use_postgres: True면 PostgresSaver, False면 MemorySaver
-                     None이면 환경변수 기반 자동 선택
-
-    Returns:
-        BaseCheckpointSaver: 체크포인터 인스턴스
-
-    Examples:
-        >>> # 자동 선택 (ENV 기반)
-        >>> checkpointer = get_checkpointer()
-
-        >>> # 명시적으로 Postgres 사용
-        >>> checkpointer = get_checkpointer(use_postgres=True)
-
-        >>> # 명시적으로 Memory 사용
-        >>> checkpointer = get_checkpointer(use_postgres=False)
+    이 함수는 일반적으로 필요하지 않지만,
+    테스트나 애플리케이션 종료 시 명시적으로 연결을 닫을 때 사용할 수 있습니다.
     """
-    # 명시적 설정이 없으면 환경 기반 판단
-    if use_postgres is None:
-        # settings.USE_POSTGRES_CHECKPOINTER 우선, 없으면 ENV 기반
-        if hasattr(settings, "USE_POSTGRES_CHECKPOINTER"):
-            use_postgres = settings.USE_POSTGRES_CHECKPOINTER
-        else:
-            env = settings.ENV.lower()
-            use_postgres = env in ["production", "prod", "demo"]
+    global _checkpointer_cm, _checkpointer_instance
 
-    if use_postgres:
-        return _get_postgres_checkpointer()
-    else:
-        logger.info("💾 [Checkpointer] MemorySaver 사용 (개발/테스트 모드)")
-        return MemorySaver()
+    if _checkpointer_cm is not None:
+        try:
+            _checkpointer_cm.__exit__(None, None, None)
+            logger.info("✅ [Checkpointer] PostgreSQL 연결 종료")
+        except Exception as e:
+            logger.warning("⚠️  [Checkpointer] 연결 종료 중 오류: %s", str(e))
+        finally:
+            _checkpointer_cm = None
+            _checkpointer_instance = None

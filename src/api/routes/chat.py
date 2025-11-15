@@ -507,6 +507,10 @@ class ApprovalRequest(BaseModel):
         default=None, description="DB에 저장된 ApprovalRequest ID"
     )
     modifications: Optional[dict] = None
+    user_input: Optional[str] = Field(
+        default=None,
+        description="사용자가 입력한 자유 텍스트 (modify 시 추가 요청사항)"
+    )
     user_notes: Optional[str] = None
 
 
@@ -610,6 +614,14 @@ async def approve_action(
                 # modifications를 resume_value에 병합
                 resume_value["modifications"] = approval.modifications
                 logger.info(f"✏️ 사용자 수정사항 적용: {approval.modifications}")
+
+            # 사용자 자유 텍스트 입력 처리 (user_input)
+            if approval.user_input:
+                # user_input을 modifications에 추가
+                if "modifications" not in resume_value:
+                    resume_value["modifications"] = {}
+                resume_value["modifications"]["user_input"] = approval.user_input
+                logger.info(f"📝 사용자 입력 전달: {approval.user_input[:100]}")
 
             resume_command: Command = cast(Command, {"resume": resume_value})
             result = await configured_app.ainvoke(resume_command)

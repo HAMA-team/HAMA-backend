@@ -5,12 +5,14 @@ import asyncio
 import json
 import logging
 import re
+import uuid
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.types import Interrupt
 
 from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse
@@ -40,7 +42,7 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_WORKERS = {"data", "bull", "bear", "macro", "technical", "trading_flow", "information"}
+ALLOWED_WORKERS = {"data", "bull", "bear", "macro", "technical", "trading_flow"}
 
 
 def _json_default(value: Any) -> Union[float, str, list]:
@@ -178,296 +180,419 @@ def _sanitize_tasks(tasks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _task_complete(
     state: ResearchState,
-    task: Optional[Dict[str, Any]],
+    worker_name: str,
     summary: str,
     extra: Dict[str, Any],
 ) -> ResearchState:
-    completed = list(state.get("completed_tasks") or [])
-    notes = list(state.get("task_notes") or [])
+    """
+    Worker 작업 완료 후 상태 업데이트 (병렬 실행 안전)
+
+    Args:
+        state: 현재 상태
+        worker_name: worker 이름 (예: "data_worker")
+        summary: 작업 요약
+        extra: 추가 상태 업데이트
+
+    Note:
+        completed_tasks와 task_notes는 Annotated[List, add]로 정의되어
+        병렬 실행 시 자동으로 리스트가 병합됩니다.
+        따라서 기존 리스트에 append하지 않고 새 항목만 반환합니다.
+    """
+    # pending_tasks에서 해당 worker task 찾기
+    pending_tasks = state.get("pending_tasks") or []
+    task = None
+    for t in pending_tasks:
+        if t.get("worker") == worker_name.replace("_worker", "").replace("_analyst", ""):
+            task = t
+            break
+
+    # 새로 추가할 항목만 생성 (병렬 실행 시 자동 병합됨)
+    new_completed = []
+    new_notes = []
 
     if task:
-        completed.append({**task, "status": "done", "summary": summary})
+        new_completed.append({**task, "status": "done", "summary": summary})
     if summary:
-        notes.append(summary)
+        new_notes.append(summary)
 
     update: ResearchState = {
-        "completed_tasks": completed,
-        "task_notes": notes,
-        "current_task": None,
+        "completed_tasks": new_completed,
+        "task_notes": new_notes,
     }
     update.update(extra)
     return update
 
 
-async def query_intent_classifier_node(state: ResearchState) -> ResearchState:
+def _perspectives_to_workers(perspectives: List[str]) -> List[str]:
     """
-    Query Intent Classifier (쿼리 의도 분석기) - LLM 완전 판단 기반
+    UI Perspectives → Workers 변환
 
-    사용자 쿼리와 UserProfile을 분석하여 적절한 분석 깊이를 결정합니다.
-    키워드 의존성을 제거하고 LLM이 전체 맥락을 이해하여 판단합니다.
+    Args:
+        perspectives: UI에서 선택한 관점 리스트
 
-    분석 요소:
-    1. LLM 기반 쿼리 복잡도 판단 (키워드 없이 전체 문맥 이해)
-    2. 사용자 성향 반영 (투자 경험, 선호 깊이, 최근 선택 패턴)
-    3. Focus Areas 자동 추출 (LLM이 필요한 분석 영역 판단)
-    4. 암묵적 요구사항 파악
+    Returns:
+        실행할 worker 리스트 (중복 제거됨)
     """
-    query = state.get("query", "")
-    user_profile = state.get("user_profile") or {}
+    from src.constants.analysis_depth import PERSPECTIVE_TO_WORKER_MAPPING
 
-    logger.info("🎯 [Research/IntentClassifier] 쿼리 의도 분석 시작 (LLM 판단): %s", query[:50])
+    workers = []
+    for perspective in perspectives:
+        mapped_workers = PERSPECTIVE_TO_WORKER_MAPPING.get(perspective, [])
+        workers.extend(mapped_workers)
 
-    # UserProfile 추출
-    expertise_level = user_profile.get("expertise_level", "intermediate")
-    preferred_depth = user_profile.get("preferred_depth", "detailed")
-    recent_depth_choices = user_profile.get("recent_depth_choices", [])
+    # 중복 제거, 순서 유지
+    seen = set()
+    unique_workers = []
+    for w in workers:
+        if w not in seen:
+            seen.add(w)
+            unique_workers.append(w)
 
-    # Claude 4.x 프롬프트 사용
-    from src.prompts.common.intent_classifier import build_research_intent_classifier_prompt
-
-    try:
-        llm = get_llm(temperature=0, max_tokens=1000)
-
-        # Claude 4.x 최적화 프롬프트 생성
-        prompt = build_research_intent_classifier_prompt(
-            query=query,
-            user_profile={
-                "expertise_level": expertise_level,
-                "preferred_depth": preferred_depth,
-                "recent_depth_choices": recent_depth_choices,
-            },
-        )
-
-        # LLM 호출
-        response = await llm.ainvoke(prompt)
-
-        # JSON 파싱 (프롬프트 유틸리티 사용)
-        from src.prompts import parse_llm_json
-
-        intent = parse_llm_json(response.content)
-
-        # 결과 추출
-        final_depth = intent.get("depth", "standard")
-        confidence = intent.get("confidence", 0.5)
-        reasoning = intent.get("reasoning", "LLM 기반 분류")
-        llm_focus_areas = intent.get("focus_areas", [])
-        implicit_needs = intent.get("implicit_needs", "")
-
-        # Focus areas를 worker 이름으로 매핑
-        focus_workers = []
-        worker_mapping = {
-            "data": ["data"],
-            "technical": ["technical"],
-            "trading_flow": ["trading_flow"],
-            "information": ["information"],
-            "macro": ["macro"],
-            "bull": ["bull"],
-            "bear": ["bear"],
-        }
-
-        for area in llm_focus_areas:
-            if area in worker_mapping:
-                focus_workers.extend(worker_mapping[area])
-
-        focus_workers = list(set(focus_workers))  # 중복 제거
-
-        logger.info(
-            "✅ [Research/IntentClassifier] LLM 판단 완료: %s (확신도: %.2f) | 집중 영역: %s",
-            final_depth,
-            confidence,
-            focus_workers or "자동 선택",
-        )
-
-        depth_reason = f"{reasoning} (확신도: {confidence:.0%})"
-        if implicit_needs:
-            depth_reason += f" | 암묵적 요구: {implicit_needs}"
-
-    except Exception as exc:
-        logger.warning("⚠️ [Research/IntentClassifier] LLM 분류 실패, fallback 사용: %s", exc)
-
-        # Fallback: UserProfile 기반 기본값
-        profile_depth_map = {
-            "brief": "quick",
-            "detailed": "standard",
-            "comprehensive": "comprehensive",
-        }
-        final_depth = profile_depth_map.get(preferred_depth, "standard")
-        focus_workers = []
-        depth_reason = f"사용자 프로파일 기본값 ({preferred_depth})"
-
-    # 최종 유효성 검증
-    if final_depth not in ANALYSIS_DEPTH_LEVELS:
-        final_depth = get_default_depth()
-        depth_reason += " (기본값으로 대체)"
-
-    depth_config = ANALYSIS_DEPTH_LEVELS[final_depth]
-
-    logger.info(
-        "📋 [Research/IntentClassifier] 최종 결정: %s (%s) | 집중 영역: %s",
-        final_depth,
-        depth_config["name"],
-        focus_workers or "없음",
-    )
-
-    message = AIMessage(
-        content=(
-            f"분석 깊이: {depth_config['name']} ({depth_config['estimated_time']})\n"
-            f"이유: {depth_reason}"
-            + (f"\n집중 영역: {', '.join(focus_workers)}" if focus_workers else "")
-        )
-    )
-
-    return {
-        "analysis_depth": final_depth,
-        "focus_areas": focus_workers,
-        "depth_reason": depth_reason,
-        "messages": [message],
-    }
+    return unique_workers
 
 
-async def planner_node(state: ResearchState) -> ResearchState:
+def _apply_scope_limit(workers: List[str], scope: str) -> List[str]:
     """
-    Smart Planner - 분석 깊이에 따라 동적으로 worker 선택
+    Scope에 따라 worker 개수 제한
 
-    query_intent_classifier_node에서 결정한 analysis_depth와 focus_areas를 기반으로
-    필요한 worker만 선택하여 비용과 시간을 최적화합니다.
+    Args:
+        workers: worker 리스트
+        scope: 분석 범위 ("key_points" | "balanced" | "wide_coverage")
+
+    Returns:
+        제한된 worker 리스트
     """
-    query = state.get("query") or "종목 분석"
-    stock_code = await _extract_stock_code(state)
-    analysis_depth = state.get("analysis_depth", "standard")
-    focus_areas = state.get("focus_areas") or []
-    depth_reason = state.get("depth_reason", "")
+    from src.constants.analysis_depth import get_scope_config
 
-    # 분석 깊이에 맞는 추천 worker 리스트 가져오기
-    from src.constants.analysis_depth import get_recommended_workers, get_depth_config
+    scope_config = get_scope_config(scope)
+    limit = scope_config["max_workers"]
 
-    recommended_workers = get_recommended_workers(analysis_depth, focus_areas)
-    depth_config = get_depth_config(analysis_depth)
+    # 우선순위: data > technical > macro > trading_flow > bull > bear
+    priority = ["data", "technical", "macro", "trading_flow", "bull", "bear"]
 
-    logger.info(
-        "🧠 [Research/Planner] Smart Planner 시작 | 깊이: %s (%s) | 추천 Worker: %s",
-        analysis_depth, depth_config["name"], recommended_workers
-    )
+    sorted_workers = []
+    for p in priority:
+        if p in workers:
+            sorted_workers.append(p)
 
-    # Worker 설명
-    worker_descriptions = {
-        "data": "원시 데이터 수집 (주가, 재무제표, 기업 정보, 기술적 지표)",
-        "technical": "기술적 분석 전문가 (이평선, 지지/저항선, 기술적 지표 해석)",
-        "trading_flow": "거래 동향 분석 전문가 (기관/외국인/개인 순매수 분석)",
-        "information": "정보 분석 전문가 (뉴스, 호재/악재, 시장 센티먼트)",
-        "macro": "거시경제 분석 (금리, 환율, 경기 동향)",
-        "bull": "강세 시나리오 분석 (상승 가능성 및 근거)",
-        "bear": "약세 시나리오 분석 (하락 리스크 및 근거)",
-    }
+    return sorted_workers[:limit]
 
-    # LLM에게 제공할 worker 정보
-    available_workers = "\n".join([
-        f"- **{worker}**: {worker_descriptions.get(worker, '')}"
-        for worker in recommended_workers
-    ])
 
-    llm = get_llm(temperature=0, max_tokens=1600)
-    prompt = f"""
-당신은 심층 종목 조사를 계획하는 Smart Planner입니다.
+async def _refine_plan_with_user_input(
+    original_plan: Dict[str, Any],
+    user_input: str,
+    stock_code: Optional[str],
+    query: Optional[str],
+) -> Dict[str, Any]:
+    """
+    사용자 입력을 해석하여 분석 계획 재조정
 
-사용자 요청: {query}
-예상 종목코드: {stock_code}
+    Args:
+        original_plan: 원본 계획 (depth, scope, perspectives)
+        user_input: 사용자의 자유 텍스트 입력
+        stock_code: 종목 코드
+        query: 원본 쿼리
 
-**분석 깊이 설정:**
-- 레벨: {analysis_depth} ({depth_config["name"]})
-- 이유: {depth_reason}
-- 집중 영역: {", ".join(focus_areas) if focus_areas else "없음"}
-- 예상 소요 시간: {depth_config["estimated_time"]}
+    Returns:
+        재조정된 계획 (depth, scope, perspectives)
+    """
+    from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
+    from src.prompts import safe_json_parse
 
-**사용 가능한 Worker (최대 {depth_config["max_workers"]}개):**
-{available_workers}
+    llm = get_llm(temperature=0, max_tokens=1500)
 
-**작업 계획 수립 가이드:**
-1. 추천된 worker 중에서 선택하세요 (위 목록 참고)
-2. {analysis_depth} 레벨에 맞는 적절한 worker 수를 선택하세요
-3. 집중 영역({", ".join(focus_areas) if focus_areas else "없음"})이 있다면 우선적으로 포함하세요
-4. worker는 순차적으로 실행됩니다 (data → technical → trading_flow → ...)
+    prompt = f"""당신은 주식 투자 분석 계획을 재조정하는 전문가입니다.
+
+**원본 요청:** {query}
+**종목코드:** {stock_code}
+
+**AI가 추천한 계획:**
+- Depth: {original_plan.get('depth')}
+- Scope: {original_plan.get('scope')}
+- Perspectives: {original_plan.get('perspectives')}
+
+**사용자의 추가 요청:**
+"{user_input}"
+
+사용자 요청을 반영하여 분석 계획을 재조정하세요.
+
+**Depth (분석 깊이):**
+- brief: 빠른 분석 (10-20초)
+- detailed: 표준 분석 (30-45초)
+- comprehensive: 종합 분석 (60-90초)
+
+**Scope (분석 범위):**
+- key_points: 핵심만 (최대 3개 관점)
+- balanced: 균형잡힌 (최대 5개 관점)
+- wide_coverage: 광범위 (최대 6개 관점)
+
+**Perspectives (분석 관점):**
+- macro: 거시경제 분석
+- fundamental: 재무제표 및 기업 정보
+- technical: 기술적 분석
+- flow: 거래 동향 (외국인/기관)
+- strategy: 투자 전략 (bull/bear 시나리오)
+- bull_case: 강세 시나리오만
+- bear_case: 약세 시나리오만
+
+**해석 예시:**
+- "더 깊게" → depth를 comprehensive로
+- "간단하게" → depth를 brief로
+- "반도체 사업부에 집중" → fundamental 추가, depth는 detailed 이상
+- "기술적 지표만" → perspectives를 ["technical"]로
+- "시장 전망 포함" → macro 추가
 
 JSON 형식으로만 답변하세요:
 {{
-  "plan_summary": "한 문장 요약",
-  "tasks": [
-    {{"id": "task_1", "worker": "data", "description": "주가 및 재무 데이터 수집" }},
-    {{"id": "task_2", "worker": "technical", "description": "기술적 분석 수행" }}
-  ]
+  "depth": "detailed",
+  "scope": "balanced",
+  "perspectives": ["fundamental", "technical"],
+  "reasoning": "사용자가 요청한 이유 설명"
 }}
-
-중요: worker 값은 위에 나열된 worker 중에서만 선택하세요: {", ".join(recommended_workers)}
 """
 
     try:
         response = await llm.ainvoke(prompt)
-        content = response.content if hasattr(response, "content") else str(response)
-        plan = safe_json_parse(content, "Research/Planner")
+        refined_plan = safe_json_parse(response.content, "Research/PlanRefiner")
 
-        if not isinstance(plan, dict):
-            raise ValueError("LLM이 올바른 JSON 형식의 계획을 생성하지 못했습니다.")
+        logger.info("✅ [Research/PlanRefiner] 계획 재조정 성공: %s", refined_plan.get("reasoning", ""))
 
-        sanitized_tasks = _sanitize_tasks(plan.get("tasks", []))
-
-        # Worker 검증: 추천된 worker만 사용하도록 필터링
-        validated_tasks = []
-        for task in sanitized_tasks:
-            worker = task.get("worker", "").lower()
-            if worker in recommended_workers:
-                validated_tasks.append(task)
-            else:
-                logger.warning(
-                    "⚠️ [Research/Planner] 추천되지 않은 worker 제외: %s (추천: %s)",
-                    worker, recommended_workers
-                )
-
-        if not validated_tasks:
-            # Fallback: 최소한 data worker는 실행
-            logger.warning("⚠️ [Research/Planner] 유효한 task가 없어 기본 task 생성")
-            validated_tasks = [{"id": "task_1", "worker": "data", "description": "기본 데이터 수집"}]
-
-        plan["tasks"] = validated_tasks
+        return {
+            "depth": refined_plan.get("depth", original_plan.get("depth")),
+            "scope": refined_plan.get("scope", original_plan.get("scope")),
+            "perspectives": refined_plan.get("perspectives", original_plan.get("perspectives")),
+        }
 
     except Exception as exc:
-        logger.error("❌ [Research/Planner] 계획 생성 실패: %s", exc)
-        raise
+        logger.warning("⚠️ [Research/PlanRefiner] 계획 재조정 실패, 원본 유지: %s", exc)
+        return original_plan
 
-    plan_message_lines = [
-        f"📋 조사 계획을 수립했습니다 ({depth_config['name']}, {len(validated_tasks)}개 작업).",
-        plan.get("plan_summary", "종목 분석 계획"),
-    ]
-    for task in validated_tasks:
-        plan_message_lines.append(f"- ({task['worker']}) {task['description']}")
 
-    plan_message = AIMessage(content="\n".join(plan_message_lines))
+async def planner_node(state: ResearchState) -> ResearchState:
+    """
+    Planner Node - HITL 패턴 구현
 
-    return {
-        "plan": plan,
-        "pending_tasks": deepcopy(validated_tasks),
-        "completed_tasks": [],
-        "current_task": None,
-        "task_notes": [],
-        "messages": [plan_message],
+    경로 1: 첫 실행 - UserProfile + LLM 기반 계획 수립 후 INTERRUPT
+    경로 2: 승인 후 재개 - perspectives를 workers로 변환하여 pending_tasks 생성
+    """
+
+    # ========== 경로 2: 승인 후 재개 (두 번째 실행) ==========
+    if state.get("plan_approved"):
+        logger.info("✅ [Research/Planner] 사용자 승인 완료, 분석 시작")
+
+        # 사용자 수정사항 처리
+        modifications = state.get("user_modifications")
+
+        if modifications:
+            logger.info("✏️ [Research/Planner] 사용자 수정사항 반영: %s", modifications)
+
+            # 1. 구조화된 수정사항 적용 (depth, scope, perspectives)
+            depth = modifications.get("depth", state.get("depth", "detailed"))
+            scope = modifications.get("scope", state.get("scope", "balanced"))
+            perspectives = modifications.get("perspectives", state.get("perspectives", []))
+
+            # 2. 자유 텍스트 입력 처리 (user_input)
+            user_input = modifications.get("user_input")
+            if user_input:
+                logger.info("💬 [Research/Planner] 사용자 입력 해석: %s", user_input[:100])
+
+                # LLM을 사용하여 사용자 입력 해석 및 plan 재조정
+                refined_plan = await _refine_plan_with_user_input(
+                    original_plan={
+                        "depth": depth,
+                        "scope": scope,
+                        "perspectives": perspectives,
+                    },
+                    user_input=user_input,
+                    stock_code=state.get("stock_code"),
+                    query=state.get("query"),
+                )
+
+                # 해석된 결과로 plan 업데이트
+                depth = refined_plan.get("depth", depth)
+                scope = refined_plan.get("scope", scope)
+                perspectives = refined_plan.get("perspectives", perspectives)
+
+                logger.info("🔄 [Research/Planner] 재조정된 plan: depth=%s, scope=%s, perspectives=%s",
+                           depth, scope, perspectives)
+        else:
+            # 수정 없음 - 기존 state의 plan 사용
+            depth = state.get("depth", "detailed")
+            scope = state.get("scope", "balanced")
+            perspectives = state.get("perspectives", [])
+
+        # perspectives → workers 변환
+        workers = _perspectives_to_workers(perspectives)
+
+        # scope에 따라 worker 개수 제한
+        workers = _apply_scope_limit(workers, scope)
+
+        # pending_tasks 생성
+        pending_tasks = []
+        for worker in workers:
+            pending_tasks.append({
+                "id": f"task_{worker}",
+                "worker": worker,
+                "description": f"{worker} 분석",
+            })
+
+        logger.info(
+            f"🚀 [Research/Planner] 실행할 workers: {workers} (총 {len(workers)}개)"
+        )
+
+        return {
+            "depth": depth,
+            "scope": scope,
+            "perspectives": perspectives,
+            "pending_tasks": pending_tasks,
+            "completed_tasks": [],
+            "task_notes": [],
+            "messages": [AIMessage(content="분석을 시작합니다...")],
+        }
+
+    # ========== 경로 1: 첫 실행 (계획 수립 및 INTERRUPT) ==========
+
+    query = state.get("query") or "종목 분석"
+    stock_code = await _extract_stock_code(state)
+
+    logger.info("🧠 [Research/Planner] 계획 수립 시작: %s", query[:50])
+
+    # 1. UserProfile + LLM 기반 기본 계획 수립
+    user_profile = state.get("user_profile") or {}
+
+    llm = get_llm(temperature=0, max_tokens=1200)
+    prompt = f"""당신은 주식 투자 분석 계획을 수립하는 전문가입니다.
+
+사용자 요청: {query}
+종목코드: {stock_code}
+
+다음 중에서 적절한 분석 설정을 추천하세요:
+
+**Depth (분석 깊이):**
+- brief: 빠른 분석 (10-20초)
+- detailed: 표준 분석 (30-45초) - 일반적인 선택
+- comprehensive: 종합 분석 (60-90초)
+
+**Scope (분석 범위):**
+- key_points: 핵심만 (최대 3개 관점)
+- balanced: 균형잡힌 (최대 5개 관점) - 일반적인 선택
+- wide_coverage: 광범위 (최대 6개 관점)
+
+**Perspectives (분석 관점 - 복수 선택):**
+- macro: 거시경제 분석
+- fundamental: 재무제표 및 기업 정보
+- technical: 기술적 분석
+- flow: 거래 동향 (외국인/기관)
+- strategy: 투자 전략 (bull/bear 시나리오)
+- bull_case: 강세 시나리오만
+- bear_case: 약세 시나리오만
+
+JSON 형식으로만 답변하세요:
+{{
+  "depth": "detailed",
+  "scope": "balanced",
+  "perspectives": ["fundamental", "technical"]
+}}
+"""
+
+    try:
+        response = await llm.ainvoke(prompt)
+        plan = safe_json_parse(response.content, "Research/Planner")
+
+        recommended_depth = plan.get("depth", "detailed")
+        recommended_scope = plan.get("scope", "balanced")
+        recommended_perspectives = plan.get("perspectives", ["fundamental", "technical"])
+
+    except Exception as exc:
+        logger.warning("⚠️ [Research/Planner] LLM 계획 실패, 기본값 사용: %s", exc)
+        recommended_depth = "detailed"
+        recommended_scope = "balanced"
+        recommended_perspectives = ["fundamental", "technical"]
+
+    # 2. 자동 승인 체크 (automation_level=1)
+    automation_level = state.get("automation_level", 2)
+    if automation_level == 1:
+        logger.info("🤖 [Research/Planner] 자동 승인 (Level 1)")
+
+        workers = _perspectives_to_workers(recommended_perspectives)
+        workers = _apply_scope_limit(workers, recommended_scope)
+
+        pending_tasks = []
+        for worker in workers:
+            pending_tasks.append({
+                "id": f"task_{worker}",
+                "worker": worker,
+                "description": f"{worker} 분석",
+            })
+
+        from src.constants.analysis_depth import get_depth_config
+
+        depth_config = get_depth_config(recommended_depth)
+
+        return {
+            "plan_approved": True,
+            "depth": recommended_depth,
+            "scope": recommended_scope,
+            "perspectives": recommended_perspectives,
+            "method": "both",
+            "pending_tasks": pending_tasks,
+            "completed_tasks": [],
+            "task_notes": [],
+            "messages": [AIMessage(content=f"자동 승인: {depth_config['name']} 분석을 시작합니다.")],
+            "stock_code": stock_code,
+        }
+
+    # 3. INTERRUPT 발생 (사용자 승인 대기)
+    from src.constants.analysis_depth import get_depth_config
+
+    depth_config = get_depth_config(recommended_depth)
+
+    approval_id = str(uuid.uuid4())
+
+    logger.info("⚠️ [Research/Planner] INTERRUPT 발생 - 사용자 승인 대기")
+
+    # Interrupt를 발생시키기 전에 State 업데이트
+    # (재개 시 사용할 기본값 저장)
+    state_update: ResearchState = {
+        "depth": recommended_depth,
+        "scope": recommended_scope,
+        "perspectives": recommended_perspectives,
+        "method": "both",
+        "plan_approval_id": approval_id,
         "stock_code": stock_code,
+        "messages": [AIMessage(content="분석 계획을 수립했습니다. 승인을 기다립니다...")],
     }
 
-
-def task_router_node(state: ResearchState) -> ResearchState:
-    pending = list(state.get("pending_tasks") or [])
-    if not pending:
-        return {"current_task": None, "pending_tasks": []}
-
-    task = pending.pop(0)
-    logger.info("🧭 [Research/Router] 다음 작업 선택: %s (%s)", task["id"], task["worker"])
-    return {
-        "current_task": task,
-        "pending_tasks": pending,
+    # Interrupt payload 생성
+    interrupt_payload = {
+        "type": "research_plan_approval",
+        "approval_id": approval_id,
+        "stock_code": stock_code,
+        "query": query,
+        "plan": {
+            "depth": recommended_depth,
+            "depth_name": depth_config["name"],
+            "scope": recommended_scope,
+            "perspectives": recommended_perspectives,
+            "method": "both",
+            "estimated_time": depth_config["estimated_time"],
+        },
+        "options": {
+            "depths": ["brief", "detailed", "comprehensive"],
+            "scopes": ["key_points", "balanced", "wide_coverage"],
+            "perspectives": ["macro", "fundamental", "technical", "flow",
+                           "strategy", "bull_case", "bear_case"],
+            "methods": ["qualitative", "quantitative", "both"],
+        },
+        "message": "다음과 같이 분석할 예정입니다. 진행하시겠습니까?",
     }
+
+    # State 업데이트 후 Interrupt 발생
+    # Note: LangGraph는 interrupt 전 return된 state를 저장함
+    raise Interrupt(state_update, value=interrupt_payload)
 
 
 async def data_worker_node(state: ResearchState) -> ResearchState:
-    task = state.get("current_task")
     stock_code = await _extract_stock_code(state)
     request_id = state.get("request_id", "research-agent")
 
@@ -597,13 +722,12 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             "messages": [message],
             "request_id": request_id,
         }
-        return _task_complete(state, task, summary, payload)
+        return _task_complete(state, "data", summary, payload)
 
     except Exception as exc:
         logger.error("❌ [Research/Data] 실패: %s", exc)
         return {
             "error": str(exc),
-            "current_task": None,
             "messages": [
                 AIMessage(content=f"데이터 수집 중 오류가 발생했습니다: {exc}")
             ],
@@ -614,7 +738,6 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
     if state.get("error"):
         return state
 
-    task = state.get("current_task")
     stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🐂 [Research/Bull] 강세 분석 시작: %s", stock_code)
@@ -716,7 +839,7 @@ JSON 형식으로 답변하세요:
                 "bull_analysis": analysis,
                 "messages": [message],
             }
-            return _task_complete(state, task, summary, payload)
+            return _task_complete(state, "bull", summary, payload)
         except Exception as exc:
             logger.error(
                 "❌ [Research/Bull] 실패 (시도 %s/%s): %s", attempt + 1, max_retries, exc
@@ -731,7 +854,6 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
     if state.get("error"):
         return state
 
-    task = state.get("current_task")
     stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🐻 [Research/Bear] 약세 분석 시작: %s", stock_code)
@@ -835,7 +957,7 @@ JSON 형식으로 답변하세요:
                 "bear_analysis": analysis,
                 "messages": [message],
             }
-            return _task_complete(state, task, summary, payload)
+            return _task_complete(state, "bear", summary, payload)
         except Exception as exc:
             logger.error(
                 "❌ [Research/Bear] 실패 (시도 %s/%s): %s", attempt + 1, max_retries, exc
@@ -859,7 +981,6 @@ async def macro_worker_node(state: ResearchState) -> ResearchState:
     if state.get("error"):
         return state
 
-    task = state.get("current_task")
     stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("🌍 [Research/Macro] 거시경제 분석 시작: %s", stock_code)
@@ -940,14 +1061,14 @@ JSON 형식으로 답변하세요:
             "macro_analysis": macro_analysis,
             "messages": [message],
         }
-        return _task_complete(state, task, summary, payload)
+        return _task_complete(state, "macro", summary, payload)
 
     except Exception as exc:
         logger.error("❌ [Research/Macro] 실패: %s", exc)
         # 거시경제 분석 실패는 치명적이지 않으므로 계속 진행
         return _task_complete(
             state,
-            task,
+            "macro",
             "거시경제 분석 실패 (생략)",
             {
                 "macro_analysis": None,
@@ -970,7 +1091,6 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
     if state.get("error"):
         return state
 
-    task = state.get("current_task")
     stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("📊 [Research/TechnicalAnalyst] 기술적 분석 시작: %s", stock_code)
@@ -983,7 +1103,7 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
         logger.warning("⚠️ [Research/TechnicalAnalyst] 기술적 데이터 부족")
         return _task_complete(
             state,
-            task,
+            "technical",
             "기술적 데이터 부족으로 분석 생략",
             {
                 "technical_analysis": None,
@@ -1098,7 +1218,7 @@ JSON 형식으로 답변하세요:
                 "technical_analysis": analysis,
                 "messages": [message],
             }
-            return _task_complete(state, task, summary, payload)
+            return _task_complete(state, "technical", summary, payload)
 
         except Exception as exc:
             logger.error(
@@ -1126,7 +1246,6 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
     if state.get("error"):
         return state
 
-    task = state.get("current_task")
     stock_code = state.get("stock_code") or await _extract_stock_code(state)
 
     logger.info("💹 [Research/TradingFlowAnalyst] 거래 동향 분석 시작: %s", stock_code)
@@ -1140,7 +1259,7 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
         logger.warning("⚠️ [Research/TradingFlowAnalyst] 투자자 거래 데이터 부족 (KIS API 미지원)")
         return _task_complete(
             state,
-            task,
+            "trading_flow",
             "투자자 거래 데이터 미지원으로 분석 생략",
             {
                 "trading_flow_analysis": None,
@@ -1244,7 +1363,7 @@ JSON 형식으로 답변하세요:
                 "trading_flow_analysis": analysis,
                 "messages": [message],
             }
-            return _task_complete(state, task, summary, payload)
+            return _task_complete(state, "trading_flow", summary, payload)
 
         except Exception as exc:
             logger.error(
@@ -1259,137 +1378,11 @@ JSON 형식으로 답변하세요:
             raise RuntimeError(f"거래 동향 분석 실패: {exc}") from exc
 
 
-async def information_analyst_worker_node(state: ResearchState) -> ResearchState:
-    """
-    정보 분석 전문가 (Information Analyst)
-
-    역할:
-    - 뉴스 및 이슈 트렌드 분석
-    - 호재/악재 식별
-    - 시장 센티먼트 분석
-
-    Note: 현재는 기존 데이터를 기반으로 분석하며,
-    향후 뉴스 API 연동 시 실제 뉴스 크롤링 추가 예정
-    """
-    if state.get("error"):
-        return state
-
-    task = state.get("current_task")
-    stock_code = state.get("stock_code") or await _extract_stock_code(state)
-
-    logger.info("📰 [Research/InformationAnalyst] 정보 분석 시작: %s", stock_code)
-
-    # 기업 정보 추출
-    company_data = state.get("company_data") or {}
-    company_info = company_data.get("info", {})
-    company_name = company_info.get("corp_name", f"종목코드 {stock_code}")
-
-    # 컨텍스트 구성
-    context = {
-        "stock_code": stock_code,
-        "company_name": company_name,
-        "market_index": state.get("market_index_data"),
-        "market_cap": state.get("market_cap_data"),
-        "fundamental": state.get("fundamental_data"),
-        "price_trend": state.get("price_data", {}).get("latest_close"),
-    }
-
-    llm = get_llm(max_tokens=2000, temperature=0.3)
-
-    prompt = f"""당신은 정보 분석 전문가입니다. 기업 정보와 시장 맥락을 분석하여 투자 관련 인사이트를 제공하세요.
-
-## 기업 정보
-- 기업명: {company_name}
-- 종목코드: {stock_code}
-
-## 시장 컨텍스트 
-{_dumps(context, indent=2)} 
-
-## 분석 항목
-1. **기업 개요 및 사업 특성**:
-   - 주요 사업 분야
-   - 시장 내 위치
-2. **최근 이슈 및 트렌드** (데이터 기반 추론):
-   - 주가 변동성에서 추론 가능한 이슈
-   - 업종 트렌드
-3. **호재/악재 요인**:
-   - 긍정적 요인
-   - 부정적 요인
-4. **시장 센티먼트**:
-   - 전반적 투자 심리
-   - 리스크 레벨
-
-Note: 뉴스 API 연동 전이므로, 기존 데이터(주가, 거래량, 시총 등)를 기반으로 추론하세요.
-
-JSON 형식으로 답변하세요:
-{{
-  "company_overview": "기업 개요",
-  "business_characteristics": "사업 특성",
-  "positive_factors": ["호재 요인 리스트"],
-  "negative_factors": ["악재 요인 리스트"],
-  "market_sentiment": "긍정적" | "부정적" | "중립",
-  "risk_level": "높음" | "중간" | "낮음",
-  "key_themes": ["주요 테마/트렌드"],
-  "investment_implications": "투자 시사점",
-  "confidence": 1-5
-}}
-"""
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            response = await llm.ainvoke(prompt)
-            analysis = safe_json_parse(response.content, "Research/InformationAnalyst")
-
-            if not isinstance(analysis, dict):
-                analysis = {}
-
-            confidence = int(_coerce_number(analysis.get("confidence"), 3))
-            confidence = max(1, min(confidence, 5))
-
-            sentiment = analysis.get("market_sentiment", "중립")
-            risk_level = analysis.get("risk_level", "중간")
-
-            summary = f"정보 분석 완료: 센티먼트 {sentiment}, 리스크 {risk_level}"
-
-            positive = analysis.get("positive_factors", [])
-            negative = analysis.get("negative_factors", [])
-
-            message = AIMessage(
-                content=(
-                    f"정보 분석 결과:\n"
-                    f"- 시장 센티먼트: {sentiment}\n"
-                    f"- 리스크 레벨: {risk_level}\n"
-                    f"- 주요 호재: {', '.join(positive[:2]) if positive else '없음'}\n"
-                    f"- 주요 악재: {', '.join(negative[:2]) if negative else '없음'}"
-                )
-            )
-
-            payload: ResearchState = {
-                "information_analysis": analysis,
-                "messages": [message],
-            }
-            return _task_complete(state, task, summary, payload)
-
-        except Exception as exc:
-            logger.error(
-                "❌ [Research/InformationAnalyst] 실패 (시도 %s/%s): %s",
-                attempt + 1,
-                max_retries,
-                exc,
-            )
-            if attempt < max_retries - 1:
-                await asyncio.sleep(2)
-                continue
-            raise RuntimeError(f"정보 분석 실패: {exc}") from exc
-
-
 async def synthesis_node(state: ResearchState) -> ResearchState:
     """
     최종 의견 통합 (Research Synthesizer)
     - Technical Analyst 결과
     - Trading Flow Analyst 결과
-    - Information Analyst 결과
     - Bull/Bear 분석 결과
     - Macro 분석 결과
     를 종합하여 최종 투자 의견 생성
@@ -1411,7 +1404,6 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     # 새로운 전문가 분석 결과
     technical_analysis = state.get("technical_analysis") or {}
     trading_flow_analysis = state.get("trading_flow_analysis") or {}
-    information_analysis = state.get("information_analysis") or {}
     macro_analysis = state.get("macro_analysis") or {}
 
     current_price = price_data.get("latest_close") or 0
@@ -1468,21 +1460,7 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     elif foreign_investor.get("trend") == "순매도" and institutional_investor.get("trend") == "순매도":
         bear_conf = min(bear_conf + 1, 5)
 
-    # 3. Information Analyst 결과 반영
-    market_sentiment = information_analysis.get("market_sentiment", "중립")
-    risk_level = information_analysis.get("risk_level", "중간")
-
-    if market_sentiment == "긍정적":
-        bull_conf = min(bull_conf + 1, 5)
-    elif market_sentiment == "부정적":
-        bear_conf = min(bear_conf + 1, 5)
-
-    if risk_level == "높음":
-        bear_conf = min(bear_conf + 1, 5)
-    elif risk_level == "낮음":
-        bull_conf = min(bull_conf + 1, 5)
-
-    # 4. Macro 분석 결과 반영
+    # 3. Macro 분석 결과 반영
     if macro_analysis:
         macro_sentiment = macro_analysis.get("analysis", {}).get("overall_macro_sentiment", "중립")
         if macro_sentiment == "긍정적":

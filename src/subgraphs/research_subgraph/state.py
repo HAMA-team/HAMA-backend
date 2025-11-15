@@ -1,5 +1,6 @@
 """Research Agent State 정의."""
 from typing import TypedDict, Optional, List, Annotated, Dict, Any
+from operator import add
 
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
@@ -30,34 +31,50 @@ class ResearchState(TypedDict, total=False):
     request_id: Optional[str]
     """요청 ID (Supervisor 호출 시 없을 수 있음)"""
 
-    # 동적 Worker 선택 시스템 (Analysis Depth)
-    analysis_depth: Optional[str]
-    """분석 깊이 레벨 ("quick" | "standard" | "comprehensive")"""
+    # UI 기반 분석 설정
+    depth: Optional[str]
+    """분석 깊이: "brief" | "detailed" | "comprehensive" """
 
-    focus_areas: Optional[List[str]]
-    """집중 분석 영역 (예: ["technical", "trading_flow"])"""
+    scope: Optional[str]
+    """분석 범위: "key_points" | "balanced" | "wide_coverage" """
 
-    depth_reason: Optional[str]
-    """분석 깊이 선택 이유 (디버깅/로깅용)"""
+    perspectives: Optional[List[str]]
+    """선택된 관점: ["macro", "fundamental", "technical", "flow", "strategy", "bull_case", "bear_case"]"""
+
+    method: Optional[str]
+    """분석 방법: "qualitative" | "quantitative" | "both" (UI 표시용)"""
+
+    # HITL 플래그
+    plan_approved: Optional[bool]
+    """사용자 승인 완료"""
+
+    plan_approval_id: Optional[str]
+    """승인 요청 ID"""
+
+    automation_level: Optional[int]
+    """자동화 레벨: 1=자동 승인, 2=승인 필요 (기본값: 2)"""
 
     user_profile: Optional[Dict[str, Any]]
     """사용자 프로파일 (preferred_depth, expertise_level 등)"""
 
-    # Deep Agent 루프 제어
+    user_modifications: Optional[Dict[str, Any]]
+    """사용자가 modify를 통해 수정한 설정
+    - structured: {depth, scope, perspectives} 구조화된 수정
+    - user_input: 자유 텍스트 (예: '반도체 사업부에 집중해주세요')
+    """
+
+    # 작업 추적
     plan: Optional[Dict[str, Any]]
     """LLM이 생성한 조사 계획"""
 
     pending_tasks: Optional[List[Dict[str, Any]]]
-    """남은 작업 목록"""
+    """planner가 생성한 작업 목록 (병렬 실행용)"""
 
-    completed_tasks: Optional[List[Dict[str, Any]]]
-    """완료된 작업 및 산출물"""
+    completed_tasks: Annotated[Optional[List[Dict[str, Any]]], add]
+    """완료된 작업 및 산출물 (병렬 실행 시 자동 병합)"""
 
-    current_task: Optional[Dict[str, Any]]
-    """현재 수행 중인 작업"""
-
-    task_notes: Optional[List[str]]
-    """작업 중 생성된 요약/메모"""
+    task_notes: Annotated[Optional[List[str]], add]
+    """작업 중 생성된 요약/메모 (병렬 실행 시 자동 병합)"""
 
     # 데이터 수집 결과
     price_data: Optional[dict]
@@ -92,9 +109,6 @@ class ResearchState(TypedDict, total=False):
 
     trading_flow_analysis: Optional[dict]
     """거래 동향 분석 결과 (Trading Flow Analyst - 기관/외국인/개인 순매수 분석)"""
-
-    information_analysis: Optional[dict]
-    """정보 분석 결과 (Information Analyst - 뉴스, 호재/악재, 시장 센티먼트)"""
 
     bull_analysis: Optional[dict]
     """강세 분석 (LLM)"""

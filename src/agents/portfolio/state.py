@@ -134,5 +134,8 @@ class PortfolioState(TypedDict, total=False):
     portfolio_snapshot: Optional[dict]
     """서비스에서 내려온 전체 스냅샷 (시장/프로필 포함)"""
 
+    user_rebalance_guidance: Optional[str]
+    """사용자의 리밸런싱 방향성 제시 (예: 'IT 섹터 늘려줘', '엔비디아 유망해보여')"""
+
     # 에러 처리
     error: Optional[str]

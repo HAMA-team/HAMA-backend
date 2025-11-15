@@ -16,12 +16,11 @@ warnings.warn(
 )
 
 from .graph import build_portfolio_subgraph
-from langgraph.checkpoint.memory import MemorySaver
 
 # Compiled Agent로 export (Supervisor 패턴 사용)
+# checkpointer는 Supervisor에서 자동 상속되므로 생략
 portfolio_agent = build_portfolio_subgraph().compile(
     name="portfolio_agent",
-    checkpointer=MemorySaver(),
     interrupt_before=["approval_rebalance"]  # 자동화 레벨 2+ 시 승인 필요
 )
 

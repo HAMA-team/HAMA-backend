@@ -119,9 +119,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # Langgraph persistence
+    # PostgreSQL checkpointer만 지원 (MemorySaver 제거됨)
+    # LangGraph Studio는 자체 persistence를 제공하므로 use_checkpointer=False 사용
     LANGGRAPH_CHECKPOINT_TTL_MINUTES: int = 43200  # 30일
     LANGGRAPH_CHECKPOINT_REFRESH_ON_READ: bool = True
-    USE_POSTGRES_CHECKPOINTER: bool = False  # True=PostgresSaver (영속성), False=MemorySaver (개발용)
 
     # CORS
     CORS_ORIGINS: str = (

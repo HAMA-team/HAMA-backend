@@ -114,7 +114,20 @@ async def handle_hitl_interrupt(
         "message": interrupt_data.get("message", "사용자 승인이 필요합니다."),
     }
 
-    if interrupt_type == "trade_approval" or interrupt_data.get("action") in {"buy", "sell"}:
+    if interrupt_type == "research_plan_approval":
+        # Research Plan Approval 케이스
+        approval_request.update(
+            {
+                "stock_code": interrupt_data.get("stock_code"),
+                "query": interrupt_data.get("query"),
+                "plan": interrupt_data.get("plan"),
+                "options": interrupt_data.get("options"),
+                "modifiable_fields": ["depth", "scope", "perspectives"],
+                "supports_user_input": True,  # 자유 텍스트 입력 지원
+            }
+        )
+
+    elif interrupt_type == "trade_approval" or interrupt_data.get("action") in {"buy", "sell"}:
         try:
             snapshot = await portfolio_service.get_portfolio_snapshot()
             portfolio_data = snapshot.portfolio_data if snapshot else {}
@@ -173,6 +186,8 @@ async def handle_hitl_interrupt(
                 "sharpe_ratio": interrupt_data.get("sharpe_ratio"),
                 "constraint_violations": interrupt_data.get("constraint_violations", []),
                 "market_condition": interrupt_data.get("market_condition", "중립장"),
+                "modifiable_fields": [],  # 비중 직접 수정은 복잡하므로 제외
+                "supports_user_input": True,  # 자유 텍스트로 방향성 제시 가능
             }
         )
 

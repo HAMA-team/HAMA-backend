@@ -124,11 +124,32 @@ class GraphState(TypedDict):
     trade_executed: bool
     """거래 실행 완료 여부"""
 
+    trade_approval_id: Optional[str]
+    """거래 승인 요청 ID"""
+
+    trade_action: Optional[str]
+    """매매 방향: "buy" | "sell" """
+
+    trade_quantity: Optional[int]
+    """매매 수량"""
+
+    trade_price: Optional[int]
+    """매매 가격 (지정가 주문 시)"""
+
+    trade_order_type: Optional[str]
+    """주문 유형: "market" | "limit" """
+
+    trade_total_amount: Optional[int]
+    """총 금액 (quantity * price)"""
+
     trade_order_id: Optional[str]
     """주문 ID"""
 
     trade_result: Optional[Dict[str, Any]]
     """거래 실행 결과"""
+
+    user_modifications: Optional[Dict[str, Any]]
+    """사용자 수정사항 (HITL modify 시 사용)"""
 
     # ==================== 최종 결과 (하위 호환성) ====================
 
