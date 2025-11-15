@@ -9,6 +9,7 @@ Supervisor의 역할:
 """
 import logging
 import uuid
+from datetime import datetime
 from functools import lru_cache
 from typing import Optional
 
@@ -30,23 +31,122 @@ logger = logging.getLogger(__name__)
 
 # ==================== Trading Nodes ====================
 
-async def prepare_trade_node(state: GraphState) -> GraphState:
+async def portfolio_simulator_node(state: GraphState) -> GraphState:
     """
-    매매 준비 노드 - HITL Interrupt 발생
+    포트폴리오 시뮬레이션 노드 - 매매 전/후 변화 계산
 
-    경로 1: 첫 실행 → Interrupt 발생 (사용자 승인 대기)
-    경로 2: 승인 후 재개 → 사용자 수정사항 반영
+    매매 제안을 받아 포트폴리오 전/후 상태 및 리스크를 계산합니다.
     """
+    from src.services.portfolio_service import portfolio_service
 
+    stock_code = state.get("stock_code", "")
+    action = state.get("trade_action", "buy")
+    quantity = state.get("trade_quantity", 0)
+    price = state.get("trade_price", 0)
+    user_id = state.get("user_id")
+
+    logger.info("📊 [Portfolio/Simulator] 매매 시뮬레이션: %s %s %d주 @ %d원",
+                action, stock_code, quantity, price)
+
+    try:
+        simulation_result = await portfolio_service.simulate_trade(
+            user_id=user_id,
+            stock_code=stock_code,
+            action=action,
+            quantity=quantity,
+            price=price,
+        )
+
+        portfolio_before = simulation_result["portfolio_before"]
+        portfolio_after = simulation_result["portfolio_after"]
+        risk_before = simulation_result["risk_before"]
+        risk_after = simulation_result["risk_after"]
+
+        # 변화량 계산 (로깅용)
+        weight_before = next(
+            (h["weight"] for h in portfolio_before.get("holdings", []) if h["stock_code"] == stock_code),
+            0.0
+        )
+        weight_after = next(
+            (h["weight"] for h in portfolio_after.get("holdings", []) if h["stock_code"] == stock_code),
+            0.0
+        )
+
+        logger.info("✅ [Portfolio/Simulator] 시뮬레이션 완료")
+        logger.info(f"  - 종목 비중: {weight_before*100:.1f}% → {weight_after*100:.1f}%")
+        logger.info(f"  - 변동성: {risk_before.get('portfolio_volatility')} → {risk_after.get('portfolio_volatility')}")
+
+        return {
+            "portfolio_before": portfolio_before,
+            "portfolio_after": portfolio_after,
+            "risk_before": risk_before,
+            "risk_after": risk_after,
+            "messages": [AIMessage(content="매매 시뮬레이션이 완료되었습니다.")],
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Portfolio/Simulator] 시뮬레이션 실패: %s", exc)
+        return {
+            "messages": [AIMessage(content=f"시뮬레이션 실패: {exc}")],
+        }
+
+
+async def trade_planner_node(state: GraphState) -> GraphState:
+    """
+    매매 계획 노드 - 매매 제안 구조화
+
+    request_trade tool의 결과를 trade_proposal로 구조화합니다.
+    (실제 제안 생성은 Supervisor의 request_trade tool에서 이미 완료)
+    """
+    action = state.get("trade_action", "buy")
+    stock_code = state.get("stock_code", "")
+    stock_name = state.get("stock_name", stock_code)
+    quantity = state.get("trade_quantity", 0)
+    price = state.get("trade_price", 0)
+    order_type = state.get("trade_order_type", "limit")
+
+    logger.info("📝 [Trading/Planner] 매매 제안 생성: %s %s %d주 @ %d원",
+                action, stock_code, quantity, price)
+
+    # trade_proposal 구조화
+    trade_proposal = {
+        "orders": [
+            {
+                "stock_code": stock_code,
+                "stock_name": stock_name,
+                "action": action,
+                "quantity": quantity,
+                "price": price,
+                "order_type": order_type,
+                "total_amount": quantity * price,
+            }
+        ],
+        "rationale": f"{stock_name} {action} 제안",
+        "created_at": datetime.now().isoformat(),
+    }
+
+    return {
+        "trade_proposal": trade_proposal,
+        "messages": [AIMessage(content=f"{stock_name} {action} 제안이 생성되었습니다.")],
+    }
+
+
+async def trade_hitl_node(state: GraphState) -> GraphState:
+    """
+    매매 HITL 노드 - 사용자 승인 요청
+
+    경로 1: 첫 실행 → 전/후 비교 데이터와 함께 Interrupt 발생
+    경로 2: 승인 후 재개 → 사용자 수정사항 반영 후 재시뮬레이션 또는 실행
+    """
     # ========== 경로 2: 승인 후 재개 ==========
     if state.get("trade_approved"):
-        logger.info("✅ [Trading/Prepare] 사용자 승인 완료, 매매 준비")
+        logger.info("✅ [Trading/HITL] 사용자 승인 완료")
 
         # 사용자 수정사항 처리
         modifications = state.get("user_modifications")
 
         if modifications:
-            logger.info("✏️ [Trading/Prepare] 사용자 수정사항 반영: %s", modifications)
+            logger.info("✏️ [Trading/HITL] 사용자 수정사항 반영: %s", modifications)
 
             # 수정 가능한 필드: quantity, price, action
             quantity = modifications.get("quantity", state.get("trade_quantity"))
@@ -57,16 +157,20 @@ async def prepare_trade_node(state: GraphState) -> GraphState:
             total_amount = quantity * price
 
             logger.info(
-                f"🔄 [Trading/Prepare] 수정된 주문: {action} {quantity}주 @ {price:,}원 = {total_amount:,}원"
+                f"🔄 [Trading/HITL] 수정된 주문: {action} {quantity}주 @ {price:,}원 = {total_amount:,}원"
             )
+            logger.info("🔄 [Trading/HITL] 재시뮬레이션을 위해 portfolio_simulator로 이동")
 
+            # 재시뮬레이션을 위해 trade_approved를 False로 설정
+            # 조건부 edge가 portfolio_simulator로 라우팅
             return {
                 "trade_quantity": quantity,
                 "trade_price": price,
                 "trade_action": action,
                 "trade_total_amount": total_amount,
-                "trade_prepared": True,
-                "messages": [AIMessage(content=f"수정된 주문을 준비했습니다: {action} {quantity}주")],
+                "trade_approved": False,  # 재시뮬레이션 필요
+                "user_modifications": None,  # 초기화
+                "messages": [AIMessage(content=f"수정된 주문으로 재시뮬레이션을 시작합니다: {action} {quantity}주")],
             }
         else:
             # 수정 없음 - 기존 정보로 진행
@@ -84,13 +188,19 @@ async def prepare_trade_node(state: GraphState) -> GraphState:
     price = state.get("trade_price", 0)
     total_amount = quantity * price
 
-    logger.info("🛒 [Trading/Prepare] 매매 주문 준비: %s %s %d주 @ %d원",
+    # 포트폴리오 전/후 데이터 가져오기
+    portfolio_before = state.get("portfolio_before", {})
+    portfolio_after = state.get("portfolio_after", {})
+    risk_before = state.get("risk_before", {})
+    risk_after = state.get("risk_after", {})
+
+    logger.info("🛒 [Trading/HITL] 매매 승인 요청: %s %s %d주 @ %d원",
                action, stock_code, quantity, price)
 
     # Interrupt 발생 (사용자 승인 대기)
     approval_id = str(uuid.uuid4())
 
-    logger.info("⚠️ [Trading/Prepare] INTERRUPT 발생 - 사용자 승인 대기")
+    logger.info("⚠️ [Trading/HITL] INTERRUPT 발생 - 전/후 비교 데이터 포함")
 
     # State 업데이트 (재개 시 사용)
     state_update: GraphState = {
@@ -99,7 +209,7 @@ async def prepare_trade_node(state: GraphState) -> GraphState:
         "messages": [AIMessage(content="매매 승인을 기다립니다...")],
     }
 
-    # Interrupt payload 생성
+    # Interrupt payload 생성 (전/후 비교 포함)
     interrupt_payload = {
         "type": "trade_approval",
         "approval_id": approval_id,
@@ -112,6 +222,11 @@ async def prepare_trade_node(state: GraphState) -> GraphState:
         "order_type": state.get("trade_order_type", "limit"),
         "modifiable_fields": ["quantity", "price", "action"],
         "message": f"{stock_name} {quantity}주를 {price:,}원에 {action}하시겠습니까?",
+        # 전/후 비교 데이터 추가
+        "portfolio_before": portfolio_before,
+        "portfolio_after": portfolio_after,
+        "risk_before": risk_before,
+        "risk_after": risk_after,
     }
 
     raise Interrupt(state_update, value=interrupt_payload)
@@ -309,15 +424,46 @@ def build_supervisor(intervention_required: bool = False, llm: Optional[BaseChat
     )
 
     # Trading 노드 추가 (서브그래프가 아닌 직접 노드로 등록)
-    supervisor_workflow.add_node("prepare_trade", prepare_trade_node)
+    supervisor_workflow.add_node("trade_planner", trade_planner_node)
+    supervisor_workflow.add_node("portfolio_simulator", portfolio_simulator_node)
+    supervisor_workflow.add_node("trade_hitl", trade_hitl_node)
     supervisor_workflow.add_node("execute_trade", execute_trade_node)
 
-    # Trading 노드 라우팅 추가
-    supervisor_workflow.add_edge("prepare_trade", "execute_trade")
+    # Trading 노드 라우팅 추가 (planner → simulator → hitl → executor)
+    supervisor_workflow.add_edge("trade_planner", "portfolio_simulator")
+    supervisor_workflow.add_edge("portfolio_simulator", "trade_hitl")
+
+    # trade_hitl 조건부 edge: 수정 시 재시뮬레이션, 승인 시 실행
+    def should_resimulate(state: GraphState) -> str:
+        """
+        사용자 수정사항이 있어 재시뮬레이션이 필요한지 판단
+
+        Returns:
+            "portfolio_simulator": 재시뮬레이션 필요 (수정 발생)
+            "execute_trade": 실행 진행 (승인 또는 수정 없음)
+        """
+        # trade_approved가 False면 재시뮬레이션 필요 (수정 발생)
+        if not state.get("trade_approved", False):
+            return "portfolio_simulator"
+        # trade_prepared가 True면 실행 진행
+        if state.get("trade_prepared", False):
+            return "execute_trade"
+        # 기본값: 실행 진행
+        return "execute_trade"
+
+    supervisor_workflow.add_conditional_edges(
+        "trade_hitl",
+        should_resimulate,
+        {
+            "portfolio_simulator": "portfolio_simulator",  # 재시뮬레이션
+            "execute_trade": "execute_trade",  # 실행
+        }
+    )
+
     from langgraph.graph import END
     supervisor_workflow.add_edge("execute_trade", END)
 
-    logger.info("✅ [Supervisor] 생성 완료 (intervention_required=%s, agents=%d, tools=%d, trading_nodes=2)",
+    logger.info("✅ [Supervisor] 생성 완료 (intervention_required=%s, agents=%d, tools=%d, trading_nodes=4)",
                 intervention_required, len(agents), len(tools))
 
     return supervisor_workflow

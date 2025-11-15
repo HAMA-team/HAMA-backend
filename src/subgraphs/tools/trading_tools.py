@@ -5,10 +5,11 @@ Trading Tools - HITL 패턴 기반 매매 도구
 사용자 승인 후 매매를 실행합니다.
 """
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Annotated
 
-from langchain_core.tools import tool
+from langchain_core.tools import tool, InjectedState
 from pydantic.v1 import BaseModel, Field
+from langgraph_sdk.schema import Command
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +35,14 @@ class RequestTradeInput(BaseModel):
 
 # ==================== Tools ====================
 
-@tool(args_schema=RequestTradeInput)
+@tool(args_schema=RequestTradeInput, return_direct=True)
 async def request_trade(
     ticker: str,
     action: str,
     quantity: int,
-    price: int = 0
-) -> Dict[str, Any]:
+    price: int = 0,
+    state: Annotated[Dict, InjectedState] = None
+) -> Command:
     """
     [언제] 사용자가 매매를 요청할 때 사용합니다. (HITL 패턴)
     [무엇] 매매 정보를 state에 저장하고, 사용자 승인을 기다립니다.
@@ -52,7 +54,8 @@ async def request_trade(
 
     이 tool을 호출하면:
     - State에 매매 정보가 저장됩니다
-    - HITL Interrupt가 발생하여 사용자 승인을 기다립니다
+    - trade_planner 노드로 자동 이동합니다
+    - 포트폴리오 시뮬레이션 후 HITL Interrupt가 발생합니다
     - 승인 후 자동으로 매매가 실행됩니다
 
     ⚠️ 주의:
@@ -66,16 +69,7 @@ async def request_trade(
         price: 주문 가격 (0=시장가, 양수=지정가)
 
     Returns:
-        dict: {
-            "status": "approval_requested",
-            "message": "매매 승인을 요청했습니다.",
-            "trade_info": {
-                "ticker": "005930",
-                "action": "buy",
-                "quantity": 10,
-                "price": 75000
-            }
-        }
+        Command: trade_planner 노드로 이동하는 명령
 
     예시:
     사용자: "삼성전자 10주 매수해줘"
@@ -84,28 +78,29 @@ async def request_trade(
     → calculate_portfolio_risk(portfolio, proposed_trade)
     → [사용자에게 리스크 보고]
     → request_trade(ticker="005930", action="buy", quantity=10, price=75000)
+    → [자동으로 trade_planner → portfolio_simulator → trade_hitl로 이동]
     → [HITL Interrupt 발생 - 승인 대기]
     → 사용자 승인 후 자동 실행
     """
     logger.info(f"🛒 [Trading Tool] 매매 요청: {action} {ticker} x{quantity} @ {price}")
 
-    # State에 저장될 정보 (실제 state 업데이트는 graph에서 처리)
-    trade_info = {
-        "ticker": ticker,
-        "action": action,
-        "quantity": quantity,
-        "price": price,
-    }
+    # 시장가 처리: price=0이면 현재가 조회 필요
+    order_type = "market" if price == 0 else "limit"
 
-    return {
-        "status": "approval_requested",
-        "message": f"{ticker} {quantity}주 {action} 요청을 접수했습니다. 사용자 승인을 기다립니다.",
-        "trade_info": trade_info,
-        # 이 값들이 state에 반영되어 prepare_trade 노드가 호출됩니다
-        "trade_action": action,
-        "trade_quantity": quantity,
-        "trade_price": price,
-    }
+    # State 업데이트 + trade_planner 노드로 이동
+    return Command(
+        update={
+            "stock_code": ticker,
+            "trade_action": action,
+            "trade_quantity": quantity,
+            "trade_price": price if price > 0 else 0,  # 시장가는 0으로 저장
+            "trade_order_type": order_type,
+            "trade_prepared": False,
+            "trade_approved": False,
+            "trade_executed": False,
+        },
+        goto="trade_planner"
+    )
 
 
 # ==================== Tool 목록 ====================

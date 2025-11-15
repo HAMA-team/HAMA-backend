@@ -155,6 +155,32 @@ class GraphState(TypedDict):
     user_modifications: Optional[Dict[str, Any]]
     """사용자 수정사항 (HITL modify 시 사용)"""
 
+    # ==================== 매매 시뮬레이션 및 전/후 비교 ====================
+
+    trade_proposal: Optional[Dict[str, Any]]
+    """
+    LLM이 생성한 매매 제안 전체
+    예: {"orders": [...], "rationale": "...", "target_risk": {...}}
+    """
+
+    portfolio_before: Optional[Dict[str, Any]]
+    """매매 전 포트폴리오 스냅샷 (holdings, total_value, sectors 등)"""
+
+    portfolio_after: Optional[Dict[str, Any]]
+    """매매 후 포트폴리오 시뮬레이션 결과"""
+
+    risk_before: Optional[Dict[str, Any]]
+    """
+    매매 전 리스크 지표
+    예: {"volatility": 0.12, "var_95": 0.025, "sharpe_ratio": 0.8, ...}
+    """
+
+    risk_after: Optional[Dict[str, Any]]
+    """
+    매매 후 리스크 지표
+    예: {"volatility": 0.14, "var_95": 0.031, "sharpe_ratio": 0.75, ...}
+    """
+
     # ==================== 최종 결과 (하위 호환성) ====================
 
     summary: Optional[str]

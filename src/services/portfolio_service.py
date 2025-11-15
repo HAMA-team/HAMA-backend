@@ -207,6 +207,214 @@ class PortfolioService:
             executed_at,
         )
 
+    async def simulate_trade(
+        self,
+        *,
+        user_id: Optional[str] = None,
+        portfolio_id: Optional[str] = None,
+        stock_code: str,
+        action: str,
+        quantity: int,
+        price: float,
+        lookback_days: int = 60,
+    ) -> Dict[str, Any]:
+        """
+        매매 실행 전 포트폴리오 변화 시뮬레이션
+
+        Args:
+            user_id: 사용자 ID
+            portfolio_id: 포트폴리오 ID
+            stock_code: 종목 코드
+            action: 매매 방향 ("buy" | "sell")
+            quantity: 수량
+            price: 가격
+            lookback_days: 리스크 계산용 과거 데이터 기간
+
+        Returns:
+            {
+                "portfolio_before": 매매 전 포트폴리오,
+                "portfolio_after": 매매 후 포트폴리오,
+                "risk_before": 매매 전 리스크,
+                "risk_after": 매매 후 리스크,
+            }
+        """
+        # 현재 포트폴리오 조회
+        snapshot = await self.get_portfolio_snapshot(
+            user_id=user_id,
+            portfolio_id=portfolio_id,
+            lookback_days=lookback_days,
+        )
+
+        if not snapshot:
+            raise PortfolioNotFoundError("포트폴리오를 찾을 수 없습니다")
+
+        portfolio_before = snapshot.portfolio_data
+        market_data = snapshot.market_data
+
+        # 매매 전 리스크 추출
+        risk_before = {
+            "portfolio_volatility": market_data.get("portfolio_volatility"),
+            "var_95": market_data.get("var_95"),
+            "sharpe_ratio": market_data.get("sharpe_ratio"),
+            "max_drawdown_estimate": market_data.get("max_drawdown_estimate"),
+            "beta": market_data.get("beta", {}),
+        }
+
+        # 매매 시뮬레이션 (holdings 복사 후 적용)
+        holdings_before = portfolio_before.get("holdings", [])
+        total_value = Decimal(str(portfolio_before.get("total_value", 0)))
+        cash_balance = Decimal(str(portfolio_before.get("cash_balance", 0)))
+
+        # 새 holdings 계산
+        holdings_after = self._simulate_holdings_change(
+            holdings=holdings_before,
+            stock_code=stock_code,
+            action=action.upper(),
+            quantity=quantity,
+            price=Decimal(str(price)),
+            cash_balance=cash_balance,
+        )
+
+        # 매매 후 총 자산 및 현금 계산
+        total_amount = Decimal(str(price)) * quantity
+        if action.upper() == "BUY":
+            cash_after = cash_balance - total_amount
+            total_value_after = total_value  # 현금 → 주식 이동 (총액은 동일)
+        else:  # SELL
+            cash_after = cash_balance + total_amount
+            total_value_after = total_value
+
+        # 비중 재계산
+        if total_value_after > 0:
+            for holding in holdings_after:
+                if holding["stock_code"].upper() == "CASH":
+                    holding["weight"] = float(cash_after / total_value_after)
+                else:
+                    mv = Decimal(str(holding.get("market_value", 0)))
+                    holding["weight"] = float(mv / total_value_after)
+
+        portfolio_after = {
+            **portfolio_before,
+            "holdings": holdings_after,
+            "cash_balance": float(cash_after),
+            "total_value": float(total_value_after),
+        }
+
+        # 매매 후 리스크 재계산
+        try:
+            risk_after_metrics = await self._compute_market_metrics(
+                holdings_after,
+                lookback_days=lookback_days,
+            )
+            risk_after = {
+                "portfolio_volatility": risk_after_metrics.get("portfolio_volatility"),
+                "var_95": risk_after_metrics.get("var_95"),
+                "sharpe_ratio": risk_after_metrics.get("sharpe_ratio"),
+                "max_drawdown_estimate": risk_after_metrics.get("max_drawdown_estimate"),
+                "beta": risk_after_metrics.get("beta", {}),
+            }
+        except Exception as exc:  # pragma: no cover - 리스크 계산 실패 시 None
+            logger.warning("매매 후 리스크 계산 실패: %s", exc)
+            risk_after = {
+                "portfolio_volatility": None,
+                "var_95": None,
+                "sharpe_ratio": None,
+                "max_drawdown_estimate": None,
+                "beta": {},
+            }
+
+        return {
+            "portfolio_before": portfolio_before,
+            "portfolio_after": portfolio_after,
+            "risk_before": risk_before,
+            "risk_after": risk_after,
+        }
+
+    def _simulate_holdings_change(
+        self,
+        *,
+        holdings: List[Dict[str, Any]],
+        stock_code: str,
+        action: str,
+        quantity: int,
+        price: Decimal,
+        cash_balance: Decimal,
+    ) -> List[Dict[str, Any]]:
+        """
+        Holdings 리스트를 복사해서 매매 시뮬레이션 적용
+
+        Args:
+            holdings: 현재 holdings
+            stock_code: 종목 코드
+            action: "BUY" | "SELL"
+            quantity: 수량
+            price: 가격
+            cash_balance: 현금 잔액
+
+        Returns:
+            새 holdings 리스트 (원본 수정 안 함)
+        """
+        import copy
+        new_holdings = copy.deepcopy(holdings)
+
+        # 해당 종목 찾기
+        target_holding = None
+        for holding in new_holdings:
+            if holding.get("stock_code") == stock_code:
+                target_holding = holding
+                break
+
+        if action == "BUY":
+            if target_holding:
+                # 기존 보유 종목 추가 매수
+                current_qty = target_holding.get("quantity", 0)
+                current_avg = Decimal(str(target_holding.get("average_price", 0)))
+                new_qty = current_qty + quantity
+                total_cost = current_avg * current_qty + price * quantity
+                new_avg_price = total_cost / new_qty if new_qty > 0 else price
+
+                target_holding["quantity"] = new_qty
+                target_holding["average_price"] = float(new_avg_price)
+                target_holding["current_price"] = float(price)
+                target_holding["market_value"] = float(price * new_qty)
+            else:
+                # 신규 매수
+                new_holdings.append({
+                    "stock_code": stock_code,
+                    "stock_name": stock_code,  # 이름은 나중에 조회 가능
+                    "quantity": quantity,
+                    "average_price": float(price),
+                    "current_price": float(price),
+                    "market_value": float(price * quantity),
+                    "weight": 0.0,  # 나중에 재계산
+                    "sector": "기타",
+                    "unrealized_pnl": 0.0,
+                    "unrealized_pnl_rate": 0.0,
+                })
+
+        elif action == "SELL":
+            if not target_holding:
+                raise InsufficientHoldingsError(f"보유하지 않은 종목입니다: {stock_code}")
+
+            current_qty = target_holding.get("quantity", 0)
+            new_qty = current_qty - quantity
+
+            if new_qty < 0:
+                raise InsufficientHoldingsError(
+                    f"매도 수량이 보유 수량을 초과합니다: {stock_code} (보유: {current_qty}, 매도: {quantity})"
+                )
+
+            if new_qty == 0:
+                # 전량 매도 - holdings에서 제거
+                new_holdings.remove(target_holding)
+            else:
+                # 일부 매도
+                target_holding["quantity"] = new_qty
+                target_holding["current_price"] = float(price)
+                target_holding["market_value"] = float(price * new_qty)
+
+        return new_holdings
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
