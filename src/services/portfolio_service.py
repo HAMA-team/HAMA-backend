@@ -251,7 +251,6 @@ class PortfolioService:
                     # 레거시 호출부 호환용 필드 매핑
                     profile.setdefault("investment_goal", profile.get("investment_style"))
                     profile.setdefault("investment_horizon", profile.get("trading_style"))
-                    profile.setdefault("automation_level", 2)
 
             holdings, sector_breakdown, cash_balance, total_market_value = self._build_holdings_snapshot(
                 positions,
@@ -759,7 +758,6 @@ class PortfolioService:
             "risk_tolerance": "moderate",
             "investment_goal": "mid_long_term",
             "investment_horizon": "3_5y",
-            "automation_level": 2,
         }
 
         return PortfolioSnapshot(

@@ -108,7 +108,6 @@ class TradingService:
         order_id: str,
         *,
         execution_price: Optional[float] = None,
-        automation_level: int = 2,
     ) -> Dict[str, Any]:
         order_summary = await self._fetch_order(order_id)
         if not order_summary:
@@ -134,7 +133,6 @@ class TradingService:
                 "market_data": snapshot.market_data,
                 "profile": snapshot.profile,
             }
-        result["automation_level"] = automation_level
         return result
 
     # ------------------------------------------------------------------

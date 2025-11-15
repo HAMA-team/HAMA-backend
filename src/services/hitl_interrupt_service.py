@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 from sqlalchemy.orm import Session
 
 from src.schemas.hitl import ApprovalRequest as HITLApprovalRequest
-from src.schemas.hitl_config import HITLConfig, config_to_level
+from src.schemas.hitl_config import HITLConfig
 from src.services import chat_history_service, portfolio_service
 from src.services.portfolio_preview_service import (
     calculate_portfolio_preview,
@@ -61,7 +61,6 @@ def _save_approval_request_to_db(
             alternatives=approval_data.get("alternatives"),
             status="pending",
             triggering_agent=approval_data.get("type", request_type).split("_")[0],
-            automation_level=config_to_level(hitl_config),
             urgency="normal",
             expires_at=datetime.utcnow() + timedelta(hours=24),
         )
@@ -86,7 +85,7 @@ async def handle_hitl_interrupt(
     conversation_id: str,
     user_id: uuid.UUID,
     db: Session,
-    automation_level: int,
+    intervention_required: bool,
     hitl_config: HITLConfig,
 ) -> Optional[Dict[str, Any]]:
     """

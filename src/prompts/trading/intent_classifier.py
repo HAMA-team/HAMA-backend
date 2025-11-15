@@ -24,7 +24,6 @@ def build_trading_intent_classifier_prompt(
     context = {}
 
     if user_profile:
-        context["automation_level"] = user_profile.get("automation_level", 2)
         context["risk_tolerance"] = user_profile.get("risk_tolerance", "moderate")
 
     if research_result:
