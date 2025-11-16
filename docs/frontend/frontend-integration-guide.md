@@ -262,6 +262,34 @@ export function ThinkingSection({ events }: { events: StreamEvent[] }) {
 }
 ```
 
+### 2.3 ReasoningEvent 메타데이터 (Multi-Stream)
+
+`POST /chat/multi-stream` SSE는 각 이벤트마다 `reasoning_event` 블록을 함께 내보내
+프론트엔드가 사고 과정의 단계, 상태, 들여쓰기 depth를 그대로 활용할 수 있습니다.
+
+```json
+{
+  "agent": "Research_Agent",
+  "node": "planner",
+  "reasoning_event": {
+    "event_label": "agent_start",
+    "phase": "planning",
+    "status": "start",
+    "actor": "agent",
+    "depth": 1,
+    "lineage": ["supervisor_node", "Research_Agent"],
+    "message": "Research_Agent 실행 시작",
+    "metadata": {
+      "langgraph_node": "Research_Agent__planner",
+      "langgraph_step": 1
+    }
+  }
+}
+```
+
+UI에서는 `phase`별 색상, `depth`별 들여쓰기, `message` 요약 텍스트를 그대로 활용하면
+“계획 → 데이터 수집 → LLM → 도구 → 최종 응답” 흐름을 자연스럽게 계층형으로 노출할 수 있습니다.
+
 ---
 
 ## 3. Portfolio API

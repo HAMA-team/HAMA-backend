@@ -7,7 +7,7 @@ Master Agent → 서브 에이전트들의 협업 과정을 시각화
 import json
 import logging
 import uuid
-from typing import AsyncGenerator, Optional, List, Any
+from typing import AsyncGenerator, Optional, List, Any, Dict
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -20,6 +20,12 @@ from src.services import chat_history_service
 from src.services.hitl_interrupt_service import handle_hitl_interrupt
 from src.models.database import get_db_context
 from src.schemas.hitl_config import HITLConfig
+from src.schemas.reasoning import (
+    ReasoningActor,
+    ReasoningEvent,
+    ReasoningPhase,
+    ReasoningStatus,
+)
 from src.config.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -123,6 +129,124 @@ def _event_agent_name(event: dict) -> Optional[str]:
     return None
 
 
+def _extract_lineage(metadata: Dict[str, Any], agent: Optional[str]) -> List[str]:
+    lineage: List[str] = []
+    triggers = metadata.get("langgraph_triggers")
+    if isinstance(triggers, list):
+        lineage = [str(trigger) for trigger in triggers if trigger]
+    node = metadata.get("langgraph_node")
+    if node and node not in lineage:
+        lineage.append(str(node))
+    if agent and agent not in lineage:
+        lineage.append(agent)
+    return lineage
+
+
+def _infer_phase(event_label: str, node: Optional[str], agent: Optional[str]) -> ReasoningPhase:
+    label = (event_label or "").lower()
+    node_lower = (node or "").lower()
+    agent_lower = (agent or "").lower() if agent else ""
+
+    direct_mapping = {
+        "master_start": ReasoningPhase.SUPERVISION,
+        "master_routing": ReasoningPhase.ROUTING,
+        "master_complete": ReasoningPhase.FINALIZATION,
+        "worker_start": ReasoningPhase.AGENT_EXECUTION,
+        "worker_complete": ReasoningPhase.FINALIZATION,
+        "hitl_interrupt": ReasoningPhase.HITL,
+        "done": ReasoningPhase.FINALIZATION,
+        "error": ReasoningPhase.SYSTEM,
+        "user_profile": ReasoningPhase.SYSTEM,
+    }
+    if label in direct_mapping:
+        return direct_mapping[label]
+    if label.startswith("agent_llm") or label == "agent_thinking":
+        return ReasoningPhase.LLM
+    if label.startswith("tools_"):
+        return ReasoningPhase.TOOL
+
+    if node_lower:
+        if any(keyword in node_lower for keyword in ("plan", "route", "clarify", "decision")):
+            return ReasoningPhase.PLANNING
+        if any(keyword in node_lower for keyword in ("data", "fetch", "collect", "search", "crawl", "ingest")):
+            return ReasoningPhase.DATA_COLLECTION
+    if agent_lower and "supervisor" in agent_lower:
+        return ReasoningPhase.SUPERVISION
+    return ReasoningPhase.AGENT_EXECUTION
+
+
+def _infer_actor(event_label: str) -> ReasoningActor:
+    label = (event_label or "").lower()
+    if label.startswith("master") or label == "hitl_interrupt":
+        return ReasoningActor.SUPERVISOR
+    if label.startswith("tools_"):
+        return ReasoningActor.TOOL
+    if label.startswith("agent_llm") or label == "agent_thinking":
+        return ReasoningActor.LLM
+    if label in {"error", "done", "user_profile"}:
+        return ReasoningActor.SYSTEM
+    return ReasoningActor.AGENT
+
+
+class ReasoningEventBuilder:
+    """Utility to enrich SSE payloads with normalized reasoning metadata."""
+
+    def __init__(self, conversation_id: str):
+        self.conversation_id = conversation_id
+        self._sequence = 0
+
+    def _sequence_id(self) -> str:
+        self._sequence += 1
+        return f"{self.conversation_id}:{self._sequence:05d}"
+
+    def _build_metadata(self, metadata: Optional[Dict[str, Any]], extra: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        result: Dict[str, Any] = {}
+        if metadata:
+            if metadata.get("langgraph_node"):
+                result["langgraph_node"] = metadata["langgraph_node"]
+            if metadata.get("langgraph_step") is not None:
+                result["langgraph_step"] = metadata.get("langgraph_step")
+            if metadata.get("langgraph_triggers"):
+                result["langgraph_triggers"] = metadata.get("langgraph_triggers")
+            if metadata.get("langgraph_checkpoint_id"):
+                result["langgraph_checkpoint_id"] = metadata.get("langgraph_checkpoint_id")
+        if extra:
+            result.update(extra)
+        return result
+
+    def attach(
+        self,
+        event_label: str,
+        payload: Dict[str, Any],
+        *,
+        metadata: Optional[Dict[str, Any]],
+        agent: Optional[str],
+        node: Optional[str],
+        status: ReasoningStatus,
+        message: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        metadata = metadata or {}
+        lineage = _extract_lineage(metadata, agent)
+        reasoning_event = ReasoningEvent(
+            event_id=self._sequence_id(),
+            sequence_index=self._sequence,
+            conversation_id=self.conversation_id,
+            event_label=event_label,
+            phase=_infer_phase(event_label, node, agent),
+            status=status,
+            actor=_infer_actor(event_label),
+            agent=agent,
+            node=node,
+            step=metadata.get("langgraph_step"),
+            depth=max(len(lineage) - 1, 0),
+            lineage=lineage,
+            message=message,
+            metadata=self._build_metadata(metadata, extra_metadata),
+        )
+        payload["reasoning_event"] = reasoning_event.model_dump()
+        return payload
+
 def _normalize_output(raw_output: Any) -> dict:
     """LangGraph 이벤트 output을 dict로 정규화해 다운스트림 로직을 보호."""
     if raw_output is None:
@@ -147,7 +271,11 @@ def _normalize_output(raw_output: Any) -> dict:
     return {}
 
 
-def _event_to_sse_chunks(event: dict, stream_thinking: bool) -> List[str]:
+def _event_to_sse_chunks(
+    event: dict,
+    stream_thinking: bool,
+    reasoning_builder: ReasoningEventBuilder,
+) -> List[str]:
     chunks: List[str] = []
     event_type = event.get("event")
     agent = _event_agent_name(event)
@@ -163,86 +291,149 @@ def _event_to_sse_chunks(event: dict, stream_thinking: bool) -> List[str]:
     # ==================== Chain 이벤트 ====================
     if event_type == "on_chain_start" and agent:
         if agent == "routing":
-            chunks.append(_sse("master_routing", {"status": "analyzing"}))
+            payload = reasoning_builder.attach(
+                "master_routing",
+                {"status": "analyzing"},
+                metadata=metadata,
+                agent="supervisor",
+                node=node_name,
+                status=ReasoningStatus.INFO,
+                message="다음 에이전트를 라우팅 중입니다.",
+            )
+            chunks.append(_sse("master_routing", payload))
         elif agent == "worker_dispatch":
-            chunks.append(_sse("worker_start", {"agent": "worker"}))
+            payload = reasoning_builder.attach(
+                "worker_start",
+                {"agent": "worker"},
+                metadata=metadata,
+                agent="worker_dispatch",
+                node=node_name,
+                status=ReasoningStatus.START,
+                message="워커 에이전트 실행 시작",
+            )
+            chunks.append(_sse("worker_start", payload))
         else:
-            chunks.append(_sse("agent_start", {
-                "agent": agent,
-                "node": node_name,
-                "step": step
-            }))
+            payload = reasoning_builder.attach(
+                "agent_start",
+                {"agent": agent, "node": node_name, "step": step},
+                metadata=metadata,
+                agent=agent,
+                node=node_name,
+                status=ReasoningStatus.START,
+                message=f"{agent} 실행 시작",
+            )
+            chunks.append(_sse("agent_start", payload))
 
     elif event_type == "on_chain_end" and agent:
         output = _normalize_output(event.get("data", {}).get("output"))
         if agent == "routing":
-            chunks.append(
-                _sse(
-                    "master_routing",
-                    {
-                        "agents": output.get("agents_to_call", []),
-                        "depth_level": output.get("depth_level"),
-                        "worker_action": output.get("worker_action"),
-                    },
-                )
+            payload = reasoning_builder.attach(
+                "master_routing",
+                {
+                    "agents": output.get("agents_to_call", []),
+                    "depth_level": output.get("depth_level"),
+                    "worker_action": output.get("worker_action"),
+                },
+                metadata=metadata,
+                agent="supervisor",
+                node=node_name,
+                status=ReasoningStatus.COMPLETE,
+                message="에이전트 라우팅이 완료되었습니다.",
             )
+            chunks.append(_sse("master_routing", payload))
         elif agent == "worker_dispatch":
-            chunks.append(
-                _sse(
-                    "worker_complete",
-                    {"result": output.get("final_response", {}), "agent": "worker"},
-                )
+            payload = reasoning_builder.attach(
+                "worker_complete",
+                {"result": output.get("final_response", {}), "agent": "worker"},
+                metadata=metadata,
+                agent="worker_dispatch",
+                node=node_name,
+                status=ReasoningStatus.COMPLETE,
+                message="워커 에이전트 실행이 완료되었습니다.",
             )
+            chunks.append(_sse("worker_complete", payload))
         elif agent == "clarification":
-            chunks.append(
-                _sse(
-                    "master_complete",
-                    {"message": output.get("final_response", {}).get("message")},
-                )
+            payload = reasoning_builder.attach(
+                "master_complete",
+                {"message": output.get("final_response", {}).get("message")},
+                metadata=metadata,
+                agent="supervisor",
+                node=node_name,
+                status=ReasoningStatus.COMPLETE,
+                message="사용자 확인 응답 생성 완료",
             )
+            chunks.append(_sse("master_complete", payload))
         else:
-            chunks.append(_sse("agent_complete", {
-                "agent": agent,
-                "node": node_name,
-                "step": step
-            }))
+            payload = reasoning_builder.attach(
+                "agent_complete",
+                {"agent": agent, "node": node_name, "step": step},
+                metadata=metadata,
+                agent=agent,
+                node=node_name,
+                status=ReasoningStatus.COMPLETE,
+                message=f"{agent} 작업 완료",
+            )
+            chunks.append(_sse("agent_complete", payload))
 
     # ==================== LLM 이벤트 ====================
     elif event_type == "on_chat_model_start" and agent:
         model = event.get("name") or event.get("data", {}).get("name")
-        chunks.append(_sse("agent_llm_start", {
-            "agent": agent,
-            "node": node_name,
-            "model": model
-        }))
+        payload = reasoning_builder.attach(
+            "agent_llm_start",
+            {"agent": agent, "node": node_name, "model": model},
+            metadata=metadata,
+            agent=agent,
+            node=node_name,
+            status=ReasoningStatus.START,
+            message=f"{model or 'LLM'} 분석 시작",
+            extra_metadata={"model": model},
+        )
+        chunks.append(_sse("agent_llm_start", payload))
 
     elif event_type == "on_chat_model_stream" and stream_thinking:
         chunk = event.get("data", {}).get("chunk")
         if chunk:
             content = chunk.get("content") if isinstance(chunk, dict) else str(chunk)
             if content:
-                chunks.append(_sse("agent_thinking", {
-                    "agent": agent,
-                    "node": node_name,
-                    "content": content
-                }))
+                preview = content if len(content) <= 160 else f"{content[:160]}..."
+                payload = reasoning_builder.attach(
+                    "agent_thinking",
+                    {"agent": agent, "node": node_name, "content": content},
+                    metadata=metadata,
+                    agent=agent,
+                    node=node_name,
+                    status=ReasoningStatus.IN_PROGRESS,
+                    message=preview,
+                )
+                chunks.append(_sse("agent_thinking", payload))
 
     elif event_type == "on_chat_model_end" and agent:
-        chunks.append(_sse("agent_llm_end", {
-            "agent": agent,
-            "node": node_name
-        }))
+        payload = reasoning_builder.attach(
+            "agent_llm_end",
+            {"agent": agent, "node": node_name},
+            metadata=metadata,
+            agent=agent,
+            node=node_name,
+            status=ReasoningStatus.COMPLETE,
+            message="LLM 분석 완료",
+        )
+        chunks.append(_sse("agent_llm_end", payload))
 
     # ==================== 툴 이벤트 (새로 추가) ====================
     elif event_type == "on_tool_start":
         tool_name = name or "unknown_tool"
         input_data = event.get("data", {}).get("input")
-        chunks.append(_sse("tools_start", {
-            "tool": tool_name,
-            "agent": agent,
-            "node": node_name,
-            "input": input_data
-        }))
+        payload = reasoning_builder.attach(
+            "tools_start",
+            {"tool": tool_name, "agent": agent, "node": node_name, "input": input_data},
+            metadata=metadata,
+            agent=agent,
+            node=node_name,
+            status=ReasoningStatus.START,
+            message=f"{tool_name} 툴 실행 시작",
+            extra_metadata={"tool": tool_name},
+        )
+        chunks.append(_sse("tools_start", payload))
 
     elif event_type == "on_tool_end":
         tool_name = name or "unknown_tool"
@@ -260,13 +451,23 @@ def _event_to_sse_chunks(event: dict, stream_thinking: bool) -> List[str]:
             # 리스트가 너무 길면 첫 10개만
             output_summary = output_data[:10]
 
-        chunks.append(_sse("tools_complete", {
-            "tool": tool_name,
-            "agent": agent,
-            "node": node_name,
-            "status": "complete",
-            "output": output_summary
-        }))
+        payload = reasoning_builder.attach(
+            "tools_complete",
+            {
+                "tool": tool_name,
+                "agent": agent,
+                "node": node_name,
+                "status": "complete",
+                "output": output_summary,
+            },
+            metadata=metadata,
+            agent=agent,
+            node=node_name,
+            status=ReasoningStatus.COMPLETE,
+            message=f"{tool_name} 툴 실행 완료",
+            extra_metadata={"tool": tool_name},
+        )
+        chunks.append(_sse("tools_complete", payload))
 
     return chunks
 
@@ -304,13 +505,36 @@ async def stream_multi_agent_execution(
     stream_thinking: bool = True
 ) -> AsyncGenerator[str, None]:
     """LangGraph Supervisor 실행을 SSE로 래핑"""
+    reasoning_builder = ReasoningEventBuilder(conversation_id)
     try:
-        yield _sse("master_start", {"message": "분석을 시작합니다..."})
+        yield _sse(
+            "master_start",
+            reasoning_builder.attach(
+                "master_start",
+                {"message": "분석을 시작합니다..."},
+                metadata={},
+                agent="supervisor",
+                node=None,
+                status=ReasoningStatus.START,
+                message="분석 파이프라인 초기화",
+            ),
+        )
 
         with get_db_context() as db:
             user_profile = user_profile_service.get_user_profile(user_id, db)
 
-        yield _sse("user_profile", {"profile_loaded": True})
+        yield _sse(
+            "user_profile",
+            reasoning_builder.attach(
+                "user_profile",
+                {"profile_loaded": True},
+                metadata={},
+                agent="system",
+                node=None,
+                status=ReasoningStatus.INFO,
+                message="사용자 프로필 로드 완료",
+            ),
+        )
 
         conversation_uuid = uuid.UUID(conversation_id)
         demo_user_uuid = settings.demo_user_uuid
@@ -374,7 +598,7 @@ async def stream_multi_agent_execution(
         }
 
         async for event in configured_app.astream_events(initial_state, version="v2"):
-            for chunk in _event_to_sse_chunks(event, stream_thinking):
+            for chunk in _event_to_sse_chunks(event, stream_thinking, reasoning_builder):
                 yield chunk
 
         state = await configured_app.aget_state(config)
@@ -396,26 +620,61 @@ async def stream_multi_agent_execution(
             if hitl_result:
                 yield _sse(
                     "hitl_interrupt",
-                    {
-                        "pending_nodes": pending_nodes,
-                        "approval_request": hitl_result["approval_request"],
-                        "message": hitl_result["message"],
-                    },
+                    reasoning_builder.attach(
+                        "hitl_interrupt",
+                        {
+                            "pending_nodes": pending_nodes,
+                            "approval_request": hitl_result["approval_request"],
+                            "message": hitl_result["message"],
+                        },
+                        metadata={},
+                        agent="supervisor",
+                        node=None,
+                        status=ReasoningStatus.INFO,
+                        message="HITL 승인이 필요합니다.",
+                    ),
                 )
                 yield _sse(
                     "master_complete",
-                    {"message": hitl_result["message"], "conversation_id": conversation_id},
+                    reasoning_builder.attach(
+                        "master_complete",
+                        {"message": hitl_result["message"], "conversation_id": conversation_id},
+                        metadata={},
+                        agent="supervisor",
+                        node=None,
+                        status=ReasoningStatus.COMPLETE,
+                        message="중단 지점 응답 생성",
+                    ),
                 )
-                yield _sse("done", {"conversation_id": conversation_id})
+                yield _sse(
+                    "done",
+                    reasoning_builder.attach(
+                        "done",
+                        {"conversation_id": conversation_id},
+                        metadata={},
+                        agent="system",
+                        node=None,
+                        status=ReasoningStatus.COMPLETE,
+                        message="스트리밍 종료",
+                    ),
+                )
                 return
             else:  # pragma: no cover - 예외적인 실패
                 logger.warning("⚠️ [MultiAgentStream] HITL 헬퍼 실행 실패 - 기본 이벤트만 전송")
                 yield _sse(
                     "hitl_interrupt",
-                    {
-                        "pending_nodes": pending_nodes,
-                        "tasks": [getattr(task, "__dict__", str(task)) for task in getattr(state, "tasks", [])],
-                    },
+                    reasoning_builder.attach(
+                        "hitl_interrupt",
+                        {
+                            "pending_nodes": pending_nodes,
+                            "tasks": [getattr(task, "__dict__", str(task)) for task in getattr(state, "tasks", [])],
+                        },
+                        metadata={},
+                        agent="supervisor",
+                        node=None,
+                        status=ReasoningStatus.INFO,
+                        message="HITL 처리 중 오류",
+                    ),
                 )
 
         values = getattr(state, "values", {})
@@ -428,14 +687,58 @@ async def stream_multi_agent_execution(
             metadata={"source": "graph"},
         )
 
-        yield _sse("master_complete", {"message": final_message, "conversation_id": conversation_id})
-        yield _sse("done", {"conversation_id": conversation_id})
+        yield _sse(
+            "master_complete",
+            reasoning_builder.attach(
+                "master_complete",
+                {"message": final_message, "conversation_id": conversation_id},
+                metadata={},
+                agent="supervisor",
+                node=None,
+                status=ReasoningStatus.COMPLETE,
+                message="최종 응답 생성 완료",
+            ),
+        )
+        yield _sse(
+            "done",
+            reasoning_builder.attach(
+                "done",
+                {"conversation_id": conversation_id},
+                metadata={},
+                agent="system",
+                node=None,
+                status=ReasoningStatus.COMPLETE,
+                message="스트리밍 종료",
+            ),
+        )
 
     except Exception as exc:  # pragma: no cover - SSE 경로 오류 처리
         logger.exception("❌ [MultiAgentStream] 실행 실패: %s", exc)
         error_message = f"죄송합니다. 그래프 실행 중 오류가 발생했습니다: {exc}"
-        yield _sse("error", {"error": str(exc), "message": error_message})
-        yield _sse("done", {"conversation_id": conversation_id})
+        yield _sse(
+            "error",
+            reasoning_builder.attach(
+                "error",
+                {"error": str(exc), "message": error_message},
+                metadata={},
+                agent="system",
+                node=None,
+                status=ReasoningStatus.ERROR,
+                message="그래프 실행 중 오류 발생",
+            ),
+        )
+        yield _sse(
+            "done",
+            reasoning_builder.attach(
+                "done",
+                {"conversation_id": conversation_id},
+                metadata={},
+                agent="system",
+                node=None,
+                status=ReasoningStatus.COMPLETE,
+                message="스트리밍 종료",
+            ),
+        )
 
 
 @router.post("/multi-stream")
@@ -484,6 +787,28 @@ async def multi_agent_stream(request: MultiAgentStreamRequest):
     - `hitl_interrupt`: HITL 승인 요청
     - `error`: 에러 발생
     - `done`: 스트리밍 종료
+
+    **reasoning_event 메타데이터**
+
+    모든 SSE payload에는 `reasoning_event` 객체가 포함되며,
+    `phase`, `status`, `depth`, `lineage`, `message` 등을 통해
+    프론트엔드가 사고 과정을 보다 직관적으로 시각화할 수 있습니다.
+    ```json
+    {
+      "event": "agent_start",
+      "reasoning_event": {
+        "event_label": "agent_start",
+        "phase": "planning",
+        "status": "start",
+        "actor": "agent",
+        "agent": "Research_Agent",
+        "node": "planner",
+        "depth": 1,
+        "lineage": ["supervisor_node", "Research_Agent"],
+        "message": "Research_Agent 실행 시작"
+      }
+    }
+    ```
 
     **Frontend 사용 예시 (React):**
     ```javascript
