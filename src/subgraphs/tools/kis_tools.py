@@ -149,27 +149,41 @@ async def get_portfolio_positions() -> Dict[str, Any]:
     try:
         logger.info(f"📋 [KIS Tool] 보유 종목 조회")
 
-        # KIS API로 계좌 정보 조회
+        # KIS API로 계좌 정보 조회 (정규화된 구조)
         balance_data = await kis_service.get_account_balance()
 
-        # 보유 종목 리스트 추출 (balance_data에서 파싱 필요)
-        # TODO: kis_service.get_account_balance()의 응답 구조에 따라 파싱 로직 조정 필요
-        positions = []
-        if "output2" in balance_data:  # KIS API 응답 구조에 맞춰 조정
-            for item in balance_data["output2"]:
-                positions.append({
-                    "ticker": item.get("pdno"),  # 종목 코드
-                    "name": item.get("prdt_name"),  # 종목명
-                    "quantity": int(item.get("hldg_qty", 0)),  # 보유 수량
-                    "avg_price": float(item.get("pchs_avg_pric", 0)),  # 매입 평균가
-                    "current_price": float(item.get("prpr", 0)),  # 현재가
-                    "evaluation": float(item.get("evlu_amt", 0)),  # 평가액
-                    "profit": float(item.get("evlu_pfls_amt", 0)),  # 평가 손익
-                    "profit_rate": float(item.get("evlu_pfls_rt", 0)),  # 수익률
-                })
+        raw_positions = balance_data.get("stocks") or []
 
-        # 비중 계산
+        # ↔️ 구버전 호환: 혹시 normalized 되지 않은 응답(output1)일 경우 처리
+        if not raw_positions and "output1" in balance_data:
+            raw_positions = balance_data["output1"]
+
+        positions = []
+        for item in raw_positions:
+            ticker = item.get("stock_code") or item.get("pdno")
+            if not ticker:
+                continue
+
+            avg_price = item.get("avg_price", item.get("pchs_avg_pric", 0))
+            current_price = item.get("current_price", item.get("prpr", 0))
+            evaluation = item.get("eval_amount", item.get("evlu_amt", 0))
+            profit = item.get("profit_loss", item.get("evlu_pfls_amt", 0))
+            profit_rate = item.get("profit_rate", item.get("evlu_pfls_rt", 0))
+
+            positions.append({
+                "ticker": ticker,
+                "name": item.get("stock_name") or item.get("prdt_name"),
+                "quantity": int(item.get("quantity", item.get("hldg_qty", 0)) or 0),
+                "avg_price": float(avg_price or 0),
+                "current_price": float(current_price or 0),
+                "evaluation": float(evaluation or 0),
+                "profit": float(profit or 0),
+                "profit_rate": float(profit_rate or 0),
+            })
+
         total_evaluation = sum(p["evaluation"] for p in positions)
+        total_profit = sum(p["profit"] for p in positions)
+
         for position in positions:
             position["weight"] = position["evaluation"] / total_evaluation if total_evaluation > 0 else 0
 
@@ -178,7 +192,9 @@ async def get_portfolio_positions() -> Dict[str, Any]:
             "data": {
                 "positions": positions,
                 "total_evaluation": total_evaluation,
-                "total_profit": sum(p["profit"] for p in positions)
+                "total_profit": total_profit,
+                "cash_balance": balance_data.get("cash_balance"),
+                "total_assets": balance_data.get("total_assets"),
             }
         }
     except Exception as e:

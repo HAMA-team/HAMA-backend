@@ -126,17 +126,42 @@ class PortfolioService:
         )
         if not resolved_id:
             logger.error("[PortfolioService] 포트폴리오를 찾을 수 없습니다")
+            logger.error(f"  - user_id: {user_id}")
+            logger.error(f"  - portfolio_id: {portfolio_id}")
+
+            # 🔍 KIS API 동기화 시도 (fallback)
+            logger.info("[PortfolioService] KIS API 동기화를 시도합니다...")
+            try:
+                synced_snapshot = await self.sync_with_kis(user_id=user_id)
+                if synced_snapshot:
+                    logger.info("✅ [PortfolioService] KIS API 동기화 성공")
+                    return synced_snapshot
+            except Exception as sync_exc:
+                logger.error(f"❌ [PortfolioService] KIS 동기화도 실패: {sync_exc}", exc_info=True)
+
             raise PortfolioNotFoundError(
                 f"사용자 '{user_id}'의 포트폴리오를 찾을 수 없습니다. "
-                "먼저 종목을 매수하여 포트폴리오를 만들어주세요."
+                "KIS API 동기화도 실패했습니다. 먼저 종목을 매수하여 포트폴리오를 만들어주세요."
             )
 
         base_snapshot = await asyncio.to_thread(self._load_snapshot_sync, resolved_id)
         if base_snapshot is None:
             logger.error("[PortfolioService] 포트폴리오 데이터를 로드할 수 없습니다")
+            logger.error(f"  - resolved_id: {resolved_id}")
+
+            # 🔍 KIS API 동기화 시도 (fallback)
+            logger.info("[PortfolioService] KIS API 동기화를 시도합니다...")
+            try:
+                synced_snapshot = await self.sync_with_kis(user_id=user_id, portfolio_id=resolved_id)
+                if synced_snapshot:
+                    logger.info("✅ [PortfolioService] KIS API 동기화 성공")
+                    return synced_snapshot
+            except Exception as sync_exc:
+                logger.error(f"❌ [PortfolioService] KIS 동기화도 실패: {sync_exc}", exc_info=True)
+
             raise PortfolioNotFoundError(
                 f"포트폴리오 ID '{resolved_id}'의 데이터를 찾을 수 없습니다. "
-                "KIS API 동기화를 시도해주세요."
+                "KIS API 동기화도 실패했습니다."
             )
 
         portfolio_data = base_snapshot["portfolio_data"]
@@ -239,13 +264,26 @@ class PortfolioService:
             }
         """
         # 현재 포트폴리오 조회
-        snapshot = await self.get_portfolio_snapshot(
-            user_id=user_id,
-            portfolio_id=portfolio_id,
-            lookback_days=lookback_days,
-        )
+        logger.info(f"📊 [Portfolio/Simulate] 포트폴리오 조회 시작:")
+        logger.info(f"  - user_id: {user_id}")
+        logger.info(f"  - portfolio_id: {portfolio_id}")
+        logger.info(f"  - stock_code: {stock_code}, action: {action}, quantity: {quantity}, price: {price}")
+
+        try:
+            snapshot = await self.get_portfolio_snapshot(
+                user_id=user_id,
+                portfolio_id=portfolio_id,
+                lookback_days=lookback_days,
+            )
+        except PortfolioNotFoundError as exc:
+            logger.error(f"❌ [Portfolio/Simulate] 포트폴리오 조회 실패: {exc}")
+            raise
+        except Exception as exc:
+            logger.error(f"❌ [Portfolio/Simulate] 예기치 않은 오류: {exc}", exc_info=True)
+            raise
 
         if not snapshot:
+            logger.error("❌ [Portfolio/Simulate] snapshot이 None입니다")
             raise PortfolioNotFoundError("포트폴리오를 찾을 수 없습니다")
 
         portfolio_before = snapshot.portfolio_data
@@ -322,6 +360,15 @@ class PortfolioService:
                 "max_drawdown_estimate": None,
                 "beta": {},
             }
+
+        # 🔍 디버깅: 시뮬레이션 결과 확인
+        logger.info("✅ [Portfolio/Simulate] 시뮬레이션 완료:")
+        logger.info(f"  - portfolio_before holdings: {len(portfolio_before.get('holdings', []))}개")
+        logger.info(f"  - portfolio_before cash: {portfolio_before.get('cash_balance', 0):,}원")
+        logger.info(f"  - portfolio_after holdings: {len(portfolio_after.get('holdings', []))}개")
+        logger.info(f"  - portfolio_after cash: {portfolio_after.get('cash_balance', 0):,}원")
+        logger.info(f"  - risk_before: volatility={risk_before.get('portfolio_volatility')}, var_95={risk_before.get('var_95')}")
+        logger.info(f"  - risk_after: volatility={risk_after.get('portfolio_volatility')}, var_95={risk_after.get('var_95')}")
 
         return {
             "portfolio_before": portfolio_before,
@@ -973,6 +1020,218 @@ class PortfolioService:
             market_data=market_data,
             profile=profile,
         )
+
+
+# ==================== Risk Calculation Functions (from Risk Agent) ====================
+
+def calculate_concentration_risk_metrics(
+    holdings: List[Dict[str, Any]],
+    sectors: Dict[str, float],
+) -> Dict[str, Any]:
+    """
+    집중도 리스크 계산 (Risk Agent에서 이식)
+
+    Args:
+        holdings: 보유 종목 리스트 [{"stock_code": str, "weight": float, ...}, ...]
+        sectors: 섹터별 비중 {"IT": 0.5, ...}
+
+    Returns:
+        집중도 리스크 분석 결과
+    """
+    # HHI (Herfindahl-Hirschman Index) 계산
+    hhi = 0.0
+    top_holding = ("N/A", 0.0)
+
+    for holding in holdings:
+        weight = float(holding.get("weight") or 0.0)
+        hhi += weight ** 2
+        if weight > top_holding[1]:
+            stock_name = holding.get("stock_name") or holding.get("stock_code", "N/A")
+            top_holding = (stock_name, weight)
+
+    # 최대 섹터 비중
+    top_sector = ("N/A", 0.0)
+    for sector_name, sector_weight in sectors.items():
+        weight_float = float(sector_weight)
+        if weight_float > top_sector[1]:
+            top_sector = (sector_name, weight_float)
+
+    # 경고 메시지 생성
+    warnings = []
+    if top_holding[1] > 0.30:
+        warnings.append(
+            f"{top_holding[0]} 비중이 {top_holding[1]:.0%}로 높습니다 (권장: 25% 이하)"
+        )
+    if top_sector[1] > 0.50:
+        warnings.append(
+            f"{top_sector[0]} 섹터 비중이 {top_sector[1]:.0%}로 높습니다 (권장: 50% 이하)"
+        )
+
+    # 리스크 레벨 판단
+    level = "high" if hhi > 0.25 else "medium" if hhi > 0.15 else "low"
+
+    return {
+        "hhi": float(hhi),
+        "level": level,
+        "warnings": warnings,
+        "top_holding": {
+            "name": top_holding[0],
+            "weight": float(top_holding[1]),
+        },
+        "top_sector": {
+            "name": top_sector[0],
+            "weight": float(top_sector[1]),
+        },
+        "sector_breakdown": {k: float(v) for k, v in sectors.items()},
+    }
+
+
+def calculate_market_risk_metrics(
+    portfolio_data: Dict[str, Any],
+    market_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    시장 리스크 계산 (Risk Agent에서 이식)
+
+    Args:
+        portfolio_data: 포트폴리오 데이터
+        market_data: 시장 데이터 (volatility, var_95, beta 등)
+
+    Returns:
+        시장 리스크 분석 결과
+    """
+    holdings = portfolio_data.get("holdings", [])
+
+    # 시장 데이터에서 지표 추출
+    volatility = market_data.get("portfolio_volatility")
+    var_95 = market_data.get("var_95")
+    max_drawdown = market_data.get("max_drawdown_estimate")
+    beta_map = market_data.get("beta") or {}
+
+    # Fallback: 시장 데이터가 없으면 재계산
+    if volatility is None or var_95 is None:
+        if not holdings:
+            volatility, var_95, max_drawdown = 0.0, 0.0, None
+        else:
+            average_beta = sum(float(h.get("beta") or 1.0) for h in holdings) / len(holdings)
+            average_weight = sum(float(h.get("weight") or 0.0) for h in holdings)
+            volatility = max(0.05, average_beta * 0.15 * max(average_weight, 1.0))
+            var_95 = volatility * 1.65
+            max_drawdown = var_95 * 1.8
+
+    # 포트폴리오 베타 계산
+    portfolio_beta = sum(
+        (h.get("weight") or 0.0) * beta_map.get(h.get("stock_code"), 1.0)
+        for h in holdings
+    ) or 1.0
+
+    # 리스크 레벨 판단
+    risk_level = "high" if (var_95 or 0) > 0.10 else "medium" if (var_95 or 0) > 0.05 else "low"
+
+    return {
+        "portfolio_volatility": volatility,
+        "portfolio_beta": portfolio_beta,
+        "var_95": var_95,
+        "max_drawdown_estimate": max_drawdown,
+        "risk_level": risk_level,
+    }
+
+
+async def calculate_comprehensive_portfolio_risk(
+    user_id: Optional[str] = None,
+    portfolio_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    종합 포트폴리오 리스크 계산
+
+    Risk Agent의 모든 Specialist 로직을 통합한 단일 함수
+
+    Args:
+        user_id: 사용자 ID
+        portfolio_id: 포트폴리오 ID
+
+    Returns:
+        종합 리스크 분석 결과
+        {
+            "concentration_risk": {...},
+            "market_risk": {...},
+            "overall_assessment": {...}
+        }
+    """
+    logger.info("🔍 [PortfolioService/Risk] 종합 리스크 분석 시작")
+
+    try:
+        # 1. 포트폴리오 스냅샷 조회
+        snapshot = await portfolio_service.get_portfolio_snapshot(
+            user_id=user_id,
+            portfolio_id=portfolio_id
+        )
+
+        if not snapshot:
+            raise PortfolioNotFoundError("포트폴리오를 찾을 수 없습니다")
+
+        portfolio_data = snapshot.portfolio_data
+        market_data = snapshot.market_data
+        holdings = portfolio_data.get("holdings", [])
+        sectors = portfolio_data.get("sectors", {})
+
+        # 2. 집중도 리스크 계산
+        concentration_risk = calculate_concentration_risk_metrics(holdings, sectors)
+
+        # 3. 시장 리스크 계산
+        market_risk = calculate_market_risk_metrics(portfolio_data, market_data)
+
+        # 4. 종합 평가
+        # 리스크 레벨 종합 (concentration과 market 중 더 높은 것)
+        risk_levels = {"low": 1, "medium": 2, "high": 3}
+        concentration_level = risk_levels.get(concentration_risk["level"], 2)
+        market_level = risk_levels.get(market_risk["risk_level"], 2)
+        overall_level_num = max(concentration_level, market_level)
+        overall_level = {1: "low", 2: "medium", 3: "high"}[overall_level_num]
+
+        # 종합 메시지
+        summary_parts = []
+        if concentration_risk["warnings"]:
+            summary_parts.append(f"집중도: {', '.join(concentration_risk['warnings'][:2])}")
+        if market_risk["var_95"]:
+            summary_parts.append(f"VaR(95%): {market_risk['var_95']*100:.1f}%")
+
+        overall_assessment = {
+            "risk_level": overall_level,
+            "summary": " | ".join(summary_parts) if summary_parts else "리스크 양호",
+            "requires_attention": overall_level in ("medium", "high"),
+            "key_recommendations": [],
+        }
+
+        # 권장사항 생성
+        if concentration_risk["top_holding"]["weight"] > 0.30:
+            overall_assessment["key_recommendations"].append(
+                f"{concentration_risk['top_holding']['name']} 비중 축소 권장"
+            )
+        if concentration_risk["top_sector"]["weight"] > 0.50:
+            overall_assessment["key_recommendations"].append(
+                f"{concentration_risk['top_sector']['name']} 섹터 분산 권장"
+            )
+        if market_risk["var_95"] and market_risk["var_95"] > 0.10:
+            overall_assessment["key_recommendations"].append(
+                "변동성이 높습니다. 방어적 자산 편입 고려"
+            )
+
+        logger.info(
+            "✅ [PortfolioService/Risk] 종합 리스크 분석 완료: %s",
+            overall_level
+        )
+
+        return {
+            "concentration_risk": concentration_risk,
+            "market_risk": market_risk,
+            "overall_assessment": overall_assessment,
+        }
+
+    except Exception as e:
+        logger.error("❌ [PortfolioService/Risk] 리스크 분석 실패: %s", e, exc_info=True)
+        raise
+
 
 
 portfolio_service = PortfolioService()

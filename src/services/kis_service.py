@@ -351,6 +351,10 @@ class KISService:
         else:
             summary_data = output2
 
+        # 🔍 디버깅: Output2 전체 구조 로깅
+        logger.info(f"🔍 [KIS Debug] output2 타입: {type(output2)}")
+        logger.info(f"🔍 [KIS Debug] summary_data 전체: {summary_data}")
+
         stocks = []
         for item in stocks_data:
             stock_code = item.get("pdno", "")
@@ -371,15 +375,70 @@ class KISService:
                 "profit_rate": float(item.get("evlu_pfls_rt", 0)),  # 평가손익률
             })
 
+        def _get_int_from_summary(keys: List[str], default: int = 0) -> int:
+            """여러 키 중 첫 번째로 존재하는 값을 int로 변환."""
+
+            for key in keys:
+                raw = summary_data.get(key)
+                if raw in (None, ""):
+                    continue
+                try:
+                    return int(str(raw).replace(",", ""))
+                except (TypeError, ValueError):
+                    logger.debug("[KIS Debug] %s 값을 정수로 변환하지 못했습니다: %s", key, raw)
+            return default
+
+        # 예수금 필드 추출 (문서와 실제 응답 모두 지원)
+        cash_balance = _get_int_from_summary(
+            [
+                "dncl_amt",  # 예수금액
+                "tot_dncl_amt",  # 총예수금액
+                "dnca_tot_amt",  # 실거래 예수금합계
+                "nxdy_excc_amt",  # 익일 출금가능액
+                "prvs_rcdl_excc_amt",  # 전일 출금가능액
+            ],
+            default=0,
+        )
+
+        # 평가금액 합계 (필드명이 상황별로 다름)
+        evlu_amt_smtl = _get_int_from_summary(
+            [
+                "evlu_amt_smtl",  # 평가금액합계
+                "evlu_amt_smtl_amt",  # 평가금액합계 (다른 응답)
+                "scts_evlu_amt",  # 주식 평가금액 합
+            ],
+            default=0,
+        )
+
+        # 순자산 총액 / 총 자산
+        nass_amt = _get_int_from_summary(
+            [
+                "nass_tot_amt",  # 순자산총금액
+                "nass_amt",  # 응답에 따라 '_tot' 빠진 키 사용
+                "tot_evlu_amt",  # 총 평가금액
+            ],
+            default=0,
+        )
+
+        total_assets = nass_amt if nass_amt > 0 else (evlu_amt_smtl + cash_balance)
+
         response = {
-            "total_assets": int(summary_data.get("tot_evlu_amt", 0)),  # 총평가금액
-            "cash_balance": int(summary_data.get("dnca_tot_amt", 0)),  # 예수금총액
+            "total_assets": total_assets,
+            "cash_balance": cash_balance,
             "stocks": stocks,
-            "evlu_pfls_smtl_amt": int(summary_data.get("evlu_pfls_smtl_amt", 0)),  # 평가손익합계
-            "nass_amt": int(summary_data.get("nass_amt", 0)),  # 순자산액
+            "evlu_pfls_smtl_amt": _get_int_from_summary(["evlu_pfls_smtl_amt"], default=0),
+            "nass_amt": nass_amt,
         }
 
-        logger.info(f"✅ Account balance fetched: {len(stocks)} stocks, total={response['total_assets']:,}원")
+        # 🔍 디버깅: 주요 필드 확인
+        logger.info("🔍 [KIS Debug] Output2 주요 필드:")
+        logger.info(f"  - evlu_amt_smtl (평가금액합계): {evlu_amt_smtl:,}원")
+        logger.info(f"  - cash candidates (dncl_amt/dnca_tot_amt 등): {cash_balance:,}원")
+        logger.info(f"  - nass_amt (순자산총금액): {nass_amt:,}원")
+        logger.info(f"  - 최종 total_assets: {total_assets:,}원")
+        logger.info(f"  - 최종 cash_balance: {cash_balance:,}원")
+
+        logger.info(f"✅ Account balance fetched: {len(stocks)} stocks, total={total_assets:,}원, cash={cash_balance:,}원")
         return response
 
     # ==================== 시세 조회 ====================
