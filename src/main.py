@@ -3,6 +3,7 @@ HAMA Backend - FastAPI Application Entry Point
 """
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -17,6 +18,22 @@ from src.api.error_handlers import setup_error_handlers
 from src.config.settings import settings
 from src.models.database import SessionLocal, init_db
 from src.services import init_kis_service
+
+
+def configure_logging() -> None:
+    """settings.LOG_LEVEL에 맞춰 전역 로깅 설정."""
+
+    level_name = (settings.LOG_LEVEL or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True,  # uvicorn 기본 핸들러보다 우선 적용
+    )
+
+
+configure_logging()
 
 tags_metadata = [
     {
