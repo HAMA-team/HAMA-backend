@@ -45,8 +45,11 @@ async def portfolio_simulator_node(state: GraphState) -> GraphState:
     price = state.get("trade_price", 0)
     user_id = state.get("user_id")
 
-    logger.info("📊 [Portfolio/Simulator] 매매 시뮬레이션: %s %s %d주 @ %d원",
-                action, stock_code, quantity, price)
+    # 🔍 디버깅: State 확인
+    logger.info("📊 [Portfolio/Simulator] 매매 시뮬레이션 시작:")
+    logger.info(f"  - user_id: {user_id}")
+    logger.info(f"  - stock_code: {stock_code}")
+    logger.info(f"  - action: {action}, quantity: {quantity}, price: {price}")
 
     try:
         simulation_result = await portfolio_service.simulate_trade(
@@ -62,6 +65,11 @@ async def portfolio_simulator_node(state: GraphState) -> GraphState:
         risk_before = simulation_result["risk_before"]
         risk_after = simulation_result["risk_after"]
 
+        # 🔍 디버깅: 시뮬레이션 결과 크기 확인
+        logger.info("✅ [Portfolio/Simulator] 시뮬레이션 완료:")
+        logger.info(f"  - portfolio_before: {len(portfolio_before)} 필드, holdings={len(portfolio_before.get('holdings', []))}개")
+        logger.info(f"  - portfolio_after: {len(portfolio_after)} 필드, holdings={len(portfolio_after.get('holdings', []))}개")
+
         # 변화량 계산 (로깅용)
         weight_before = next(
             (h["weight"] for h in portfolio_before.get("holdings", []) if h["stock_code"] == stock_code),
@@ -72,7 +80,6 @@ async def portfolio_simulator_node(state: GraphState) -> GraphState:
             0.0
         )
 
-        logger.info("✅ [Portfolio/Simulator] 시뮬레이션 완료")
         logger.info(f"  - 종목 비중: {weight_before*100:.1f}% → {weight_after*100:.1f}%")
         logger.info(f"  - 변동성: {risk_before.get('portfolio_volatility')} → {risk_after.get('portfolio_volatility')}")
 
@@ -85,9 +92,17 @@ async def portfolio_simulator_node(state: GraphState) -> GraphState:
         }
 
     except Exception as exc:
-        logger.error("❌ [Portfolio/Simulator] 시뮬레이션 실패: %s", exc)
+        logger.error("❌ [Portfolio/Simulator] 시뮬레이션 실패: %s", exc, exc_info=True)
+
+        # 실패 시 명시적으로 None 반환 (빈 딕셔너리 대신)
         return {
-            "messages": [AIMessage(content=f"시뮬레이션 실패: {exc}")],
+            "portfolio_before": None,
+            "portfolio_after": None,
+            "risk_before": None,
+            "risk_after": None,
+            "simulation_failed": True,
+            "simulation_error": str(exc),
+            "messages": [AIMessage(content=f"포트폴리오 시뮬레이션 실패: {exc}")],
         }
 
 
@@ -189,13 +204,49 @@ async def trade_hitl_node(state: GraphState) -> GraphState:
     total_amount = quantity * price
 
     # 포트폴리오 전/후 데이터 가져오기
-    portfolio_before = state.get("portfolio_before", {})
-    portfolio_after = state.get("portfolio_after", {})
-    risk_before = state.get("risk_before", {})
-    risk_after = state.get("risk_after", {})
+    portfolio_before = state.get("portfolio_before")
+    portfolio_after = state.get("portfolio_after")
+    risk_before = state.get("risk_before")
+    risk_after = state.get("risk_after")
+
+    # 🔍 디버깅: 시뮬레이션 실패 체크
+    simulation_failed = state.get("simulation_failed", False)
+    simulation_error = state.get("simulation_error", "Unknown error")
 
     logger.info("🛒 [Trading/HITL] 매매 승인 요청: %s %s %d주 @ %d원",
                action, stock_code, quantity, price)
+
+    # ✅ 데이터 검증: 시뮬레이션 실패 확인
+    if simulation_failed:
+        logger.error("❌ [Trading/HITL] 시뮬레이션 실패로 HITL 불가")
+        logger.error(f"  - 오류: {simulation_error}")
+        raise Exception(f"포트폴리오 시뮬레이션 실패: {simulation_error}")
+
+    # ✅ 데이터 검증: 전/후 비교 데이터 존재 확인
+    if not portfolio_before or not portfolio_after:
+        logger.error("❌ [Trading/HITL] 전/후 비교 데이터 없음")
+        logger.error(f"  - portfolio_before: {portfolio_before}")
+        logger.error(f"  - portfolio_after: {portfolio_after}")
+        logger.error(f"  - risk_before: {risk_before}")
+        logger.error(f"  - risk_after: {risk_after}")
+        raise Exception(
+            "포트폴리오 시뮬레이션 데이터가 없습니다. "
+            "portfolio_simulator_node가 정상 실행되지 않았을 수 있습니다."
+        )
+
+    # ✅ 데이터 검증: holdings 존재 확인
+    holdings_before = portfolio_before.get("holdings", [])
+    holdings_after = portfolio_after.get("holdings", [])
+
+    if not isinstance(holdings_before, list) or not isinstance(holdings_after, list):
+        logger.error("❌ [Trading/HITL] holdings가 리스트가 아님")
+        logger.error(f"  - holdings_before 타입: {type(holdings_before)}")
+        logger.error(f"  - holdings_after 타입: {type(holdings_after)}")
+        raise Exception("포트폴리오 holdings 데이터가 잘못되었습니다.")
+
+    logger.info("✅ [Trading/HITL] 전/후 비교 데이터 검증 완료:")
+    logger.info(f"  - Before: {len(holdings_before)}개 holdings, cash={portfolio_before.get('cash_balance', 0):,}원")
+    logger.info(f"  - After: {len(holdings_after)}개 holdings, cash={portfolio_after.get('cash_balance', 0):,}원")
 
     # Interrupt 발생 (사용자 승인 대기)
     approval_id = str(uuid.uuid4())

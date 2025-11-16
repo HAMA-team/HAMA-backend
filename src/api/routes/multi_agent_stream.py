@@ -85,13 +85,41 @@ def _sse(event: str, payload: dict) -> str:
 
 
 def _event_agent_name(event: dict) -> Optional[str]:
+    """
+    LangGraph 이벤트에서 Agent 이름을 추출합니다.
+
+    SubGraph 실행 시 부모 Agent 이름을 추출하는 로직 포함.
+    """
     metadata = event.get("metadata") or {}
+
+    # 1. langgraph_triggers에서 부모 노드 추적 (SubGraph 추적용)
+    triggers = metadata.get("langgraph_triggers") or []
+    if triggers:
+        # triggers 예시: ["supervisor_node", "Research_Agent"]
+        # 마지막 trigger가 SubGraph 이름일 가능성 높음
+        for trigger in reversed(triggers):
+            # "_agent" 또는 "_subgraph"가 포함되어 있으면 SubGraph로 간주
+            if "_agent" in trigger.lower() or "_subgraph" in trigger.lower():
+                return trigger
+            # "supervisor", "master" 같은 키워드 제외
+            if trigger.lower() not in ["supervisor", "master", "langgraph", "supervisor_node"]:
+                return trigger
+
+    # 2. langgraph_node에서 SubGraph 이름 추출
     node = metadata.get("langgraph_node")
     if node and node != "LangGraph":
+        # 노드 이름에 "__"가 있으면 SubGraph 이름 추출
+        # 예: "Research_Agent__planner" → "Research_Agent"
+        if "__" in node:
+            subgraph_name = node.split("__")[0]
+            return subgraph_name
         return node
+
+    # 3. event name 확인 (fallback)
     name = event.get("name")
     if name and name != "LangGraph":
         return name
+
     return None
 
 
