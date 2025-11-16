@@ -39,6 +39,13 @@ from .tools import (
     get_company_info_tool,
     get_macro_summary_tool,
 )
+from src.prompts.research import (
+    build_bull_case_prompt,
+    build_bear_case_prompt,
+    build_macro_impact_prompt,
+    build_research_technical_prompt,
+    build_trading_flow_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -760,37 +767,18 @@ async def bull_worker_node(state: ResearchState) -> ResearchState:
     industry = company_info.get("induty_code", "N/A")
     financial_year = financial_data.get("year", "N/A")
 
-    prompt = f"""당신은 낙관적 주식 애널리스트입니다. 다음 데이터를 분석하여 긍정적 시나리오를 제시하세요.
-
-**기업 정보:**
-- 종목코드: {stock_code}
-- 기업명: {corp_name}
-- 업종: {industry}
-
-**현재 시장 데이터:**
-- 현재가: {price.get('latest_close')}
-- 시가총액: {market_cap.get('market_cap')}
-- 주가 데이터 기간: {price.get('days')}일
-
-**재무 데이터:**
-- 재무제표 연도: {financial_year}
-- 펀더멘털: {_dumps(fundamental)}
-
-**기술적 분석:**
-- 기술적 지표: {_dumps(technical)}
-- 시장 지수: {_dumps(market)}
-
-**분석 지침:**
-해당 업종의 최신 시장 동향과 사이클을 고려하여 분석하세요.
-
-JSON 형식으로 답변하세요:
-{{
-  "positive_factors": ["..."],
-  "target_price": 0,
-  "confidence": 1,
-  "notes": ["핵심 근거"]
-}}
-"""
+    prompt = build_bull_case_prompt(
+        stock_code=stock_code,
+        corp_name=corp_name,
+        industry=industry,
+        price_snapshot=price,
+        market_cap_snapshot=market_cap,
+        fundamental=fundamental,
+        technical=technical,
+        market_index=market,
+        financial_year=financial_year,
+        user_query=state.get("query"),
+    )
 
     max_retries = 4
     for attempt in range(max_retries):
@@ -876,37 +864,18 @@ async def bear_worker_node(state: ResearchState) -> ResearchState:
     industry = company_info.get("induty_code", "N/A")
     financial_year = financial_data.get("year", "N/A")
 
-    prompt = f"""당신은 보수적 주식 애널리스트입니다. 다음 데이터를 분석하여 리스크 시나리오를 제시하세요.
-
-**기업 정보:**
-- 종목코드: {stock_code}
-- 기업명: {corp_name}
-- 업종: {industry}
-
-**현재 시장 데이터:**
-- 현재가: {price.get('latest_close')}
-- 시가총액: {market_cap.get('market_cap')}
-- 주가 데이터 기간: {price.get('days')}일
-
-**재무 데이터:**
-- 재무제표 연도: {financial_year}
-- 펀더멘털: {_dumps(fundamental)}
-
-**기술적 분석:**
-- 기술적 지표: {_dumps(technical)}
-- 시장 지수: {_dumps(market)}
-
-**분석 지침:**
-해당 업종의 최신 시장 동향과 사이클을 고려하여 리스크를 분석하세요.
-
-JSON 형식으로 답변하세요:
-{{
-  "risk_factors": ["..."],
-  "downside_target": 0,
-  "confidence": 1,
-  "notes": ["핵심 리스크"]
-}}
-"""
+    prompt = build_bear_case_prompt(
+        stock_code=stock_code,
+        corp_name=corp_name,
+        industry=industry,
+        price_snapshot=price,
+        market_cap_snapshot=market_cap,
+        fundamental=fundamental,
+        technical=technical,
+        market_index=market,
+        financial_year=financial_year,
+        user_query=state.get("query"),
+    )
 
     max_retries = 4
     for attempt in range(max_retries):
@@ -1001,35 +970,11 @@ async def macro_worker_node(state: ResearchState) -> ResearchState:
         # 3. LLM으로 거시경제가 해당 종목에 미치는 영향 분석
         llm = get_llm(max_tokens=1500, temperature=0.2)
 
-        prompt = f"""당신은 거시경제 전문 애널리스트입니다. 현재 거시경제 환경이 해당 기업에 미치는 영향을 분석하세요.
-
-## 거시경제 지표
-- 기준금리: {macro_data.get('base_rate', 'N/A')}% (추세: {macro_data.get('base_rate_trend', 'N/A')})
-- CPI (소비자물가): {macro_data.get('cpi', 'N/A')} (전년대비: {macro_data.get('cpi_yoy', 'N/A') if macro_data.get('cpi_yoy') else 'N/A'}%)
-- 환율 (원/달러): {macro_data.get('exchange_rate', 'N/A'):,.0f}원
-
-## 분석 대상 기업
-- 기업명: {company_name}
-- 종목코드: {stock_code}
-
-**분석 지침:**
-1. 금리 환경이 해당 기업에 미치는 영향 (재무 비용, 투자 여력 등)
-2. 물가 상승률이 해당 기업에 미치는 영향 (원가 부담, 가격 전가력 등)
-3. 환율 변동이 해당 기업에 미치는 영향 (수출입 기업인 경우)
-4. 전반적인 경기 사이클 판단
-
-JSON 형식으로 답변하세요:
-{{
-  "interest_rate_impact": "긍정적" | "부정적" | "중립",
-  "interest_rate_reason": "이유 설명",
-  "inflation_impact": "긍정적" | "부정적" | "중립",
-  "inflation_reason": "이유 설명",
-  "exchange_rate_impact": "긍정적" | "부정적" | "중립",
-  "exchange_rate_reason": "이유 설명",
-  "overall_macro_sentiment": "긍정적" | "부정적" | "중립",
-  "summary": "한 줄 요약"
-}}
-"""
+        prompt = build_macro_impact_prompt(
+            stock_code=stock_code,
+            company_name=company_name,
+            macro_data=macro_data,
+        )
 
         response = await llm.ainvoke(prompt)
         analysis = safe_json_parse(response.content, "Research/Macro")
@@ -1115,67 +1060,11 @@ async def technical_analyst_worker_node(state: ResearchState) -> ResearchState:
 
     llm = get_llm(max_tokens=2500, temperature=0.2)
 
-    current_price = price_data.get("latest_close", 0)
-    volume = price_data.get("latest_volume", 0)
-
-    prompt = f"""당신은 기술적 분석 전문가입니다. 다음 데이터를 기반으로 상세한 기술적 분석을 제공하세요.
-
-## 종목 정보
-- 종목코드: {stock_code}
-- 현재가: {current_price:,}원
-- 거래량: {volume:,}주
-
-## 기술적 지표 
-{_dumps(technical, indent=2)} 
-
-## 분석 항목
-1. **주가 추세 분석**: 상승추세/하락추세/횡보 판단 (이동평균선 기반)
-2. **이동평균선 분석**:
-   - 단기(5일)/중기(20일)/장기(60일) 이평선 배열 상태
-   - 골든크로스/데드크로스 발생 여부
-   - 현재가와 이평선의 위치 관계
-3. **지지선/저항선**:
-   - 주요 지지선 가격대
-   - 주요 저항선 가격대
-4. **거래량 패턴**:
-   - 최근 거래량 변화 추세
-   - 가격 변동과 거래량의 관계
-5. **기술적 지표 해석**:
-   - RSI: 과매수/과매도 여부
-   - MACD: 매수/매도 신호
-   - 볼린저밴드: 밴드폭과 현재가 위치
-6. **단기 방향성**: 향후 1~2주 기술적 전망
-
-JSON 형식으로 답변하세요:
-{{
-  "trend": "상승추세" | "하락추세" | "횡보",
-  "trend_strength": 1-5,
-  "moving_average_analysis": {{
-    "arrangement": "정배열" | "역배열" | "혼재",
-    "golden_cross": true | false,
-    "death_cross": true | false,
-    "ma5": 0,
-    "ma20": 0,
-    "ma60": 0
-  }},
-  "support_resistance": {{
-    "support_levels": [가격1, 가격2, 가격3],
-    "resistance_levels": [가격1, 가격2, 가격3]
-  }},
-  "volume_pattern": {{
-    "trend": "증가" | "감소" | "보합",
-    "price_volume_relationship": "설명"
-  }},
-  "technical_signals": {{
-    "rsi_signal": "과매수" | "과매도" | "중립",
-    "macd_signal": "매수" | "매도" | "중립",
-    "bollinger_signal": "상단돌파" | "하단돌파" | "중립"
-  }},
-  "short_term_outlook": "1-2주 전망",
-  "trading_strategy": "기술적 관점 매매 전략",
-  "confidence": 1-5
-}}
-"""
+    prompt = build_research_technical_prompt(
+        stock_code=stock_code,
+        price_data=price_data,
+        technical_indicators=technical,
+    )
 
     max_retries = 3
     for attempt in range(max_retries):
@@ -1271,64 +1160,11 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
 
     llm = get_llm(max_tokens=2000, temperature=0.2)
 
-    current_price = price_data.get("latest_close", 0)
-
-    prompt = f"""당신은 거래 동향 분석 전문가입니다. 투자 주체별 거래 동향을 분석하고 수급 전망을 제시하세요.
-
-## 종목 정보
-- 종목코드: {stock_code}
-- 현재가: {current_price:,}원
-
-## 투자자별 거래 동향 
-{_dumps(investor_data, indent=2)} 
-
-## 분석 항목
-1. **외국인 투자자**:
-   - 최근 30일 순매수/순매도 추이
-   - 주가와의 상관관계
-   - 외국인 보유 비중 변화 (가능한 경우)
-2. **기관 투자자**:
-   - 최근 30일 순매수/순매도 추이
-   - 주가와의 상관관계
-   - 특이 동향 (대규모 매수/매도 등)
-3. **개인 투자자**:
-   - 순매수/순매도 추이
-   - 외국인/기관과의 반대 매매 여부
-4. **종합 수급 분석**:
-   - 누가 주도하고 있는가?
-   - 수급 강도 (강함/약함)
-   - 향후 수급 전망
-
-JSON 형식으로 답변하세요:
-{{
-  "foreign_investor": {{
-    "trend": "순매수" | "순매도" | "보합",
-    "strength": 1-5,
-    "correlation_with_price": "양의 상관관계" | "음의 상관관계" | "무관",
-    "net_amount": 0,
-    "analysis": "상세 설명"
-  }},
-  "institutional_investor": {{
-    "trend": "순매수" | "순매도" | "보합",
-    "strength": 1-5,
-    "correlation_with_price": "양의 상관관계" | "음의 상관관계" | "무관",
-    "net_amount": 0,
-    "analysis": "상세 설명"
-  }},
-  "individual_investor": {{
-    "trend": "순매수" | "순매도" | "보합",
-    "opposite_trading": true | false,
-    "analysis": "상세 설명"
-  }},
-  "supply_demand_analysis": {{
-    "leading_investor": "외국인" | "기관" | "개인" | "혼재",
-    "supply_strength": "강함" | "약함" | "보통",
-    "outlook": "긍정적" | "부정적" | "중립",
-    "forecast": "향후 수급 전망"
-  }},
-  "confidence": 1-5
-}}
-"""
+    prompt = build_trading_flow_prompt(
+        stock_code=stock_code,
+        price_data=price_data,
+        investor_data=investor_data,
+    )
 
     max_retries = 3
     for attempt in range(max_retries):
