@@ -18,14 +18,6 @@ from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse
 from src.utils.indicators import calculate_all_indicators
 from src.utils.stock_name_extractor import extract_stock_names_from_query
-from src.services.stock_data_service import stock_data_service
-from src.services.dart_service import dart_service
-from src.constants.analysis_depth import (
-    ANALYSIS_DEPTH_LEVELS,
-    classify_depth_by_keywords,
-    extract_focus_areas,
-    get_default_depth,
-)
 
 from .state import ResearchState
 from .tools import (
@@ -304,7 +296,6 @@ async def _refine_plan_with_user_input(
         재조정된 계획 (depth, scope, perspectives)
     """
     from src.utils.llm_factory import get_portfolio_risk_llm as get_llm
-    from src.prompts import safe_json_parse
 
     llm = get_llm(temperature=0, max_tokens=1500)
 

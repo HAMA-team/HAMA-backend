@@ -28,22 +28,29 @@
 **현재 구현 상태 (Phase 1 MVP - 85% 완성):**
 
 ```
-사용자 (Chat Interface)
-        ↕
-Master Agent (LangGraph Supervisor)
-  - LLM 기반 동적 라우팅
-  - 의존성 기반 순차/병렬 조율
-        ↓
-┌───────┼───────┬───────┬───────┬───────┐
-↓       ↓       ↓       ↓       ↓       ↓
-Research Strategy Risk Trading Portfolio General
-(✅)     (✅)    (✅)    (✅)     (✅)     (✅)
+           사용자 (Chat Interface)
+                    ↕
+    Master Agent (LangGraph Supervisor)
+      - LLM 기반 동적 라우팅
+      - 의존성 기반 순차/병렬 조율
+      - HITL 승인 관리
+                    ↓
+    ┌───────────────┼───────────────┐
+    ↓               ↓               ↓
+Research        Quantitative    Direct Tools
+SubGraph (✅)   SubGraph (✅)   (10개 Tool) (✅)
+- Planner       - Market Cycle  - KIS API
+- 6 Workers     - Asset Alloc   - Risk Calc
+  (병렬)         - Fund/Tech     - Portfolio
+- Synthesis     - Buy/Sell       Optimizer
+                - Synthesis     - Trading
 ```
 
 **에이전트 실행 방식:**
-- **에이전트 간**: 의존성에 따라 **순차 실행** (Research → Strategy → Risk)
-- **에이전트 내부 노드**: LangGraph로 **병렬 실행 가능** (예: Bull/Bear 분석)
-- **Supervisor**: LLM이 의도를 분석하여 필요한 에이전트만 선택
+- **SubGraph 간**: 의존성에 따라 **순차 실행** (Research → Quantitative)
+- **SubGraph 내부 노드**: LangGraph로 **병렬 실행** (예: Research의 6개 Worker)
+- **Direct Tools**: Supervisor가 직접 호출하여 즉시 실행
+- **Supervisor**: LLM이 의도를 분석하여 필요한 SubGraph/Tool 선택
 
 ### 자동화 레벨 시스템
 
@@ -59,16 +66,19 @@ Research Strategy Risk Trading Portfolio General
 
 **Phase 1 (MVP)**: 실제 데이터 연동 완료 ✅ (85% 완성)
 - ✅ LangGraph Supervisor 패턴 아키텍처
-- ✅ 6개 서브그래프 에이전트 구현
-- ✅ 실제 데이터 연동 (pykrx, DART API)
-- ✅ 인메모리 캐싱 시스템
-- ✅ HITL API (`/chat`, `/approve`)
+- ✅ 2개 SubGraph (Research, Quantitative) + 10개 Direct Tools
+- ✅ 실제 데이터 연동 (pykrx, DART, BOK, 네이버 뉴스)
+- ✅ KIS API 실시간 시세 조회 구현
+- ✅ 포트폴리오 시뮬레이션 및 최적화 (MPT)
+- ✅ HITL API (`/chat`, `/approve`, SSE 스트리밍)
+- ✅ 기술지표 자동 계산 (RSI, MACD 등 15+)
 - 🔄 테스트 커버리지 확대 중
 
 **Phase 2**: 실제 매매 연동 (예정)
-- 한국투자증권 API (실시간 시세)
-- 실제 매매 주문 실행
+- 한국투자증권 API 실제 매매 주문 실행 (시세 조회는 완료)
+- 사용자 인증 (JWT)
 - WebSocket 실시간 알림
+- 뉴스 감정 분석 (NLP)
 
 ### 2. HITL 구현
 
@@ -83,16 +93,20 @@ Research Strategy Risk Trading Portfolio General
 ### 3. 코드 작성 가이드
 
 **디렉토리 구조:**
-- **에이전트**: `src/agents/*.py`
-- **API**: `src/api/routes/*.py`
-- **모델**: `src/models/*.py`
-- **스키마**: `src/schemas/*.py`
+- **SubGraph**: `src/subgraphs/*/` (Research, Quantitative)
+- **Tools**: `src/subgraphs/tools/*.py` (Direct Tools 10개)
+- **API**: `src/api/routes/*.py` (11개 라우터)
+- **Services**: `src/services/*.py` (19개 서비스)
+- **Models**: `src/models/*.py` (11개 DB 모델)
+- **Schemas**: `src/schemas/*.py` (10개 Pydantic 스키마)
+- **Repositories**: `src/repositories/*.py` (8개 Repository)
 
 **핵심 규칙:**
-- ✅ 에이전트는 LangGraph 서브그래프로 구현
+- ✅ SubGraph는 독립적인 LangGraph로 구현
 - ✅ 순수 함수 원칙 (State-First 설계)
 - ✅ Interrupt 사용 시 재실행 안전 패턴 적용
-- ✅ 의존성 방향: API → Agents → Models
+- ✅ 의존성 방향: API → Services → Repositories → Models
+- ✅ SubGraph/Tools는 Services를 통해 데이터 접근
 
 📖 **상세 가이드**:
 - [LangGraph 패턴 가이드](./docs/guides/langgraph-patterns.md)
@@ -163,14 +177,16 @@ tests/
 ## 📦 데이터 소스
 
 **현재 연동 완료 (Phase 1):**
-- ✅ **pykrx**: 주가, 거래량, 종목 리스트 (FinanceDataReader 대체)
+- ✅ **pykrx**: 주가, 거래량, 종목 리스트
+- ✅ **FinanceDataReader**: pykrx Fallback
 - ✅ **DART API**: 재무제표, 공시, 기업 정보
-- ✅ **인메모리 캐싱**: TTL 60초
+- ✅ **BOK API**: 금리, 거시경제 지표
+- ✅ **네이버 금융**: 뉴스 크롤링 (BeautifulSoup)
+- ✅ **KIS API**: 실시간 시세 조회 (OAuth 2.0)
 
 **Phase 2 예정:**
-- ⏸️ **한국투자증권 API**: 실시간 시세, 차트, 호가
-- ⏸️ **네이버 금융**: 뉴스 크롤링
-- ⏸️ **BOK API**: 금리, 거시경제 지표
+- ⏸️ **KIS API 매매**: 실제 주문 실행 (시뮬레이션 제거)
+- ⏸️ **뉴스 NLP**: 감정 분석, 키워드 추출
 
 ---
 
@@ -185,7 +201,7 @@ tests/
 
 ### 파일 생성 규칙
 - ❌ 명시적 요청 없이 문서 파일(*.md) 생성 금지
-- ✅ README는 이미 존재하므로 수정만
+- ✅ README.md 존재 - 프로젝트 구현 상황 기반으로 작성됨
 - ✅ 기존 파일 수정 우선
 
 ---

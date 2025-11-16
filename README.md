@@ -1,689 +1,424 @@
-# 🤖 HAMA Backend
+# HAMA (Human-in-the-loop AI Investment Manager)
 
-**Human-in-the-Loop AI Multiagent Investment System**
+**AI가 분석하고, 당신이 결정한다**
 
-> "AI가 분석하고, 당신이 결정한다"
+HAMA는 LangGraph Supervisor 패턴 기반의 멀티 에이전트 AI 투자 시스템입니다. 사용자가 복잡한 시장 분석과 포트폴리오 관리의 부담을 줄이면서도, 최종 투자 결정권을 유지할 수 있도록 설계되었습니다.
 
-[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104-green.svg)](https://fastapi.tiangolo.com/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2-orange.svg)](https://langchain-ai.github.io/langgraph/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## 🎯 핵심 가치
 
-**완성도: 90%** | **Phase: 1 (MVP)** | **Status: Active Development**
+### Human-in-the-Loop (HITL)
+- **3단계 자동화 레벨**: Pilot (자동화) / Copilot (승인 필요) / Advisor (정보만 제공)
+- 매매 실행, 포트폴리오 변경, 리밸런싱 등 중요한 결정은 사용자가 승인
+- 투자 과정의 투명성과 통제감 보장
 
----
+### 멀티 에이전트 시스템
+- **Master Agent (Supervisor)**: LLM 기반 동적 라우팅으로 사용자 의도 분석
+- **Research Agent**: 종목 심층 분석 (펀더멘털, 기술적, 거시경제)
+- **Quantitative Agent**: 정량적 전략 수립 및 매매 신호 생성
+- **Direct Tools**: 실시간 시세, 포트폴리오 최적화, 리스크 계산
 
-## 📋 목차
+## 🚀 주요 기능
 
-- [프로젝트 개요](#-프로젝트-개요)
-- [핵심 기능](#-핵심-기능)
-- [아키텍처](#-아키텍처)
-- [기술 스택](#-기술-스택)
-- [빠른 시작](#-빠른-시작)
-- [API 문서](#-api-문서)
-- [프로젝트 구조](#-프로젝트-구조)
-- [테스트](#-테스트)
-- [문서](#-문서)
-- [로드맵](#-로드맵)
+### 1. 지능형 종목 분석
+- **펀더멘털 분석**: DART API 연동으로 재무제표, 공시 정보 자동 수집
+- **기술적 분석**: RSI, MACD, Bollinger Bands 등 15+ 지표 자동 계산
+- **거시경제 분석**: 한국은행 API 연동으로 금리, 환율, GDP 데이터 활용
+- **뉴스 분석**: 네이버 금융 뉴스 크롤링 및 컨텍스트 제공
 
----
+### 2. 포트폴리오 관리
+- **시뮬레이션**: 매매 전/후 포트폴리오 변화 미리보기
+- **리스크 계산**: VaR, 변동성, Sharpe Ratio 자동 계산
+- **포트폴리오 최적화**: 현대 포트폴리오 이론(MPT) 기반 자산 배분
+- **리밸런싱**: 목표 비중 대비 자동 조정 제안
 
-## 🎯 프로젝트 개요
+### 3. 실시간 데이터 연동
+- **pykrx**: 주가, 거래량, 종목 리스트
+- **DART API**: 재무제표, 공시, 기업 정보
+- **한국은행 API**: 금리, 거시경제 지표
+- **한국투자증권 API**: 실시간 시세 조회 (Phase 2: 실제 매매)
 
-**HAMA**는 개인 투자자를 위한 **LangGraph 기반 멀티 에이전트 AI 투자 시스템**입니다.
+### 4. 대화형 인터페이스
+- **Chat API**: 자연어 기반 투자 상담 및 명령 실행
+- **SSE 스트리밍**: 에이전트 실행 과정 실시간 확인
+- **승인 관리**: 중요 결정에 대한 승인/거부/수정 처리
 
-### 핵심 가설
-> **투자자는 귀찮은 정보 분석은 하기 싫어하지만, 종목 선택과 매매 실행은 직접 하고 싶어한다.**
+## 📐 시스템 아키텍처
 
-### Vision
-- 🤖 **AI가 분석**: 종목 리서치, 재무 분석, 시장 전망
-- 👤 **당신이 결정**: 매매 실행, 포트폴리오 구성
-- ⚖️ **유연한 자동화**: 3단계 자동화 레벨 (Pilot / Copilot / Advisor)
-
----
-
-## ✨ 핵심 기능
-
-### 1. **멀티 에이전트 AI 시스템** (LangGraph Supervisor 패턴)
-
-```
-마스터 에이전트 (Supervisor)
-        ↓
-┌───────┼───────┬───────┬───────┬───────┐
-↓       ↓       ↓       ↓       ↓       ↓
-Research Strategy Risk  Trading Portfolio General
-```
-
-**6개 서브그래프 에이전트:**
-- 🔍 **Research**: 종목 분석 (재무, 기술적 지표, 뉴스 감정)
-- 📈 **Strategy**: 투자 전략 (시장 사이클, 섹터 로테이션, 자산 배분)
-- ⚠️ **Risk**: 리스크 평가 (VaR, 집중도, 경고 생성)
-- 💰 **Trading**: 매매 실행 (주문 생성, HITL 승인, 실행)
-- 📊 **Portfolio**: 포트폴리오 관리 (최적화, 리밸런싱)
-- 💬 **General**: 일반 질의응답 (투자 용어, 시장 교육)
-
-### 2. **HITL (Human-in-the-Loop)** 🔔
-
-중요한 결정은 사용자 승인 필요:
-- ✅ 매매 실행
-- ✅ 포트폴리오 리밸런싱
-- ✅ 고위험 거래
-
-**3단계 자동화 레벨:**
-```
-Level 1 (Pilot)   → 거의 자동 실행
-Level 2 (Copilot) → 매매/리밸런싱 승인 필요 ⭐ (기본값)
-Level 3 (Advisor) → 모든 결정 승인 필요
-```
-
-### 3. **실제 데이터 연동** 📡
-
-| 데이터 소스 | 상태 | 제공 데이터 |
-|------------|------|------------|
-| **pykrx** | ✅ 연동 완료 | 주가, 거래량, 종목 리스트 |
-| **한국투자증권 API** | ✅ 연동 완료 | 실시간 시세, 차트, 호가 |
-| **DART API** | ✅ 연동 완료 | 재무제표, 공시, 기업 정보 |
-| **한국은행 API** | ✅ 연동 완료 | 금리, 거시경제 지표 |
-| **네이버 금융** | ⏸️ Phase 2 | 뉴스 크롤링 |
-
-### 4. **RESTful API** (FastAPI)
-
-**Chat & HITL:**
-- `POST /api/v1/chat/` - 대화형 인터페이스
-- `POST /api/v1/chat/approve` - HITL 승인/거부
-- `GET /api/v1/chat/history/{id}` - 대화 이력 조회
-- `POST /api/v1/multi-agent-stream/` - 스트리밍 응답
-
-**Settings & Automation:**
-- `GET /api/v1/settings/automation-level` - 자동화 레벨 조회
-- `PUT /api/v1/settings/automation-level` - 자동화 레벨 업데이트
-- `GET /api/v1/settings/automation-levels` - 사용 가능한 프리셋 목록
-
-**Portfolio & Trading:**
-- `GET /api/v1/portfolio/{user_id}` - 포트폴리오 조회
-- `POST /api/v1/approvals/` - 승인 요청 처리
-
-**Stock & Market Data:**
-- `GET /api/v1/stocks/{stock_code}` - 종목 정보
-- `GET /api/v1/dashboard/` - 대시보드 데이터
-
----
-
-## 🏗️ 아키텍처
-
-### **LangGraph Supervisor 패턴**
-
-```python
-# Master Agent (Supervisor)
-supervisor = create_supervisor(
-    agents=[research_agent, strategy_agent, risk_agent, ...],
-    model=ChatAnthropic(model="claude-3-5-sonnet"),
-    parallel_tool_calls=True  # 에이전트 선택 시 병렬 가능
-    # 실제 실행은 의존성에 따라 순차적으로 조율
-)
-
-# HITL Interrupt 메커니즘
-if state.next:  # Interrupt 발생
-    return {
-        "requires_approval": True,
-        "approval_request": {
-            "thread_id": conversation_id,
-            "interrupt_data": {...}
-        }
-    }
-```
-
-### **데이터 플로우**
+### LangGraph Supervisor 패턴
 
 ```
-사용자 질의 → Master Agent → 의도 분석 (LLM)
-                    ↓
-        적절한 에이전트 선택 (동적 라우팅)
-                    ↓
-              Research Agent
-        (내부 노드: Bull/Bear 병렬 분석)
-                    ↓
-             Strategy Agent
-      (내부 노드: 시장/섹터/자산배분 순차)
-                    ↓
-               Risk Agent
-       (내부 노드: 집중도/시장리스크 순차)
-                    ↓
-            결과 통합 → HITL 체크
-                    ↓
-        승인 필요? → Interrupt 발생
-                    ↓
-        사용자 승인 → 거래 실행
-
-⚠️ 에이전트 간: 순차 실행 (의존성)
-✅ 에이전트 내부 노드: 병렬 실행 가능
+                    사용자 (Chat Interface)
+                            ↕
+        ┌─────────────────────────────────────────┐
+        │    Master Agent (Supervisor)            │
+        │  - LLM 기반 동적 라우팅                  │
+        │  - 의존성 기반 순차/병렬 조율             │
+        │  - HITL 승인 관리                        │
+        └─────────────────────────────────────────┘
+                            ↓
+    ┌───────────────────────┼───────────────────────┐
+    ↓                       ↓                       ↓
+┌─────────┐         ┌──────────────┐        ┌─────────────┐
+│Research │         │Quantitative  │        │Direct Tools │
+│SubGraph │         │SubGraph      │        │(10개)       │
+├─────────┤         ├──────────────┤        ├─────────────┤
+│• Planner│         │• Market Cycle│        │• KIS API    │
+│• 6 Workers        │• Asset Alloc │        │• Risk Calc  │
+│  (병렬)  │         │• Fund/Tech   │        │• Portfolio  │
+│• Synthesis│       │• Buy/Sell    │        │  Optimizer  │
+└─────────┘         └──────────────┘        │• Trading    │
+                                             └─────────────┘
 ```
 
----
+### 핵심 개념
+
+#### SubGraph (서브그래프)
+각 에이전트는 독립적인 LangGraph로 구현되어 복잡한 태스크를 병렬 처리합니다.
+
+**Research SubGraph** (`src/subgraphs/research_subgraph/`)
+- Planner: 사용자 선호도 기반 분석 계획 수립 (HITL Interrupt 지원)
+- 6개 Worker 병렬 실행:
+  - Data Worker: 재무제표, 기업정보
+  - Technical Analyst: 기술적 지표 분석
+  - Trading Flow Analyst: 기관/외국인/개인 순매수
+  - Macro Worker: 거시경제 분석
+  - Bull/Bear Worker: 강세/약세 시나리오
+- Synthesis: 모든 분석 결과 통합
+
+**Quantitative SubGraph** (`src/subgraphs/quantitative_subgraph/`)
+- 거시 분석 → 섹터 배분 → 자산 배분
+- 데이터 수집 → 펀더멘털/기술적 분석
+- 매수/매도 신호 → 위험-수익 분석 → 전략 합성
+
+#### Direct Tools (10개)
+Supervisor가 직접 호출할 수 있는 도구들 (`src/subgraphs/tools/`)
+- `get_current_price()`: 실시간 주가 조회
+- `resolve_ticker()`: 종목명 → 코드 변환
+- `calculate_portfolio_risk()`: VaR, 변동성 계산
+- `optimize_portfolio()`: MPT 기반 최적화
+- `rebalance_portfolio()`: 리밸런싱 계획 생성
+- `generate_investment_report()`: 분석 보고서 생성
+- `request_trade()`: 매매 주문 (HITL)
 
 ## 🛠️ 기술 스택
 
-### **Backend**
-- **FastAPI** 0.104+ - 고성능 비동기 웹 프레임워크
-- **Python** 3.12
-- **PostgreSQL** - 관계형 데이터베이스 (19개 테이블)
+### 백엔드
+- **Framework**: FastAPI 0.120.0
+- **LangGraph**: 1.0.2 (Supervisor 패턴, SubGraph)
+- **LangChain**: 1.0.7 (OpenAI, Anthropic, Google LLM 통합)
+- **Database**: PostgreSQL (SQLAlchemy 2.0.44, 동기식)
+- **Checkpointer**: LangGraph PostgreSQL Checkpointer
 
-### **AI Framework**
-- **LangGraph** 0.2+ - 에이전트 오케스트레이션
-- **LangChain** - LLM 통합
-- **Anthropic Claude** 3.5 Sonnet - 메인 LLM
-- **Supervisor 패턴** - 멀티 에이전트 조율
+### 데이터 소스
+- **pykrx**: 주가, 거래량, 종목 리스트
+- **DART API**: 재무제표, 공시
+- **한국은행 API**: 금리, 거시경제 지표
+- **한국투자증권 API**: 실시간 시세 (Phase 2: 매매)
+- **네이버 금융**: 뉴스 크롤링
 
-### **Data Sources**
-- **pykrx** - KRX 시장 데이터
-- **한국투자증권 API** - 실시간 시세, 차트, 호가
-- **DART Open API** - 금융감독원 공시 시스템
-- **한국은행 API** - 금리, 거시경제 지표
+### AI/ML
+- **LLM**: Claude (Haiku/Sonnet), GPT-4o-mini, Gemini
+- **기술지표**: pandas-ta, numpy
+- **포트폴리오 최적화**: scipy (MPT)
 
-### **DevOps**
-- **Docker & Docker Compose** ✅ - 컨테이너화
-- **Railway** ✅ - 클라우드 배포 (자동 CI/CD)
-- **pytest** - 테스트 프레임워크
-- **Git** - 버전 관리
+## 📦 시작하기
 
----
+### 필수 요구사항
+- Python 3.11+
+- PostgreSQL 14+
+- uv (권장) 또는 pip
 
-## 🚀 빠른 시작
+### 설치
 
-두 가지 방법으로 실행할 수 있습니다:
-- **Option A: Docker Compose** ⭐ (추천 - 5분 설정)
-- **Option B: 로컬 설치** (개발자용)
-
-### **Option A: Docker Compose로 실행** ⭐
-
-**장점:**
-- ✅ 한 번에 모든 서비스 실행 (PostgreSQL, FastAPI)
-- ✅ 환경 격리
-- ✅ 팀원 온보딩 간편
-
-**1. 사전 요구사항**
-- Docker Desktop 설치 (https://www.docker.com/products/docker-desktop)
-- API 키 (Anthropic, DART 등)
-
-**2. 환경 변수 설정**
+1. **저장소 클론**
 ```bash
-# .env 파일 생성
-cp .env.example .env
-
-# .env 파일 편집 (API 키 입력)
-# ANTHROPIC_API_KEY=your-key
-# DART_API_KEY=your-key
-# ...
-```
-
-**3. Docker Compose 실행**
-```bash
-# 모든 서비스 시작 (백그라운드)
-docker-compose up -d
-
-# 로그 확인
-docker-compose logs -f fastapi
-
-# 서비스 상태 확인
-docker-compose ps
-```
-
-**4. 접속**
-- FastAPI: http://localhost:8000
-- Swagger 문서: http://localhost:8000/docs
-- PostgreSQL: localhost:5432
-
-**5. 중지/재시작**
-```bash
-# 중지
-docker-compose down
-
-# 재시작
-docker-compose restart
-
-# 전체 삭제 (데이터 포함)
-docker-compose down -v
-```
-
----
-
-### **Option B: 로컬 설치**
-
-**사전 요구사항**
-- Python 3.12+
-- PostgreSQL 13+
-- API 키:
-  - Anthropic API Key
-  - DART API Key (선택)
-
-### **2. 설치**
-
-```bash
-# 저장소 클론
 git clone https://github.com/your-org/HAMA-backend.git
 cd HAMA-backend
+```
 
-# 가상환경 생성
-python -m venv .venv
+2. **가상환경 설정**
+```bash
+# uv 사용 (권장)
+uv venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-# 의존성 설치
+# 또는 venv
+python -m venv .venv
+source .venv/bin/activate
+```
+
+3. **의존성 설치**
+```bash
+uv pip install -r requirements.txt
+# 또는
 pip install -r requirements.txt
 ```
 
-### **3. 환경 변수 설정**
-
+4. **환경 변수 설정**
 ```bash
-# .env 파일 생성
 cp .env.example .env
 ```
 
-**.env 파일 내용:**
+`.env` 파일 편집:
 ```bash
-# LLM API Keys
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-OPENAI_API_KEY=your_openai_key_here  # 선택
-
 # Database
-DATABASE_URL=postgresql://user:password@localhost:5432/hama_db
+DATABASE_URL=postgresql://user:password@localhost:5432/hama
 
-# DART API (선택)
-DART_API_KEY=your_dart_api_key_here
+# LLM (최소 하나 필수)
+ANTHROPIC_API_KEY=your_anthropic_key
+OPENAI_API_KEY=your_openai_key
+GOOGLE_API_KEY=your_google_key
 
+# External APIs
+DART_API_KEY=your_dart_key  # https://opendart.fss.or.kr/
+BOK_API_KEY=your_bok_key    # https://ecos.bok.or.kr/
+
+# KIS (Phase 2, 선택)
+KIS_APP_KEY=your_kis_key
+KIS_APP_SECRET=your_kis_secret
+KIS_ACCOUNT_NUMBER=your_account
+
+# App Settings
+LLM_MODE=anthropic  # openai, anthropic, google
+ENV=development
+DEBUG=True
 ```
 
-### **4. 데이터베이스 설정**
-
+5. **데이터베이스 마이그레이션**
 ```bash
 # PostgreSQL 데이터베이스 생성
-createdb hama_db
+createdb hama
 
-# Alembic 마이그레이션 (채팅 히스토리 테이블 포함)
+# Alembic 마이그레이션 실행
 alembic upgrade head
 ```
 
-### **5. 서버 실행**
-
+6. **서버 실행**
 ```bash
-# 개발 서버 (Hot Reload)
-python -m uvicorn src.main:app --reload
-
-# 또는
-python -m src.main
+uvicorn src.main:app --reload --port 8000
 ```
 
-**서버 주소:**
-- API: http://localhost:8000
-- Swagger 문서: http://localhost:8000/docs
+### API 문서 확인
+- Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
-### **6. API 테스트**
+## 🔌 API 엔드포인트
 
+### Chat API (`/api/v1/chat`)
 ```bash
-# 간단한 질문
-curl -X POST http://localhost:8000/api/v1/chat/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "삼성전자 주가는 얼마야?",
-    "intervention_required": false
-  }'
-
-# 매매 요청 (HITL 발생)
-curl -X POST http://localhost:8000/api/v1/chat/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "삼성전자 10주 매수해줘",
-    "intervention_required": false
-  }'
-```
-
-### **7. 채팅 히스토리 & 테스트 모드**
-
-- 채팅 세션과 메시지는 `chat_sessions`, `chat_messages` 테이블에 저장됩니다. 최초 설정 시 `alembic upgrade head` 명령으로 테이블을 생성하세요.
-- `.env`에서 `ENV=test`로 설정하거나 `ANTHROPIC_API_KEY`를 비워 두면 LangGraph가 외부 LLM 대신 모의 응답/승인 플로우를 반환해 안전하게 테스트할 수 있습니다.
-
----
-
-## 📡 API 문서
-
-### **주요 엔드포인트**
-
-#### **POST `/api/v1/chat/`** - 대화 처리
-
-**Request:**
-```json
+# 메시지 전송 (에이전트 실행)
+POST /api/v1/chat/
 {
-  "message": "삼성전자 10주 매수해줘",
-  "conversation_id": "optional-thread-id",
-  "intervention_required": false
+  "user_id": "user-uuid",
+  "conversation_id": "conv-uuid",  # 선택
+  "message": "삼성전자 분석해줘"
 }
-```
 
-**Response (HITL 발생):**
-```json
+# 승인 처리 (HITL)
+POST /api/v1/chat/approve
 {
-  "message": "🔔 사용자 승인이 필요합니다.",
-  "conversation_id": "abc123-def456",
-  "requires_approval": true,
-  "approval_request": {
-    "type": "trade_approval",
-    "thread_id": "abc123-def456",
-    "interrupt_data": {
-      "order_id": "ORDER_a1b2c3d4",
-      "stock_code": "005930",
-      "quantity": 10,
-      "order_type": "buy"
-    }
-  }
+  "conversation_id": "conv-uuid",
+  "user_decision": "approved",  # approved/rejected/modified
+  "modifications": {}  # 수정사항 (선택)
 }
+
+# SSE 스트리밍
+POST /api/v1/chat/multi-stream
 ```
 
-#### **POST `/api/v1/chat/approve`** - 승인/거부
-
-**Request:**
-```json
-{
-  "thread_id": "abc123-def456",
-  "decision": "approved",  // "approved" | "rejected" | "modified"
-  "intervention_required": false,
-  "user_notes": "좋은 타이밍"
-}
-```
-
-**Response:**
-```json
-{
-  "status": "approved",
-  "message": "승인 완료 - 매매가 실행되었습니다.",
-  "result": {
-    "order_id": "ORDER_a1b2c3d4",
-    "status": "executed",
-    "total": 890000
-  }
-}
-```
-
-#### **GET `/api/v1/chat/history/{conversation_id}`** - 대화 히스토리 조회
-
+### Portfolio API (`/api/v1/portfolio`)
 ```bash
-curl http://localhost:8000/api/v1/chat/history/abc123-def456
+# 포트폴리오 조회
+GET /api/v1/portfolio/?user_id=user-uuid
+
+# 성과 지표
+GET /api/v1/portfolio/{portfolio_id}/performance
+
+# 리밸런싱
+POST /api/v1/portfolio/{portfolio_id}/rebalance
 ```
 
-```json
+### Stocks API (`/api/v1/stocks`)
+```bash
+# 종목 검색
+GET /api/v1/stocks/search?query=삼성
+
+# 종목 상세
+GET /api/v1/stocks/{stock_code}
+```
+
+### Settings API (`/api/v1/settings`)
+```bash
+# 자동화 레벨 조회
+GET /api/v1/settings/intervention?user_id=user-uuid
+
+# 자동화 레벨 변경
+PUT /api/v1/settings/intervention
 {
-  "conversation_id": "abc123-def456",
-  "intervention_required": false,
-  "messages": [
-    {"role": "user", "content": "삼성전자 10주 매수해줘"},
-    {"role": "assistant", "content": "🔔 사용자 승인이 필요합니다."}
-  ]
+  "user_id": "user-uuid",
+  "automation_level": 2,  # 1:Pilot, 2:Copilot, 3:Advisor
+  "required_approvals": ["trade", "portfolio"]
 }
 ```
 
-#### **DELETE `/api/v1/chat/history/{conversation_id}`** - 히스토리 삭제
-
-```bash
-curl -X DELETE http://localhost:8000/api/v1/chat/history/abc123-def456
-```
-
-### **자세한 문서**
-
-- 📄 [프론트엔드 통합 가이드](docs/frontend/frontend-integration-guide.md) - React 예시 포함
-- 📄 [API 빠른 참조](docs/api-quick-reference.md)
-- 🌐 [OpenAPI Swagger](http://localhost:8000/docs)
-
----
-
-## 🗂️ 데이터 구조 하이라이트
-
-- `chat_sessions`: 사용자, 자동화 레벨, 요약 정보 등을 포함한 채팅 세션 메타데이터
-- `chat_messages`: 세션별 사용자/에이전트 메시지 기록
-- `portfolios`, `positions`, `orders`, `transactions`: 투자 계정 및 체결 내역
-- `stocks`, `financial_statements`, `disclosures`: 종목/재무/공시 정보 캐시
-
----
-
-## 📂 프로젝트 구조
-
-```
-HAMA-backend/
-├── src/
-│   ├── agents/              # LangGraph 에이전트
-│   │   ├── research/        ✅ 서브그래프 (종목 분석)
-│   │   ├── strategy/        ✅ 서브그래프 (투자 전략)
-│   │   ├── risk/            ✅ 서브그래프 (리스크 평가)
-│   │   ├── trading/         ✅ 서브그래프 (매매 실행)
-│   │   ├── portfolio/       ✅ 서브그래프 (포트폴리오)
-│   │   ├── general/         ✅ 서브그래프 (일반 QA)
-│   │   ├── router/          ✅ 라우터 에이전트
-│   │   └── graph_master.py  ✅ Supervisor (마스터 에이전트)
-│   ├── api/
-│   │   └── routes/
-│   │       ├── chat.py              ✅ 대화 API + HITL
-│   │       ├── approvals.py         ✅ 승인 요청 처리
-│   │       ├── settings.py          ✅ 자동화 레벨 설정
-│   │       ├── portfolio.py         ✅ 포트폴리오 관리
-│   │       ├── multi_agent_stream.py ✅ 스트리밍
-│   │       ├── onboarding.py        ✅ 온보딩
-│   │       ├── stocks.py            ✅ 종목 정보
-│   │       └── dashboard.py         ✅ 대시보드
-│   ├── services/            # 데이터 서비스
-│   │   ├── stock_data_service.py     ✅ pykrx
-│   │   ├── kis_service.py            ✅ 한국투자증권 API
-│   │   ├── dart_service.py           ✅ DART API
-│   │   ├── bok_service.py            ✅ 한국은행 API
-│   │   ├── portfolio_optimizer.py    ✅ 포트폴리오 최적화
-│   │   ├── portfolio_service.py      ✅ 포트폴리오 관리
-│   │   ├── approval_service.py       ✅ 승인 처리
-│   │   ├── user_profile_service.py   ✅ 사용자 프로필
-│   │   └── ...                       ✅ 15+ 서비스
-│   ├── models/              # SQLAlchemy 모델
-│   │   ├── user_settings.py ✅ HITL 설정
-│   │   ├── agent.py         ✅ ApprovalRequest 등
-│   │   └── ...              ✅ 10+ 모델
-│   ├── repositories/        # Repository 패턴
-│   │   └── user_settings_repository.py ✅
-│   ├── schemas/             # Pydantic 스키마
-│   │   ├── hitl_config.py   ✅ HITL 설정 스키마
-│   │   ├── settings.py      ✅ Settings API 스키마
-│   │   └── ...              ✅ 20+ 스키마
-│   ├── utils/               # 유틸리티
-│   │   ├── stock_name_extractor.py ✅ GPT-5 종목명 추출
-│   │   └── ...
-│   ├── config/              # 설정
-│   └── main.py              # FastAPI 앱
-├── tests/
-│   ├── test_services/       ✅ 서비스 레이어 테스트
-│   └── test_general_agent_json.py ✅ Agent 테스트
-├── docs/
-│   ├── PRD.md               # 제품 요구사항
-│   ├── schema.md            # DB 스키마
-│   ├── frontend-integration-guide.md  ✅ 프론트엔드 가이드
-│   ├── api-quick-reference.md         ✅ API 빠른 참조
-│   └── plan/
-│       ├── legacy-agent-migration.md  # 마이그레이션 계획
-│       └── completed/       # 완료된 문서
-├── .env.example
-├── requirements.txt
-├── pytest.ini
-└── README.md
-```
-
----
+전체 엔드포인트: [API 문서](http://localhost:8000/docs)
 
 ## 🧪 테스트
 
-### **테스트 실행**
+### 테스트 실행
 
 ```bash
 # 전체 테스트
 pytest
 
-# E2E 테스트
-pytest tests/test_agents/test_end_to_end.py -v
+# 특정 카테고리
+pytest -m unit          # 단위 테스트
+pytest -m integration   # 통합 테스트
+pytest -m e2e           # E2E 테스트
 
-# 특정 테스트
-pytest tests/test_agents/test_end_to_end.py::TestEndToEndIntegration::test_full_investment_workflow -v
-
-# 데이터 연동 테스트
-python tests/test_research_data_collection.py
+# 커버리지
+pytest --cov=src --cov-report=html
 ```
 
-### **테스트 커버리지**
+### 테스트 구조
+```
+tests/
+├── conftest.py                          # 123개 Fixtures
+├── test_graph_build.py                  # Supervisor 그래프
+├── test_llm_configuration.py            # LLM 설정
+├── test_kis_index.py                    # KIS API
+├── test_trading_hitl_flow.py            # HITL 플로우
+├── test_services/
+│   └── test_trading_execution.py        # 거래 실행
+└── unit/test_services/
+    └── test_news_crawler_service.py     # 뉴스 크롤러
+```
 
-| 테스트 카테고리 | 상태 | 비고 |
-|---------------|------|------|
-| End-to-End | ✅ 6/6 통과 | 전체 투자 워크플로우 |
-| Research Agent | ✅ 3/3 통과 | 실제 데이터 연동 검증 |
-| API + HITL | ✅ 작성 완료 | chat, approve 엔드포인트 |
-| Unit Tests | 🔄 진행 중 | 개별 노드 테스트 |
+## 📁 프로젝트 구조
 
----
+```
+HAMA-backend/
+├── src/
+│   ├── main.py                          # FastAPI 앱 진입점
+│   ├── langgraph_studio_entry.py        # LangGraph Studio 진입점
+│   ├── subgraphs/                       # ⭐ LangGraph 핵심
+│   │   ├── graph_master.py              # Supervisor 그래프
+│   │   ├── research_subgraph/           # Research Agent
+│   │   ├── quantitative_subgraph/       # Quantitative Agent
+│   │   └── tools/                       # Direct Tools (10개)
+│   ├── api/                             # FastAPI 라우터
+│   │   ├── routes/                      # 11개 엔드포인트
+│   │   └── middleware/                  # 로깅, 에러 핸들러
+│   ├── services/                        # 비즈니스 로직 (19개)
+│   ├── models/                          # SQLAlchemy 모델 (11개)
+│   ├── schemas/                         # Pydantic 스키마 (10개)
+│   ├── repositories/                    # 데이터 접근 계층 (8개)
+│   ├── prompts/                         # LLM 프롬프트 (8 카테고리)
+│   ├── utils/                           # 유틸리티 (9개)
+│   ├── config/                          # 설정 파일
+│   └── constants/                       # 상수 정의
+├── tests/                               # 테스트 (11개)
+├── docs/                                # 문서
+│   ├── PRD.md                           # 제품 요구사항
+│   ├── schema.md                        # 데이터베이스 스키마
+│   └── guides/                          # 개발 가이드
+│       ├── langgraph-patterns.md        # LangGraph 패턴
+│       ├── clean-architecture.md        # 클린 아키텍처
+│       ├── database-guide.md            # 데이터베이스
+│       └── testing-guide.md             # 테스트
+├── alembic/                             # DB 마이그레이션
+├── requirements.txt                     # 의존성
+├── pyproject.toml                       # 프로젝트 설정
+├── pytest.ini                           # Pytest 설정
+├── langgraph.json                       # LangGraph Studio 설정
+├── CLAUDE.md                            # 개발 가이드 (AI용)
+└── README.md                            # 이 파일
+```
 
-## 📚 문서
+## 🎓 개발 가이드
 
-### **핵심 문서**
+### 핵심 원칙
 
-| 문서 | 설명 |
-|------|------|
-| [PRD.md](docs/PRD.md) | 제품 요구사항 정의 |
-| [schema.md](docs/schema.md) | 데이터베이스 스키마 (19개 테이블) |
-| [frontend-integration-guide.md](docs/frontend/frontend-integration-guide.md) | 프론트엔드 통합 가이드 ⭐ |
-| [api-quick-reference.md](docs/api-quick-reference.md) | API 빠른 참조 |
-| [CLAUDE.md](CLAUDE.md) | 개발 가이드라인 |
+1. **State-First 설계** (LangGraph 표준)
+   - 모든 노드는 State를 받아서 State를 반환
+   - 부작용(DB 쓰기, API 호출)은 Interrupt 전에 실행 금지
 
-### **계획 문서**
+2. **Interrupt 재실행 안전 패턴**
+   ```python
+   # ✅ 올바른 예
+   if state.get("action_prepared") and not state.get("action_executed"):
+       # Interrupt 후 재진입 시 건너뛰기
+       return state
 
-| 문서 | 설명 |
-|------|------|
-| [legacy-agent-migration.md](docs/plan/legacy-agent-migration.md) | Legacy 마이그레이션 계획 |
-| [next-steps.md](docs/plan/next-steps.md) | Phase 2 계획 |
+   # 부작용 코드 실행
+   db.execute(...)
+   state["action_executed"] = True
+   ```
 
----
+3. **동기식 SQLAlchemy**
+   ```python
+   # ✅ 올바른 예
+   from sqlalchemy.orm import Session
+   from src.models.database import get_db
 
-## 🗺️ 로드맵
+   @router.post("/api/endpoint")
+   async def endpoint(db: Session = Depends(get_db)):
+       user = db.query(User).filter(User.id == user_id).first()
 
-### **Phase 1 (현재) - MVP 완성** 🔵 90% 완료
+   # ❌ 금지
+   from sqlalchemy.ext.asyncio import AsyncSession  # 사용 금지
+   ```
 
-- [x] LangGraph Supervisor 패턴 아키텍처
-- [x] 6개 서브그래프 에이전트 구현
-- [x] HITL (Human-in-the-Loop) 시스템
-  - [x] HITLConfig 스키마 (3단계 프리셋)
-  - [x] UserSettings 모델 및 Repository
-  - [x] Settings API (자동화 레벨 관리)
-  - [x] ApprovalRequest DB 저장
-- [x] 실제 데이터 연동
-  - [x] pykrx (주가, 거래량)
-  - [x] 한국투자증권 API (실시간 시세)
-  - [x] DART API (재무제표, 공시)
-  - [x] 한국은행 API (금리, 경제지표)
-- [x] 종목명 추출 개선 (GPT-5 기반)
-- [x] 15+ 서비스 레이어 구현
-- [x] 프론트엔드 통합 가이드
-- [ ] 테스트 커버리지 확대
-- [ ] API 인증/권한 시스템
-- [ ] 프론트엔드 개발
+4. **의존성 방향**: API → Services → Repositories → Models
 
-### **Phase 2 - 확장 기능** 🔵 예정
+### 문서 참조
+- [LangGraph 패턴 가이드](./docs/guides/langgraph-patterns.md)
+- [데이터베이스 가이드](./docs/guides/database-guide.md)
+- [테스트 작성 가이드](./docs/guides/testing-guide.md)
+- [클린 아키텍처](./docs/guides/clean-architecture.md)
 
-- [ ] 실제 매매 주문 실행
-- [ ] WebSocket 실시간 알림
-- [ ] 뉴스 크롤링 (네이버 금융)
-- [ ] 사용자 인증 시스템 (JWT)
-- [ ] 포트폴리오 백테스팅
-- [ ] 자동화 레벨 커스터마이징 (세부 조정)
-- [ ] Bull/Bear 토론 시각화
+### 브랜치 전략
+- `main`: 안정 버전
+- `develop`: 개발 버전
+- `feature/*`: 기능 개발
+- `refactor/*`: 리팩토링
+- `fix/*`: 버그 수정
 
-### **Phase 3 - 확장** ⚪ 계획 중
+### 커밋 메시지
+```
+Feat: Research Agent 기술적 분석 강화
+Fix: 포트폴리오 계산 오류 수정
+Refactor: KIS API 서비스 레이어 분리
+Docs: LangGraph 패턴 가이드 업데이트
+Test: HITL 플로우 E2E 테스트 추가
+```
 
-- [ ] 해외 주식 지원
-- [ ] 모바일 앱
-- [ ] 자동 리밸런싱 스케줄러
-- [ ] 성과 분석 대시보드
-- [ ] 커뮤니티 기능
+## 📊 현재 개발 상태
 
----
+### Phase 1 (MVP) - 92% 완성
 
-## 📊 완성도
+#### ✅ 완료
+- LangGraph Supervisor 패턴 아키텍처
+- Research & Quantitative SubGraphs
+- HITL 시스템 (3단계 자동화 레벨)
+- pykrx, DART, BOK API 연동
+- 포트폴리오 시뮬레이션
+- Chat API (SSE 스트리밍)
+- 테스트 기본 구조
 
-| 컴포넌트 | 완성도 | 비고 |
-|---------|--------|------|
-| Backend Core | 🟢 95% | FastAPI + LangGraph |
-| Agents | 🟢 90% | 6개 서브그래프 + Router |
-| HITL System | 🟢 95% | HITLConfig + Settings API |
-| Data Integration | 🟢 95% | pykrx + KIS + DART + BOK |
-| API Endpoints | 🟢 95% | 9개 라우트 완성 |
-| Services | 🟢 90% | 15+ 서비스 레이어 |
-| Documentation | 🟢 90% | 프론트엔드 가이드 완성 |
-| Testing | 🟡 70% | 테스트 커버리지 확대 중 |
-| Frontend | 🔴 0% | 개발 대기 중 |
-| Deployment | 🟢 90% | Docker + Railway |
+#### ⏳ Phase 2 예정
+- 사용자 인증 (JWT)
+- WebSocket 실시간 알림
+- 사전 구성 스케쥴링을 통한 자동매매
+- AWS/Docker 배포
 
-**전체: 90%** 🎯
+## 📄 라이선스
 
----
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🚢 배포 (Railway)
+## 📞 문의
 
-### **프로덕션 배포**
-
-Railway로 손쉽게 배포할 수 있습니다 (무료 티어 제공).
-
-**1단계: Railway 회원가입**
-- https://railway.app
-- GitHub 계정으로 로그인
-
-**2단계: 프로젝트 생성**
-- "New Project" → "Deploy from GitHub repo"
-- `HAMA-backend` 저장소 선택
-
-**3단계: 서비스 추가**
-- PostgreSQL 데이터베이스 추가
-- FastAPI 서비스 배포
-
-**4단계: 환경 변수 설정**
-- Railway 대시보드에서 API 키 등록
-- `${{Postgres.DATABASE_URL}}` 형식으로 자동 연결
-
-**5단계: 배포 완료!**
-- 고정 URL: `https://hama-backend-production.up.railway.app`
-- HTTPS 자동 적용
-- GitHub Push → 자동 재배포
-
-**자세한 가이드:**
-📄 [Railway 배포 가이드](docs/deployment/railway-deployment.md)
-
----
-
-## 🤝 기여
-
-이 프로젝트는 캡스톤 프로젝트로 진행 중입니다.
-
----
-
-## 📝 라이선스
-
-MIT License
-
----
-
-## 👥 팀
-
-**HAMA Development Team**
-- Backend Architecture & AI Agents
-- LangGraph Integration
-- Data Pipeline
+프로젝트 링크: [https://github.com/your-org/HAMA-backend](https://github.com/your-org/HAMA-backend)
 
 ---
-
-## 📞 연락처
-
-- **이슈 트래커**: GitHub Issues
-- **문서**: `docs/` 디렉토리
-- **API 문서**: http://localhost:8000/docs
-
----
-
-**Built with ❤️ using LangGraph & FastAPI**
-
-Last Updated: 2025-11-01
+**Built by HAMA Team**
