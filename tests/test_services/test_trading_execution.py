@@ -83,7 +83,6 @@ class TestTradingExecution:
                     result = await trading_service.execute_order(
                         order_id=order_id,
                         execution_price=72000.0,
-                        automation_level=2
                     )
 
             # 검증
@@ -149,7 +148,6 @@ class TestTradingExecution:
                 await trading_service.execute_order(
                     order_id=order_id,
                     execution_price=72000.0,
-                    automation_level=2
                 )
 
             # 검증
@@ -230,7 +228,6 @@ class TestTradingExecution:
                     result = await trading_service.execute_order(
                         order_id=order_id,
                         execution_price=72000.0,
-                        automation_level=2
                     )
 
             # 검증

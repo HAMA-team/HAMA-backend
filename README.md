@@ -325,7 +325,7 @@ curl -X POST http://localhost:8000/api/v1/chat/ \
   -H "Content-Type: application/json" \
   -d '{
     "message": "삼성전자 주가는 얼마야?",
-    "automation_level": 2
+    "intervention_required": false
   }'
 
 # 매매 요청 (HITL 발생)
@@ -333,7 +333,7 @@ curl -X POST http://localhost:8000/api/v1/chat/ \
   -H "Content-Type: application/json" \
   -d '{
     "message": "삼성전자 10주 매수해줘",
-    "automation_level": 2
+    "intervention_required": false
   }'
 ```
 
@@ -355,7 +355,7 @@ curl -X POST http://localhost:8000/api/v1/chat/ \
 {
   "message": "삼성전자 10주 매수해줘",
   "conversation_id": "optional-thread-id",
-  "automation_level": 2
+  "intervention_required": false
 }
 ```
 
@@ -385,7 +385,7 @@ curl -X POST http://localhost:8000/api/v1/chat/ \
 {
   "thread_id": "abc123-def456",
   "decision": "approved",  // "approved" | "rejected" | "modified"
-  "automation_level": 2,
+  "intervention_required": false,
   "user_notes": "좋은 타이밍"
 }
 ```
@@ -412,7 +412,7 @@ curl http://localhost:8000/api/v1/chat/history/abc123-def456
 ```json
 {
   "conversation_id": "abc123-def456",
-  "automation_level": 2,
+  "intervention_required": false,
   "messages": [
     {"role": "user", "content": "삼성전자 10주 매수해줘"},
     {"role": "assistant", "content": "🔔 사용자 승인이 필요합니다."}

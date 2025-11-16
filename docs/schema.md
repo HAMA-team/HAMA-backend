@@ -29,8 +29,8 @@ class GraphState(TypedDict, total=False):
     conversation_id: str
     """대화 세션 ID"""
 
-    automation_level: int
-    """자동화 레벨 (1: Pilot, 2: Copilot, 3: Advisor)"""
+    intervention_required: int
+    """개입 필요 여부 (1: Pilot, 2: Copilot, 3: Advisor)"""
 
     user_profile: Optional[dict]
     """사용자 프로필 (투자 성향, 위험 허용도 등)"""
@@ -263,7 +263,7 @@ class TradingState(TypedDict, total=False):
     user_id: str
     portfolio_id: str
     query: str
-    automation_level: int
+    intervention_required: int
 
     # 주문 정보
     stock_code: str

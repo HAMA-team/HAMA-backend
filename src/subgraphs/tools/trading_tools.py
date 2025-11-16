@@ -5,9 +5,8 @@ Trading Tools - HITL 패턴 기반 매매 도구
 사용자 승인 후 매매를 실행합니다.
 """
 import logging
-from typing import Dict, Any, Annotated
 
-from langchain_core.tools import tool, InjectedState
+from langchain_core.tools import tool
 from pydantic.v1 import BaseModel, Field
 from langgraph_sdk.schema import Command
 
@@ -41,7 +40,6 @@ async def request_trade(
     action: str,
     quantity: int,
     price: int = 0,
-    state: Annotated[Dict, InjectedState] = None
 ) -> Command:
     """
     [언제] 사용자가 매매를 요청할 때 사용합니다. (HITL 패턴)
@@ -60,7 +58,7 @@ async def request_trade(
 
     ⚠️ 주의:
     - 기존 execute_trade tool과 달리 사용자 승인 단계가 추가됩니다
-    - automation_level=1 (Pilot)인 경우만 자동 승인됩니다
+    - intervention_required=False인 경우 매매만 HITL이 발생합니다
 
     Args:
         ticker: 종목 코드 (6자리, 예: '005930')

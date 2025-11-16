@@ -11,14 +11,6 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
 from src.models.database import Base
-from src.schemas.hitl_config import PRESET_COPILOT
-
-
-def _default_hitl_config() -> dict:
-    """
-    SQLAlchemy JSON 필드 기본값으로 사용할 사전.
-    """
-    return PRESET_COPILOT.model_dump()
 
 
 class UserSettings(Base):
@@ -27,7 +19,7 @@ class UserSettings(Base):
     __tablename__ = "user_settings"
 
     user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    hitl_config = Column(JSON, nullable=False, default=_default_hitl_config)
+    hitl_config = Column(JSON, nullable=False)
     created_at = Column(TIMESTAMP, server_default=func.now())
     updated_at = Column(
         TIMESTAMP,

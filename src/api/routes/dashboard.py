@@ -39,8 +39,8 @@ class AccountConnection(BaseModel):
 class AutomationSettings(BaseModel):
     """자동화 설정 정보"""
 
-    level: int
-    level_name: str
+    intervention_required: bool
+    description: str
     enabled: bool
 
 
@@ -112,13 +112,12 @@ def _percent(numerator: float, denominator: float) -> float:
     return (numerator / denominator) * 100.0
 
 
-def _automation_level_name(level: int) -> str:
-    mapping = {
-        1: "파일럿 모드",
-        2: "코파일럿 모드",
-        3: "어드바이저 모드",
-    }
-    return mapping.get(level, "코파일럿 모드")
+def _intervention_description(intervention_required: bool) -> str:
+    """intervention_required 설명 반환"""
+    if intervention_required:
+        return "모든 단계에서 승인 필요"
+    else:
+        return "매매 단계만 승인 필요"
 
 
 async def _recent_transactions(limit: int = 5) -> List[ActivityItem]:
@@ -202,10 +201,10 @@ async def get_dashboard():
         last_synced_at=market_data.get("last_updated"),
     )
 
-    automation_level = int(profile.get("automation_level") or 2)
+    intervention_required = bool(profile.get("intervention_required", False))
     automation_settings = AutomationSettings(
-        level=automation_level,
-        level_name=_automation_level_name(automation_level),
+        intervention_required=intervention_required,
+        description=_intervention_description(intervention_required),
         enabled=True,
     )
 

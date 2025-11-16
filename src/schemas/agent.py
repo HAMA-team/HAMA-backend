@@ -6,14 +6,14 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from decimal import Decimal
 
-from src.schemas.hitl_config import HITLConfig, PRESET_COPILOT
+from src.schemas.hitl_config import HITLConfig
 
 
 class AgentInput(BaseModel):
     """Base agent input schema"""
     request_id: str
     user_id: Optional[str] = None
-    hitl_config: HITLConfig = Field(default_factory=PRESET_COPILOT.model_copy)
+    hitl_config: HITLConfig = Field(default_factory=HITLConfig)
     context: Optional[Dict[str, Any]] = None
 
 

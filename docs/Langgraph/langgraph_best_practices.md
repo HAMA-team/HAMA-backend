@@ -10,7 +10,7 @@
 ### 1. 그래프 구조는 한 번만 컴파일
 - `StateGraph` 또는 `MessageGraph`는 애플리케이션 초기화 시 `.compile()`까지 완료하고 재사용한다.
 - 런타임 옵션은 `compiled_graph.with_config({"configurable": {...}})` 패턴으로 주입한다.
-- 여럿의 변형 그래프가 필요하면 `automation_level` 같은 핵심 파라미터별로 사전 캐시를 둔다.
+- 여럿의 변형 그래프가 필요하면 `intervention_required` 같은 핵심 파라미터별로 사전 캐시를 둔다.
 
 ```python
 from langgraph.graph import StateGraph

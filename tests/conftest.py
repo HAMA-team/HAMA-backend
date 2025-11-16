@@ -266,7 +266,7 @@ def create_test_chat_session(
     db_session,
     conversation_id: str = None,
     user_id: str = None,
-    automation_level: int = 2
+    intervention_required: bool = False
 ):
     """
     테스트용 채팅 세션을 DB에 생성합니다.
@@ -275,7 +275,7 @@ def create_test_chat_session(
         db_session: DB 세션
         conversation_id: 대화 ID
         user_id: 사용자 ID
-        automation_level: 자동화 레벨 (1-3)
+        intervention_required: 분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)
 
     Returns:
         생성된 ChatSession 객체
@@ -288,8 +288,7 @@ def create_test_chat_session(
     session = ChatSession(
         conversation_id=uuid.UUID(conversation_id),
         user_id=uuid.UUID(user_id),
-        automation_level=automation_level,
-        session_metadata={"test": True},
+        session_metadata={"test": True, "intervention_required": intervention_required},
     )
 
     db_session.add(session)

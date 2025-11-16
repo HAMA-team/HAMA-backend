@@ -18,7 +18,7 @@ def test_supervisor_build():
 
     try:
         # Supervisor workflow 생성 (컴파일되지 않은 상태)
-        supervisor_workflow = build_supervisor(automation_level=2)
+        supervisor_workflow = build_supervisor(intervention_required=False)
         logger.info("✅ Supervisor workflow 생성 성공")
 
         # 노드 및 엣지 정보 확인
@@ -39,7 +39,7 @@ def test_graph_compile():
 
     try:
         # Graph 컴파일 (get_compiled_graph 호출)
-        compiled_graph = build_graph(automation_level=2)
+        compiled_graph = build_graph(intervention_required=False)
         logger.info("✅ Graph 컴파일 성공")
 
         # 컴파일된 그래프 정보 확인

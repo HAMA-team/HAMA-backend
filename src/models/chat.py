@@ -19,7 +19,6 @@ class ChatSession(Base):
 
     conversation_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    # automation_level 제거됨: hitl_config 사용 (session_metadata 또는 user_settings에서 조회)
     session_metadata = Column(JSON)
     summary = Column(Text)
     last_agent = Column(String(50))

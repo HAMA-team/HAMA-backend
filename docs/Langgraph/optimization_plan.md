@@ -50,29 +50,29 @@ def get_llm(temperature: float = 0, max_tokens: int = 4000):
 
 ### Phase 2: 그래프 인스턴스 캐싱 (우선순위 ⭐⭐⭐)
 
-**목표**: automation_level별 그래프 재사용
+**목표**: intervention_required별 그래프 재사용
 
 **변경 파일**: `src/agents/graph_master.py`
 
 ```python
 # 현재
 async def run_graph(...):
-    app = build_graph(automation_level)  # ❌ 매번 새로 빌드
+    app = build_graph(intervention_required)  # ❌ 매번 새로 빌드
 
 # 개선 1: 글로벌 캐시
 _graph_cache = {}
 
 async def run_graph(...):
-    cache_key = f"graph_{automation_level}"
+    cache_key = f"graph_{intervention_required}"
     if cache_key not in _graph_cache:
-        _graph_cache[cache_key] = build_graph(automation_level)
+        _graph_cache[cache_key] = build_graph(intervention_required)
 
     app = _graph_cache[cache_key]
     ...
 
 # 개선 2: functools.lru_cache 활용
 @lru_cache(maxsize=3)  # 3개 레벨만
-def build_graph(automation_level: int):
+def build_graph(intervention_required: int):
     ...
 ```
 
@@ -81,7 +81,7 @@ def build_graph(automation_level: int):
 - Supervisor LLM 생성 횟수 **95% 감소**
 
 #### LangGraph 모범 사례 반영 설계
-- **컴파일 재사용**: `StateGraph` 정의는 `build_state_graph(automation_level)`로 분리하고, `graph.compile(checkpointer=...)` 결과만 캐시에 저장한다. (참고: `docs/langgraph_best_practices.md`)
+- **컴파일 재사용**: `StateGraph` 정의는 `build_state_graph(intervention_required)`로 분리하고, `graph.compile(checkpointer=...)` 결과만 캐시에 저장한다. (참고: `docs/langgraph_best_practices.md`)
 - **Configurable 주입**: `run_graph()` 호출 시 `app.with_config({"configurable": {"request_meta": request.meta}})` 패턴으로 런타임 변수를 전달하여 그래프 구조 재빌드를 방지한다.
 - **체크포인터 옵션화**: 현재는 인메모리 saver만 지원하며, 추후 외부 스토리지를 도입할 때 구성 옵션을 다시 검토한다.
 - **LLM 리소스 재사용**: Supervisor 노드에서 사용할 LLM은 `get_llm()` 호출을 함수 외부에서 주입하거나 `lru_cache`로 감싼다. Phase 1과 연계해 Supervisor용 LLM을 한 번만 초기화한다.

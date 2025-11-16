@@ -8,6 +8,6 @@ LangGraph Studio는 자체적으로 persistence를 제공하므로,
 from src.subgraphs.graph_master import build_graph
 
 # LangGraph Studio는 자체 persistence를 제공하므로 checkpointer 미사용
-graph = build_graph(automation_level=2, use_checkpointer=False)
+graph = build_graph(intervention_required=False, use_checkpointer=False)
 
 __all__ = ["graph"]

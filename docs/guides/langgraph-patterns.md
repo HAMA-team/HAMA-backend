@@ -117,12 +117,12 @@ def idempotent_trade_node(state):
 
 ## HITL (Human-in-the-Loop) 구현
 
-### 자동화 레벨별 Interrupt 설정
+### 개입 필요 여부별 Interrupt 설정
 
 ```python
 from langgraph.checkpoint.memory import MemorySaver
 
-def build_graph(automation_level: int):
+def build_graph(intervention_required: int):
     workflow = StateGraph(GraphState)
 
     # 노드 추가
@@ -134,13 +134,13 @@ def build_graph(automation_level: int):
     # 레벨별 interrupt 설정
     interrupt_nodes = []
 
-    if automation_level >= 2:  # Copilot
+    if intervention_required >= 2:  # Copilot
         interrupt_nodes.extend([
             "execute_trade",
             "rebalance"
         ])
 
-    if automation_level == 3:  # Advisor
+    if intervention_required == 3:  # Advisor
         interrupt_nodes.extend([
             "create_strategy",
             "build_portfolio"
@@ -249,7 +249,7 @@ class GraphState(TypedDict):
     # 사용자 컨텍스트
     user_id: str
     conversation_id: str
-    automation_level: int
+    intervention_required: int
 
     # 의도 및 라우팅
     intent: str
@@ -475,7 +475,7 @@ def build_trading_subgraph():
 
 def should_execute_trade(state: TradingState) -> str:
     """승인 여부에 따라 실행 결정"""
-    if state.get("skip_hitl"):  # Automation Level 1
+    if state.get("skip_hitl"):  # Automation Intervention Required = False
         return "execute"
     if state.get("trade_approved"):
         return "execute"
@@ -515,9 +515,9 @@ async def prepare_trade_node(state: TradingState) -> dict:
 
 async def approval_trade_node(state: TradingState) -> dict:
     """2단계: HITL 승인"""
-    # Automation Level 1: 자동 승인
-    automation_level = state.get("automation_level", 2)
-    if automation_level == 1:
+    # Automation Intervention Required = False: 자동 승인
+    intervention_required = state.get("intervention_required", 2)
+    if intervention_required == 1:
         return {"skip_hitl": True, "trade_approved": True}
 
     # HITL Interrupt

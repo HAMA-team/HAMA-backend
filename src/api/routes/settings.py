@@ -21,8 +21,6 @@ from src.schemas.settings import (
     AutomationLevelResponse,
     AutomationLevelUpdateRequest,
     AutomationLevelUpdateResponse,
-    AutomationPresetsResponse,
-    AutomationPresetMetadata,
 )
 
 logger = logging.getLogger(__name__)

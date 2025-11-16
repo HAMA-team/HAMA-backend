@@ -66,7 +66,7 @@ def build_research_subgraph():
     HITL (Human-in-the-Loop) Pattern:
     - planner: 사용자 선호도 기반 분석 계획 수립 및 승인 요청 (INTERRUPT)
       - UI에서 Depth/Scope/Perspectives 선택
-      - automation_level=1이면 자동 승인
+      - intervention_required=False이면 자동 승인 (매매만 HITL)
     - workers: 사용자가 선택한 worker들이 병렬로 실행 (데이터 수집 및 분석)
     - synthesis: 모든 worker 결과를 통합하여 최종 의견 생성
 

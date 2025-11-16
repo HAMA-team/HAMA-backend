@@ -9,9 +9,9 @@
 - **목표**: 동일한 그래프 구조를 매 호출마다 새로 빌드하지 않고, 한 번 컴파일한 `Runnable`을 재사용한다.
 - **근거**: LangGraph 공식 문서에서 `StateGraph.define → compile()` 결과를 런타임마다 재사용한다고 명시한다. ([LangChain][1])
 - **실행 계획**
-  - `build_state_graph(automation_level: int)` 함수에서 순수하게 그래프 구조만 정의한다.
-  - `compile_graph(automation_level: int, backend_key: str)` 함수에서 `build_state_graph` 호출 후 `.compile(checkpointer=...)`을 실행한다.
-  - 결과물은 런타임에서 바로 실행하지 않고 `functools.lru_cache`로 감싸 동일 입력(automation_level, backend_key) 조합에서 재사용한다.
+  - `build_state_graph(intervention_required: int)` 함수에서 순수하게 그래프 구조만 정의한다.
+  - `compile_graph(intervention_required: int, backend_key: str)` 함수에서 `build_state_graph` 호출 후 `.compile(checkpointer=...)`을 실행한다.
+  - 결과물은 런타임에서 바로 실행하지 않고 `functools.lru_cache`로 감싸 동일 입력(intervention_required, backend_key) 조합에서 재사용한다.
 
 ## 2. 런타임 설정 전달
 

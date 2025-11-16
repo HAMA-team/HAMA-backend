@@ -86,7 +86,7 @@ export async function apiRequest<T>(
 interface ChatRequest {
   message: string;
   conversation_id?: string;
-  automation_level?: number; // 1, 2, 3 (default: 2)
+  intervention_required?: number; // 1, 2, 3 (default: 2)
 }
 ```
 
@@ -122,7 +122,7 @@ export async function sendMessage(message: string, conversationId?: string) {
     body: JSON.stringify({
       message,
       conversation_id: conversationId,
-      automation_level: 2,
+      intervention_required: 2,
     }),
   });
 }
@@ -412,7 +412,7 @@ export function SectorPieChart({ sectors }: { sectors: { [key: string]: number }
 interface ApprovalDecision {
   thread_id: string;
   decision: 'approved' | 'rejected' | 'modified';
-  automation_level?: number;
+  intervention_required?: number;
   modifications?: any;
   user_notes?: string;
 }
@@ -458,7 +458,7 @@ export function ApprovalPanel({
         body: JSON.stringify({
           thread_id: threadId,
           decision: 'approved',
-          automation_level: 2,
+          intervention_required: 2,
         }),
       });
 
@@ -703,7 +703,7 @@ export function handleAPIError(error: unknown) {
 export interface ChatRequest {
   message: string;
   conversation_id?: string;
-  automation_level?: number;
+  intervention_required?: number;
 }
 
 export interface ChatResponse {

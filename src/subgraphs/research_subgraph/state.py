@@ -51,8 +51,8 @@ class ResearchState(TypedDict, total=False):
     plan_approval_id: Optional[str]
     """승인 요청 ID"""
 
-    automation_level: Optional[int]
-    """자동화 레벨: 1=자동 승인, 2=승인 필요 (기본값: 2)"""
+    intervention_required: Optional[bool]
+    """분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)"""
 
     user_profile: Optional[Dict[str, Any]]
     """사용자 프로파일 (preferred_depth, expertise_level 등)"""
