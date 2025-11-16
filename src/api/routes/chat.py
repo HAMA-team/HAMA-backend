@@ -243,10 +243,33 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 f"  - 추천: {research.get('recommendation', 'N/A')}"
             )
 
+        # Quantitative Agent (전략 + 리스크 통합)
+        if "quantitative_agent" in details:
+            quant = details["quantitative_agent"]
+
+            # 전략 정보 (strategy_synthesis 또는 buy_decision)
+            if quant.get("strategy_synthesis") or quant.get("buy_analysis"):
+                strategy = quant.get("strategy_synthesis", quant.get("buy_analysis", {}))
+                message_parts.append(
+                    f"\n📈 **정량 분석**\n"
+                    f"  - 매수 점수: {strategy.get('buy_score', 'N/A')}/10\n"
+                    f"  - 투자 의견: {strategy.get('action', 'N/A')}"
+                )
+
+            # 리스크 정보 (risk_reward)
+            if quant.get("risk_reward"):
+                risk = quant.get("risk_reward", {})
+                message_parts.append(
+                    f"\n⚠️ **리스크/목표가**\n"
+                    f"  - 손절가: {risk.get('stop_loss_price', 'N/A'):,}원\n"
+                    f"  - 목표가: {risk.get('target_price_1', 'N/A'):,}원"
+                )
+
+        # 하위 호환성 (deprecated - quantitative_agent로 통합됨)
         if "strategy_agent" in details:
             strategy = details["strategy_agent"]
             message_parts.append(
-                f"\n📈 **전략**\n"
+                f"\n📈 **전략** (deprecated)\n"
                 f"  - 의견: {strategy.get('action', 'N/A')}\n"
                 f"  - 신뢰도: {strategy.get('confidence', 'N/A')}"
             )
@@ -256,7 +279,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             warnings = risk.get("warnings", [])
             warning_text = ", ".join(warnings) if warnings else "없음"
             message_parts.append(
-                f"\n⚠️ **리스크**\n"
+                f"\n⚠️ **리스크** (deprecated)\n"
                 f"  - 수준: {risk.get('risk_level', 'N/A')}\n"
                 f"  - 경고: {warning_text}"
             )
