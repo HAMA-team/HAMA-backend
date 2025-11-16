@@ -96,6 +96,82 @@ class QuantitativeState(TypedDict, total=False):
     risk_analysis: Optional[dict]
     """리스크 분석 (변동성, 하락 리스크)"""
 
+    # 거시 분석 결과 (Strategy Agent에서 이식)
+    market_outlook: Optional[dict]
+    """
+    시장 사이클 분석
+    {
+        "cycle": "early_bull_market" | "mid_bull_market" | "late_bull_market" | "bear_market" | "consolidation",
+        "confidence": 0.0-1.0,
+        "summary": str,
+        "key_factors": [str, ...]
+    }
+    """
+
+    sector_strategy: Optional[dict]
+    """
+    섹터 로테이션 전략
+    {
+        "sectors": [{"sector": str, "weight": float, "stance": str}, ...],
+        "overweight": [str, ...],
+        "underweight": [str, ...],
+        "rationale": str
+    }
+    """
+
+    asset_allocation: Optional[dict]
+    """
+    자산 배분
+    {
+        "stocks": float,
+        "cash": float,
+        "rationale": str
+    }
+    """
+
+    # 전략 세분화 결과
+    buy_analysis: Optional[dict]
+    """
+    매수 점수 분석
+    {
+        "buy_score": int (1-10),
+        "valuation_score": int,
+        "momentum_score": int,
+        "quality_score": int,
+        "macro_fit_score": int,
+        "risk_score": int,
+        "strengths": [str, ...],
+        "concerns": [str, ...]
+    }
+    """
+
+    sell_decision: Optional[dict]
+    """
+    매도 판단
+    {
+        "decision": "익절" | "손절" | "홀드",
+        "decision_reason": str,
+        "target_sell_ratio": float (0.0-1.0),
+        "timing": str,
+        "alternative_action": str,
+        "risk_if_hold": str
+    }
+    """
+
+    risk_reward: Optional[dict]
+    """
+    손절가/목표가 분석
+    {
+        "stop_loss_price": float,
+        "stop_loss_pct": float,
+        "target_price_1": float,
+        "target_price_2": float,
+        "target_price_final": float,
+        "risk_reward_ratio": float,
+        "strategy": str
+    }
+    """
+
     # 전략 결과
     strategy: Optional[dict]
     """
@@ -107,6 +183,17 @@ class QuantitativeState(TypedDict, total=False):
         "stop_loss": float,
         "reasoning": str,
         "time_horizon": "단기" | "중기" | "장기"
+    }
+    """
+
+    blueprint: Optional[dict]
+    """
+    Strategic Blueprint Dashboard
+    {
+        "investment_style": {"type": str, "horizon": str, "approach": str, "size_preference": str},
+        "constraints": {"max_stocks": int, "max_per_stock": float, "min_stocks": int},
+        "key_assumptions": [str, ...],
+        "dashboard": str
     }
     """
 
