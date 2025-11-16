@@ -34,7 +34,7 @@ class RequestTradeInput(BaseModel):
 
 # ==================== Tools ====================
 
-@tool(args_schema=RequestTradeInput, return_direct=True)
+@tool(args_schema=RequestTradeInput)
 async def request_trade(
     ticker: str,
     action: str,

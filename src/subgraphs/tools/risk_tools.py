@@ -5,16 +5,19 @@
 
 Risk Agent 로직을 portfolio_service로 이식하여 재사용
 """
+import ast
+import json
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 
 from langchain_core.tools import tool
-from pydantic.v1 import BaseModel, Field
+from pydantic.v1 import BaseModel, Field, validator
 
 from src.services.portfolio_service import (
     calculate_comprehensive_portfolio_risk,
     calculate_concentration_risk_metrics,
     calculate_market_risk_metrics,
+    portfolio_service,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,6 +161,63 @@ def _extract_portfolio_state(portfolio: Dict[str, Any]) -> Tuple[List[Dict[str, 
     return holdings, cash_balance, total_value
 
 
+def _coerce_to_dict(value: Any, field_name: str) -> Dict[str, Any]:
+    """LLM이 문자열/리스트로 전달한 payload를 dict로 강제 변환한다."""
+    if value is None:
+        logger.warning("⚠️ [%s] 값이 비어 있어 기본 dict를 반환합니다.", field_name)
+        return {}
+
+    if isinstance(value, dict):
+        return value
+
+    if hasattr(value, "dict"):
+        try:
+            return value.dict()
+        except Exception:  # pragma: no cover - 방어적 처리
+            pass
+
+    if isinstance(value, str):
+        raw_text = value.strip()
+        if not raw_text:
+            logger.warning("⚠️ [%s] 빈 문자열 입력, 기본 dict를 반환합니다.", field_name)
+            return {}
+
+        json_candidates = [raw_text]
+        # Python repr(dict) 형태일 경우 작은따옴표를 큰따옴표로 치환해 재시도
+        if raw_text.startswith("{") and "'" in raw_text:
+            json_candidates.append(raw_text.replace("'", '"'))
+
+        for candidate in json_candidates:
+            try:
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+                if isinstance(parsed, list) and field_name == "portfolio":
+                    return {"positions": parsed}
+            except json.JSONDecodeError:
+                continue
+
+        try:
+            parsed_literal = ast.literal_eval(raw_text)
+        except (ValueError, SyntaxError):
+            parsed_literal = None
+
+        if isinstance(parsed_literal, dict):
+            return parsed_literal
+        if isinstance(parsed_literal, list) and field_name == "portfolio":
+            return {"positions": parsed_literal}
+
+        logger.warning("⚠️ [%s] 문자열을 dict로 변환하지 못했습니다. 입력 타입=%s", field_name, type(value))
+        return {}
+
+    if isinstance(value, list):
+        if field_name == "portfolio":
+            return {"positions": value}
+
+    logger.warning("⚠️ [%s] dict로 파싱할 수 없는 타입입니다: %s", field_name, type(value))
+    return {}
+
+
 # ==================== Input Schema ====================
 
 class PortfolioRiskInput(BaseModel):
@@ -174,6 +234,21 @@ class PortfolioRiskInput(BaseModel):
             "예: {'ticker': '005930', 'action': 'buy', 'quantity': 10, 'price': 75000}"
         )
     )
+    user_id: Optional[str] = Field(
+        default=None,
+        description="선택: 해당 포트폴리오 소유자. 제공 시 잔고 정보가 누락된 경우 snapshot으로 보정합니다.",
+    )
+
+    @validator("portfolio", pre=True)
+    def validate_portfolio(cls, value: Any) -> Dict[str, Any]:  # noqa: D417 - validator 설명 불필요
+        return _coerce_to_dict(value, "portfolio")
+
+    @validator("proposed_trade", pre=True)
+    def validate_trade(cls, value: Any) -> Dict[str, Any]:  # noqa: D417 - validator 설명 불필요
+        parsed = _coerce_to_dict(value, "proposed_trade")
+        if not parsed:
+            raise ValueError("proposed_trade는 dict 형태여야 합니다.")
+        return parsed
 
 
 # ==================== Tool ====================
@@ -181,12 +256,13 @@ class PortfolioRiskInput(BaseModel):
 @tool(args_schema=PortfolioRiskInput)
 async def calculate_portfolio_risk(
     portfolio: dict,
-    proposed_trade: dict
+    proposed_trade: dict,
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     [언제] 매매 실행 전, 포트폴리오 리스크 변화를 확인할 때 사용합니다.
     [무엇] 현재 리스크와 매매 후 예상 리스크를 계산합니다.
-    [필수] execute_trade 호출 전에 반드시 이 tool을 먼저 호출하세요.
+    [필수] request_trade 또는 HITL 승인을 요청하기 전에 반드시 이 tool을 먼저 호출하세요.
 
     계산 항목:
     - 집중도 리스크 (상위 종목 비중)
@@ -229,8 +305,7 @@ async def calculate_portfolio_risk(
     → get_portfolio_positions()
     → calculate_portfolio_risk(portfolio, {"ticker": "005930", "action": "buy", "quantity": 10})
     → [사용자에게 리스크 보고]
-    → 사용자: "승인"
-    → execute_trade(...)
+    → request_trade(...) 호출 → HITL 패널 승인 대기
     """
     try:
         logger.info("⚖️ [Risk Tool] 포트폴리오 리스크 계산 시작")
@@ -249,6 +324,30 @@ async def calculate_portfolio_risk(
 
         # 1. 현재 포트폴리오 상태 분석 (다양한 입력 스키마 허용)
         current_holdings, current_cash, current_total_value = _extract_portfolio_state(portfolio)
+
+        holdings_value = sum(
+            h.get("quantity", 0) * h.get("current_price", 0) for h in current_holdings
+        )
+
+        if (current_cash <= 0 or current_total_value <= holdings_value) and portfolio_service:
+            # HITL 용도로 정확한 현금이 필요하므로 snapshot으로 보정
+            try:
+                snapshot = await portfolio_service.get_portfolio_snapshot(user_id=user_id)
+            except Exception as exc:  # pragma: no cover - fallback용
+                logger.warning("⚠️ [Risk Tool] 포트폴리오 snapshot 보정 실패: %s", exc)
+                snapshot = None
+
+            if snapshot and snapshot.portfolio_data:
+                snapshot_holdings, snapshot_cash, snapshot_total = _extract_portfolio_state(
+                    snapshot.portfolio_data
+                )
+                if snapshot_cash > 0:
+                    current_holdings = snapshot_holdings
+                    current_cash = snapshot_cash
+                    current_total_value = snapshot_total
+                    holdings_value = sum(
+                        h.get("quantity", 0) * h.get("current_price", 0) for h in current_holdings
+                    )
 
         logger.info(f"  - 현재 보유 종목: {len(current_holdings)}개")
         logger.info(f"  - 현재 총 자산: {current_total_value:,.0f}원")

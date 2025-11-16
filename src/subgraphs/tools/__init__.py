@@ -20,7 +20,7 @@ def get_all_tools() -> List[BaseTool]:
     Supervisor가 사용할 모든 tools를 반환합니다.
 
     포함된 tools:
-    - KIS Tools (4개): get_current_price, get_account_balance, get_portfolio_positions, execute_trade (deprecated)
+    - KIS Tools (3개): get_current_price, get_account_balance, get_portfolio_positions
     - Ticker Tools (1개): resolve_ticker
     - Risk Tools (1개): calculate_portfolio_risk
     - Portfolio Tools (2개): optimize_portfolio, rebalance_portfolio

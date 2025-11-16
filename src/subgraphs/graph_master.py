@@ -617,23 +617,19 @@ def build_supervisor_prompt() -> str:
 - 주식 종목/티커는 항상 영어 공식명으로 표현하고, 필요하면 한국어명과 티커를 괄호로 병기하세요 (예: "Samsung Electronics (삼성전자, 005930)").
 
 ## 매매 HITL 플로우 (필수)
-⚠️ 모든 매매는 사용자 승인 필요
+⚠️ 모든 매매는 사용자 승인 필요 (HITL 패널에서만 승인/거절 처리)
 
 **중요: request_trade tool 사용 (HITL 패턴)**
-매매 요청 시 execute_trade가 아닌 **request_trade**를 사용하세요:
+매매 요청 시 다음 순서를 반드시 따르세요.
 
 1. resolve_ticker로 종목 코드 확인
 2. get_portfolio_positions() 호출
 3. calculate_portfolio_risk() 호출
-4. 리스크 변화를 사용자에게 명시적 보고:
-   - 현재 리스크: 집중도, 변동성, VaR
-   - 매매 후 예상 리스크
-   - 경고 사항
+4. 사용자에게 리스크 변화를 요약 보고
 5. **request_trade(ticker, action, quantity, price)** 호출
-   → 자동으로 사용자 승인 프로세스가 시작됩니다
-   → 승인 후 자동 실행됩니다
-
-⚠️ execute_trade는 deprecated - request_trade를 사용하세요
+   → LangGraph가 자동으로 Interrupt를 발생시켜 HITL 패널에 승인 요청을 전송합니다
+   → 사용자가 패널에서 승인/거절/수정하기 전까지 그래프는 중단됩니다
+   → 승인 시 그래프가 재개되어 execute_trade 노드가 주문을 실행합니다
 </context>
 
 <instructions>
@@ -679,10 +675,10 @@ def build_supervisor_prompt() -> str:
 → calculate_portfolio_risk(portfolio, {{"ticker": "005930", "action": "buy", "quantity": 10}})
 → [사용자에게 리스크 보고]
    "현재 포트폴리오 집중도는 30%이며, 이 매매 후 45%로 증가합니다.
-    변동성은 15%에서 18%로 증가합니다.
-    진행하시겠습니까?"
-→ 사용자: "승인"
-→ execute_trade(ticker="005930", action="buy", quantity=10)
+    변동성은 15%에서 18%로 증가합니다."
+→ request_trade(ticker="005930", action="buy", quantity=10, price=0)
+→ [자동으로 HITL 패널에 승인 요청 표시]
+→ 사용자가 패널에서 승인하면 그래프가 재개되어 주문이 실행됩니다
 </examples>
 """
 

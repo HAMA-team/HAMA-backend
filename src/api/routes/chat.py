@@ -502,6 +502,67 @@ def _save_user_decision_to_db(
         return False
 
 
+def _get_approval_request_context(
+    db: Session,
+    request_id: Optional[str],
+) -> tuple[str, Optional[dict]]:
+    """
+    ApprovalRequest 정보를 조회해 request_type과 proposed_actions를 반환한다.
+
+    Returns:
+        (request_type, proposed_actions)
+    """
+    if not request_id:
+        return "trade_approval", None
+
+    try:
+        request_uuid = uuid.UUID(request_id)
+    except ValueError:
+        logger.warning("Invalid request_id format: %s", request_id)
+        return "trade_approval", None
+
+    approval_request = (
+        db.query(ApprovalRequestModel)
+        .filter(ApprovalRequestModel.request_id == request_uuid)
+        .first()
+    )
+
+    if not approval_request:
+        return "trade_approval", None
+
+    request_type = approval_request.request_type or "trade_approval"
+    proposed_actions = approval_request.proposed_actions
+    return request_type, proposed_actions
+
+
+def _build_resume_value(
+    *,
+    approval_type: str,
+    user_id: uuid.UUID,
+    user_notes: Optional[str],
+    modifications: Optional[dict],
+) -> dict:
+    """
+    LangGraph resume payload를 approval_type에 맞춰 생성한다.
+    """
+    resume_value: dict = {
+        "user_id": str(user_id),
+        "notes": user_notes,
+    }
+
+    if approval_type == "research_plan_approval":
+        resume_value["plan_approved"] = True
+    elif approval_type == "rebalance_approval":
+        resume_value["rebalance_approved"] = True
+    else:  # trade_approval 및 기타 기본값
+        resume_value["trade_approved"] = True
+
+    if modifications:
+        resume_value["user_modifications"] = modifications
+
+    return resume_value
+
+
 class ApprovalRequest(BaseModel):
     """승인 요청 스키마"""
 
@@ -596,6 +657,8 @@ async def approve_action(
             return "\n".join(filter(None, parts)) or "처리가 완료되었습니다."
 
         # DB에 사용자 결정 저장 (request_id가 있는 경우)
+        request_type, _ = _get_approval_request_context(db, approval.request_id)
+
         if approval.request_id:
             try:
                 request_uuid = uuid.UUID(approval.request_id)
@@ -612,28 +675,46 @@ async def approve_action(
 
         # 승인 또는 수정된 승인 처리
         if approval.decision in ["approved", "modified"]:
-            resume_value = {
-                "approved": True,
-                "user_id": str(DEMO_USER_UUID),
-                "notes": approval.user_notes,
-            }
-
-            # 사용자 수정사항 적용 (modified인 경우)
-            if approval.decision == "modified" and approval.modifications:
-                # modifications를 resume_value에 병합
-                resume_value["modifications"] = approval.modifications
-                logger.info(f"✏️ 사용자 수정사항 적용: {approval.modifications}")
-
-            # 사용자 자유 텍스트 입력 처리 (user_input)
+            combined_modifications: Optional[dict] = approval.modifications.copy() if approval.modifications else None
             if approval.user_input:
-                # user_input을 modifications에 추가
-                if "modifications" not in resume_value:
-                    resume_value["modifications"] = {}
-                resume_value["modifications"]["user_input"] = approval.user_input
-                logger.info(f"📝 사용자 입력 전달: {approval.user_input[:100]}")
+                if not combined_modifications:
+                    combined_modifications = {}
+                combined_modifications["user_input"] = approval.user_input
+
+            if combined_modifications:
+                logger.info("✏️ 사용자 수정사항 전달: %s", combined_modifications)
+            resume_value = _build_resume_value(
+                approval_type=request_type,
+                user_id=DEMO_USER_UUID,
+                user_notes=approval.user_notes,
+                modifications=combined_modifications,
+            )
 
             resume_command: Command = cast(Command, {"resume": resume_value})
             result = await configured_app.ainvoke(resume_command)
+            state_after_resume = await configured_app.aget_state()
+
+            if getattr(state_after_resume, "next", None):
+                hitl_result = await handle_hitl_interrupt(
+                    state=state_after_resume,
+                    conversation_uuid=conversation_uuid,
+                    conversation_id=conversation_id,
+                    user_id=DEMO_USER_UUID,
+                    db=db,
+                    intervention_required=intervention_required,
+                    hitl_config=hitl_config,
+                )
+                if hitl_result:
+                    return ApprovalResponse(
+                        status="pending",
+                        message=hitl_result["message"],
+                        conversation_id=conversation_id,
+                        result={
+                            "requires_approval": True,
+                            "approval_request": hitl_result["approval_request"],
+                        },
+                    )
+
             final_response = result.get("final_response", {})
             message_text = _trade_summary(final_response)
 
@@ -641,18 +722,24 @@ async def approve_action(
                 conversation_id=conversation_uuid,
                 role="assistant",
                 content=message_text,
-                metadata={"decision": "approved"},
+                metadata={"decision": approval.decision},
             )
             await chat_history_service.upsert_session(
                 conversation_id=conversation_uuid,
                 user_id=DEMO_USER_UUID,
-                metadata={"decision": "approved"},
+                metadata={"decision": approval.decision},
                 summary=final_response.get("summary"),
             )
 
+            response_status = "modified" if approval.decision == "modified" else "approved"
+            response_message = (
+                "수정 후 승인 - 매매가 실행되었습니다."
+                if approval.decision == "modified"
+                else "승인 완료 - 매매가 실행되었습니다."
+            )
             return ApprovalResponse(
-                status="approved",
-                message="승인 완료 - 매매가 실행되었습니다.",
+                status=response_status,
+                message=response_message,
                 conversation_id=conversation_id,
                 result=final_response,
             )
@@ -689,39 +776,6 @@ async def approve_action(
                 message=message_text,
                 conversation_id=conversation_id,
                 result={"cancelled": True},
-            )
-
-        if approval.decision == "modified":
-            resume_value = {
-                "approved": True,
-                "user_id": str(DEMO_USER_UUID),
-                "modifications": approval.modifications,
-                "notes": approval.user_notes,
-            }
-
-            resume_command: Command = cast(Command, {"resume": resume_value})
-            result = await configured_app.ainvoke(resume_command)
-            final_response = result.get("final_response", {})
-            message_text = _trade_summary(final_response)
-
-            await chat_history_service.append_message(
-                conversation_id=conversation_uuid,
-                role="assistant",
-                content=message_text,
-                metadata={"decision": "modified"},
-            )
-            await chat_history_service.upsert_session(
-                conversation_id=conversation_uuid,
-                user_id=DEMO_USER_UUID,
-                metadata={"decision": "modified"},
-                summary=final_response.get("summary"),
-            )
-
-            return ApprovalResponse(
-                status="modified",
-                message="수정 후 승인 - 매매가 실행되었습니다.",
-                conversation_id=conversation_id,
-                result=final_response,
             )
 
         raise HTTPException(

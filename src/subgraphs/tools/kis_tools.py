@@ -25,23 +25,6 @@ class StockPriceInput(BaseModel):
     )
 
 
-class PlaceOrderInput(BaseModel):
-    """매매 주문 실행 입력"""
-    ticker: str = Field(
-        description="6자리 종목 코드 (예: '005930')"
-    )
-    action: str = Field(
-        description="매매 구분: 'buy' (매수) 또는 'sell' (매도)"
-    )
-    quantity: int = Field(
-        description="주문 수량 (1 이상)"
-    )
-    price: int = Field(
-        default=0,
-        description="주문 가격 (0이면 시장가, 양수면 지정가)"
-    )
-
-
 # ==================== Tools ====================
 
 @tool(args_schema=StockPriceInput)
@@ -120,7 +103,7 @@ async def get_portfolio_positions() -> Dict[str, Any]:
     """
     [언제] 사용자가 보유 종목 목록과 비중을 확인하고 싶을 때 사용합니다.
     [무엇] 현재 보유 중인 모든 종목의 수량, 평가액, 비중, 손익을 조회합니다.
-    [필수] calculate_portfolio_risk나 execute_trade 호출 전에 먼저 사용하세요.
+    [필수] calculate_portfolio_risk 또는 request_trade 호출 전에 먼저 사용하세요.
 
     Returns:
         dict: {
@@ -144,7 +127,7 @@ async def get_portfolio_positions() -> Dict[str, Any]:
 
     예시:
     - 사용자: "내가 지금 뭐 갖고 있어?" → get_portfolio_positions()
-    - 매매 전: get_portfolio_positions() → calculate_portfolio_risk() → execute_trade()
+    - 매매 전: get_portfolio_positions() → calculate_portfolio_risk() → request_trade() → HITL 패널 승인 대기
     """
     try:
         logger.info(f"📋 [KIS Tool] 보유 종목 조회")
@@ -205,77 +188,6 @@ async def get_portfolio_positions() -> Dict[str, Any]:
         }
 
 
-@tool(args_schema=PlaceOrderInput)
-async def execute_trade(
-    ticker: str,
-    action: str,
-    quantity: int,
-    price: int = 0
-) -> Dict[str, Any]:
-    """
-    [언제] 사용자가 매매 주문 실행을 **명시적으로 승인**한 후에만 사용합니다.
-    [무엇] KIS API를 통해 실제 매수/매도 주문을 실행합니다.
-    [필수] 이 tool을 호출하기 전에 반드시:
-        1. get_portfolio_positions() 호출
-        2. calculate_portfolio_risk() 호출
-        3. 리스크 변화를 사용자에게 명시적 보고
-        4. 사용자의 "승인" 또는 "실행" 응답 대기
-
-    ⚠️ 주의: 이 tool은 실제 돈이 오가는 거래를 실행합니다!
-
-    Args:
-        action: 'buy' (매수) 또는 'sell' (매도)
-        price: 0이면 시장가, 양수면 지정가 주문
-
-    Returns:
-        dict: {
-            "order_id": "20240112-00001",
-            "status": "submitted",
-            "ticker": "005930",
-            "action": "buy",
-            "quantity": 10,
-            "price": 75000,
-            "estimated_amount": 750000
-        }
-
-    예시:
-    사용자: "삼성전자 10주 매수해줘"
-    → get_portfolio_positions()
-    → calculate_portfolio_risk(portfolio, proposed_trade)
-    → [사용자에게 리스크 보고]
-    → 사용자: "승인"
-    → execute_trade(ticker="005930", action="buy", quantity=10)
-    """
-    try:
-        logger.info(f"🔥 [KIS Tool] 매매 주문 실행: {action} {ticker} x{quantity}")
-
-        # KIS API로 주문 실행
-        result = await kis_service.place_order(
-            stock_code=ticker,
-            order_type=action,
-            quantity=quantity,
-            price=price
-        )
-
-        return {
-            "success": True,
-            "ticker": ticker,
-            "action": action,
-            "quantity": quantity,
-            "price": price,
-            "data": result
-        }
-    except Exception as e:
-        logger.error(f"❌ [KIS Tool] 매매 주문 실행 실패: {ticker}, 에러: {e}")
-        return {
-            "success": False,
-            "ticker": ticker,
-            "action": action,
-            "quantity": quantity,
-            "error": str(e)
-        }
-
-
 # ==================== Tool 목록 ====================
 
 def get_kis_tools():
@@ -284,5 +196,4 @@ def get_kis_tools():
         get_current_price,
         get_account_balance,
         get_portfolio_positions,
-        execute_trade,
     ]
