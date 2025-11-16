@@ -1137,10 +1137,10 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.120.0" },
     { name = "finance-datareader", specifier = "==0.9.50" },
     { name = "httpx", specifier = "==0.28.1" },
-    { name = "langchain", specifier = "==1.0.2" },
+    { name = "langchain", specifier = "==1.0.7" },
     { name = "langchain-anthropic", specifier = "==1.0.0" },
     { name = "langchain-community", specifier = "==0.4" },
-    { name = "langchain-core", specifier = "==1.0.1" },
+    { name = "langchain-core", specifier = "==1.0.5" },
     { name = "langchain-google-genai", specifier = "==3.0.0" },
     { name = "langchain-mcp-adapters", specifier = "==0.1.12" },
     { name = "langchain-openai", specifier = "==1.0.1" },
@@ -1474,16 +1474,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.0.2"
+version = "1.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/d6/bdf9ea27a92ed4685497c2659b5c7f703ba63bac4bd92351ca09bab3b924/langchain-1.0.2.tar.gz", hash = "sha256:22f814c7b4f5f76e945c35924ff288f6dfbe33747db2a029162ef1d4f8566493", size = 473869, upload-time = "2025-10-21T21:08:26.44Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/7a/63c041d1ee74c505e30ec882889117baa08afce2264bcb4463929bac4e94/langchain-1.0.7.tar.gz", hash = "sha256:e3f8ad742b4cdc91d728f96bd70e4688bc11ffeca3bd160c5fe9937625d541b9", size = 465198, upload-time = "2025-11-14T20:52:21.813Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8c/06/0e03587da37173c29a58bf17312793c2453df9ca2912e9adfe869c120437/langchain-1.0.2-py3-none-any.whl", hash = "sha256:e0c5647ea47cde7feb9534f56f4496c7f86a45084ad9bd152e7b19739f210ead", size = 107831, upload-time = "2025-10-21T21:08:25.009Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/4a/02c14af46fa79ce7b02a0f8af46f5905cc7e8b647a5f1a7c793c03ac5063/langchain-1.0.7-py3-none-any.whl", hash = "sha256:cf33b4d60d7a2ff7f0f313441628927853192cdbab9d6d8ce229909a868bbf12", size = 93738, upload-time = "2025-11-14T20:52:20.717Z" },
 ]
 
 [[package]]
@@ -1543,7 +1543,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.0.1"
+version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch" },
@@ -1554,9 +1554,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/37/1bc4badb93eaa32406a7afdef011336b21719d21ce5ecebf35409a524f8c/langchain_core-1.0.1.tar.gz", hash = "sha256:d769e8d25854466abb672a721143a01bea11cc6ee2d7dae776aa092556db0a26", size = 764566, upload-time = "2025-10-24T16:39:35.495Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/61/c356e19525a210baf960968dbfb03ee38a05e05ddb41efeb32abfcb4e360/langchain_core-1.0.5.tar.gz", hash = "sha256:7ecbad9a60dde626252733a9c18c7377f4468cfe00465ffa99f5e9c6cb9b82d2", size = 778259, upload-time = "2025-11-14T16:59:27.277Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/54/3cdbe9d151d06cd689b5aa937ac11403b64bbfe76486fda6431a24061721/langchain_core-1.0.1-py3-none-any.whl", hash = "sha256:c7ce58fc487359c44166e255cc0009ef30290da0b6307b75091152847919661e", size = 467122, upload-time = "2025-10-24T16:39:33.788Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/ee/aaf2343a35080154c82ceb110e03dd00f15459bc72e518df51724cbc41a9/langchain_core-1.0.5-py3-none-any.whl", hash = "sha256:d24c0cf12cfcd96dd4bd479aa91425f3a6652226cd824228ae422a195067b74e", size = 471506, upload-time = "2025-11-14T16:59:25.629Z" },
 ]
 
 [[package]]
