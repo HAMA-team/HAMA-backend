@@ -324,6 +324,274 @@ async def execute_trade_node(state: GraphState) -> GraphState:
         }
 
 
+# ==================== Rebalancing Nodes ====================
+
+async def rebalance_planner_node(state: GraphState) -> GraphState:
+    """
+    리밸런싱 계획 노드 - portfolio_optimizer를 사용하여 목표 비중 계산
+
+    Quantitative Agent의 전략 결과를 기반으로 목표 포트폴리오를 생성합니다.
+    """
+    from src.services.portfolio_service import portfolio_service
+    from src.services.portfolio_optimizer import portfolio_optimizer
+
+    user_id = state.get("user_id")
+    user_profile = state.get("user_profile", {})
+    risk_profile = user_profile.get("risk_tolerance", "moderate")
+
+    # Quantitative Agent 결과 추출
+    agent_results = state.get("agent_results", {})
+    quantitative_result = agent_results.get("quantitative_agent", {})
+
+    logger.info("📝 [Rebalance/Planner] 리밸런싱 계획 수립 시작")
+    logger.info(f"  - user_id: {user_id}")
+    logger.info(f"  - risk_profile: {risk_profile}")
+
+    try:
+        # 1. 현재 포트폴리오 조회
+        snapshot = await portfolio_service.get_portfolio_snapshot(user_id=user_id)
+
+        if not snapshot:
+            raise Exception("포트폴리오를 찾을 수 없습니다")
+
+        current_holdings = snapshot.portfolio_data.get("holdings", [])
+        total_value = snapshot.portfolio_data.get("total_value", 0)
+
+        logger.info(f"  - 현재 보유: {len(current_holdings)}개 종목, 총 {total_value:,.0f}원")
+
+        # 2. 목표 비중 계산 (portfolio_optimizer)
+        target_holdings, metrics = await portfolio_optimizer.calculate_target_allocation(
+            current_holdings=current_holdings,
+            strategy_result=quantitative_result,
+            risk_profile=risk_profile,
+            total_value=total_value,
+        )
+
+        logger.info(f"  - 목표 비중: {len(target_holdings)}개 자산")
+        logger.info(f"  - 예상 수익률: {metrics.get('expected_return', 0):.2%}")
+        logger.info(f"  - 예상 변동성: {metrics.get('expected_volatility', 0):.2%}")
+
+        # 3. 리밸런싱 제안 구조화
+        rebalance_proposal = {
+            "target_holdings": target_holdings,
+            "rationale": metrics.get("rationale", "포트폴리오 최적화"),
+            "metrics": metrics,
+            "created_at": datetime.now().isoformat(),
+        }
+
+        return {
+            "rebalance_proposal": rebalance_proposal,
+            "messages": [AIMessage(content="리밸런싱 계획이 생성되었습니다.")],
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Rebalance/Planner] 계획 수립 실패: %s", exc, exc_info=True)
+        return {
+            "messages": [AIMessage(content=f"리밸런싱 계획 수립 실패: {exc}")],
+        }
+
+
+async def rebalance_simulator_node(state: GraphState) -> GraphState:
+    """
+    리밸런싱 시뮬레이션 노드 - 리밸런싱 전/후 포트폴리오 및 리스크 비교
+    """
+    from src.services.portfolio_service import portfolio_service, calculate_market_risk_metrics, calculate_concentration_risk_metrics
+
+    user_id = state.get("user_id")
+    rebalance_proposal = state.get("rebalance_proposal", {})
+    target_holdings = rebalance_proposal.get("target_holdings", [])
+
+    logger.info("📊 [Rebalance/Simulator] 리밸런싱 시뮬레이션 시작")
+
+    try:
+        # 1. 현재 포트폴리오 조회
+        snapshot = await portfolio_service.get_portfolio_snapshot(user_id=user_id)
+
+        if not snapshot:
+            raise Exception("포트폴리오를 찾을 수 없습니다")
+
+        portfolio_before = snapshot.portfolio_data
+        market_data = snapshot.market_data
+        holdings_before = portfolio_before.get("holdings", [])
+        sectors_before = portfolio_before.get("sectors", {})
+
+        # 2. 목표 포트폴리오 구성 (시뮬레이션)
+        total_value = portfolio_before.get("total_value", 0)
+
+        # target_holdings에서 섹터 정보 추출
+        sectors_after = {}
+        for h in target_holdings:
+            if h.get("stock_code") == "CASH":
+                continue
+            sector = h.get("sector", "기타")
+            weight = h.get("weight", 0)
+            sectors_after[sector] = sectors_after.get(sector, 0) + weight
+
+        portfolio_after = {
+            "holdings": target_holdings,
+            "total_value": total_value,
+            "sectors": sectors_after,
+        }
+
+        # 3. 리스크 계산 (Before)
+        concentration_before = calculate_concentration_risk_metrics(holdings_before, sectors_before)
+        market_risk_before = calculate_market_risk_metrics(portfolio_before, market_data)
+
+        risk_before = {
+            "concentration": concentration_before,
+            "market": market_risk_before,
+        }
+
+        # 4. 리스크 계산 (After)
+        concentration_after = calculate_concentration_risk_metrics(target_holdings, sectors_after)
+        market_risk_after = calculate_market_risk_metrics(portfolio_after, market_data)
+
+        risk_after = {
+            "concentration": concentration_after,
+            "market": market_risk_after,
+        }
+
+        logger.info("✅ [Rebalance/Simulator] 시뮬레이션 완료")
+        logger.info(f"  - Before HHI: {concentration_before.get('hhi'):.3f}")
+        logger.info(f"  - After HHI: {concentration_after.get('hhi'):.3f}")
+
+        return {
+            "portfolio_before": portfolio_before,
+            "portfolio_after": portfolio_after,
+            "risk_before": risk_before,
+            "risk_after": risk_after,
+            "messages": [AIMessage(content="리밸런싱 시뮬레이션이 완료되었습니다.")],
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Rebalance/Simulator] 시뮬레이션 실패: %s", exc, exc_info=True)
+        return {
+            "portfolio_before": None,
+            "portfolio_after": None,
+            "risk_before": None,
+            "risk_after": None,
+            "messages": [AIMessage(content=f"리밸런싱 시뮬레이션 실패: {exc}")],
+        }
+
+
+async def rebalance_hitl_node(state: GraphState) -> GraphState:
+    """
+    리밸런싱 HITL 노드 - 사용자 승인 요청
+
+    경로 1: 첫 실행 → 전/후 비교 데이터와 함께 Interrupt 발생
+    경로 2: 승인 후 재개 → 사용자 수정사항 반영 또는 실행
+    """
+    # ========== 경로 2: 승인 후 재개 ==========
+    if state.get("rebalance_approved"):
+        logger.info("✅ [Rebalance/HITL] 사용자 승인 완료")
+
+        # 사용자 수정사항 처리
+        modifications = state.get("user_modifications")
+
+        if modifications:
+            logger.info("✏️ [Rebalance/HITL] 사용자 수정사항 반영: %s", modifications)
+
+            # 수정된 target_holdings 적용
+            modified_holdings = modifications.get("target_holdings")
+
+            if modified_holdings:
+                # 재시뮬레이션 필요
+                logger.info("🔄 [Rebalance/HITL] 재시뮬레이션을 위해 rebalance_simulator로 이동")
+
+                return {
+                    "rebalance_proposal": {
+                        **state.get("rebalance_proposal", {}),
+                        "target_holdings": modified_holdings,
+                    },
+                    "rebalance_approved": False,  # 재시뮬레이션 필요
+                    "user_modifications": None,
+                    "messages": [AIMessage(content="수정된 목표 비중으로 재시뮬레이션을 시작합니다.")],
+                }
+
+        # 수정 없음 - 실행 진행
+        return {
+            "rebalance_prepared": True,
+            "messages": [AIMessage(content="리밸런싱을 준비했습니다.")],
+        }
+
+    # ========== 경로 1: 첫 실행 (Interrupt 발생) ==========
+
+    rebalance_proposal = state.get("rebalance_proposal", {})
+    portfolio_before = state.get("portfolio_before")
+    portfolio_after = state.get("portfolio_after")
+    risk_before = state.get("risk_before")
+    risk_after = state.get("risk_after")
+
+    logger.info("🛒 [Rebalance/HITL] 리밸런싱 승인 요청")
+
+    # 데이터 검증
+    if not portfolio_before or not portfolio_after:
+        logger.error("❌ [Rebalance/HITL] 전/후 비교 데이터 없음")
+        raise Exception("리밸런싱 시뮬레이션 데이터가 없습니다.")
+
+    # Interrupt 발생
+    approval_id = str(uuid.uuid4())
+
+    logger.info("⚠️ [Rebalance/HITL] INTERRUPT 발생 - 전/후 비교 데이터 포함")
+
+    state_update: GraphState = {
+        "rebalance_approval_id": approval_id,
+        "messages": [AIMessage(content="리밸런싱 승인을 기다립니다...")],
+    }
+
+    interrupt_payload = {
+        "type": "rebalance_approval",
+        "approval_id": approval_id,
+        "proposal": rebalance_proposal,
+        "portfolio_before": portfolio_before,
+        "portfolio_after": portfolio_after,
+        "risk_before": risk_before,
+        "risk_after": risk_after,
+        "modifiable_fields": ["target_holdings"],
+        "message": "포트폴리오 리밸런싱을 승인하시겠습니까?",
+    }
+
+    raise Interrupt(state_update, value=interrupt_payload)
+
+
+async def execute_rebalance_node(state: GraphState) -> GraphState:
+    """
+    리밸런싱 실행 노드
+
+    목표 비중에 따라 포트폴리오를 재구성합니다.
+    """
+    from src.services.portfolio_service import portfolio_service
+
+    user_id = state.get("user_id")
+    rebalance_proposal = state.get("rebalance_proposal", {})
+    target_holdings = rebalance_proposal.get("target_holdings", [])
+
+    logger.info("💰 [Rebalance/Execute] 리밸런싱 실행 시작")
+    logger.info(f"  - user_id: {user_id}")
+    logger.info(f"  - 목표 자산: {len(target_holdings)}개")
+
+    try:
+        # Portfolio Service를 통해 리밸런싱 실행
+        result = await portfolio_service.execute_rebalancing(
+            user_id=user_id,
+            target_holdings=target_holdings,
+        )
+
+        logger.info("✅ [Rebalance/Execute] 리밸런싱 완료")
+
+        return {
+            "rebalance_result": result,
+            "rebalance_executed": True,
+            "messages": [AIMessage(content="리밸런싱이 완료되었습니다.")],
+        }
+
+    except Exception as exc:
+        logger.error("❌ [Rebalance/Execute] 리밸런싱 실패: %s", exc, exc_info=True)
+        return {
+            "messages": [AIMessage(content=f"리밸런싱 실패: {exc}")],
+        }
+
+
 # ==================== Supervisor Prompt ====================
 
 def build_supervisor_prompt() -> str:
@@ -487,12 +755,18 @@ def build_supervisor(intervention_required: bool = False, llm: Optional[BaseChat
     supervisor_workflow.add_node("trade_hitl", trade_hitl_node)
     supervisor_workflow.add_node("execute_trade", execute_trade_node)
 
+    # Rebalancing 노드 추가
+    supervisor_workflow.add_node("rebalance_planner", rebalance_planner_node)
+    supervisor_workflow.add_node("rebalance_simulator", rebalance_simulator_node)
+    supervisor_workflow.add_node("rebalance_hitl", rebalance_hitl_node)
+    supervisor_workflow.add_node("execute_rebalance", execute_rebalance_node)
+
     # Trading 노드 라우팅 추가 (planner → simulator → hitl → executor)
     supervisor_workflow.add_edge("trade_planner", "portfolio_simulator")
     supervisor_workflow.add_edge("portfolio_simulator", "trade_hitl")
 
     # trade_hitl 조건부 edge: 수정 시 재시뮬레이션, 승인 시 실행
-    def should_resimulate(state: GraphState) -> str:
+    def should_resimulate_trade(state: GraphState) -> str:
         """
         사용자 수정사항이 있어 재시뮬레이션이 필요한지 판단
 
@@ -511,17 +785,49 @@ def build_supervisor(intervention_required: bool = False, llm: Optional[BaseChat
 
     supervisor_workflow.add_conditional_edges(
         "trade_hitl",
-        should_resimulate,
+        should_resimulate_trade,
         {
             "portfolio_simulator": "portfolio_simulator",  # 재시뮬레이션
             "execute_trade": "execute_trade",  # 실행
         }
     )
 
+    # Rebalancing 노드 라우팅 추가 (planner → simulator → hitl → executor)
+    supervisor_workflow.add_edge("rebalance_planner", "rebalance_simulator")
+    supervisor_workflow.add_edge("rebalance_simulator", "rebalance_hitl")
+
+    # rebalance_hitl 조건부 edge: 수정 시 재시뮬레이션, 승인 시 실행
+    def should_resimulate_rebalance(state: GraphState) -> str:
+        """
+        사용자 수정사항이 있어 재시뮬레이션이 필요한지 판단
+
+        Returns:
+            "rebalance_simulator": 재시뮬레이션 필요 (수정 발생)
+            "execute_rebalance": 실행 진행 (승인 또는 수정 없음)
+        """
+        # rebalance_approved가 False면 재시뮬레이션 필요 (수정 발생)
+        if not state.get("rebalance_approved", False):
+            return "rebalance_simulator"
+        # rebalance_prepared가 True면 실행 진행
+        if state.get("rebalance_prepared", False):
+            return "execute_rebalance"
+        # 기본값: 실행 진행
+        return "execute_rebalance"
+
+    supervisor_workflow.add_conditional_edges(
+        "rebalance_hitl",
+        should_resimulate_rebalance,
+        {
+            "rebalance_simulator": "rebalance_simulator",  # 재시뮬레이션
+            "execute_rebalance": "execute_rebalance",  # 실행
+        }
+    )
+
     from langgraph.graph import END
     supervisor_workflow.add_edge("execute_trade", END)
+    supervisor_workflow.add_edge("execute_rebalance", END)
 
-    logger.info("✅ [Supervisor] 생성 완료 (intervention_required=%s, agents=%d, tools=%d, trading_nodes=4)",
+    logger.info("✅ [Supervisor] 생성 완료 (intervention_required=%s, agents=%d, tools=%d, trading_nodes=4, rebalancing_nodes=4)",
                 intervention_required, len(agents), len(tools))
 
     return supervisor_workflow

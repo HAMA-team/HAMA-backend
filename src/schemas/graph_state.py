@@ -181,6 +181,33 @@ class GraphState(TypedDict):
     예: {"volatility": 0.14, "var_95": 0.031, "sharpe_ratio": 0.75, ...}
     """
 
+    # ==================== 리밸런싱 실행 상태 플래그 ====================
+
+    rebalance_prepared: bool
+    """리밸런싱 준비 완료 여부"""
+
+    rebalance_approved: bool
+    """리밸런싱 승인 완료 여부"""
+
+    rebalance_executed: bool
+    """리밸런싱 실행 완료 여부"""
+
+    rebalance_approval_id: Optional[str]
+    """리밸런싱 승인 요청 ID"""
+
+    rebalance_proposal: Optional[Dict[str, Any]]
+    """
+    리밸런싱 제안
+    예: {
+        "target_holdings": [...],  # 목표 비중
+        "rationale": "...",
+        "metrics": {"expected_return": 0.12, ...}
+    }
+    """
+
+    rebalance_result: Optional[Dict[str, Any]]
+    """리밸런싱 실행 결과"""
+
     # ==================== 최종 결과 (하위 호환성) ====================
 
     summary: Optional[str]

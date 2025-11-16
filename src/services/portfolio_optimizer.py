@@ -151,9 +151,9 @@ class PortfolioOptimizer:
 
         전략:
         1. 현재 보유 종목 유지 (급격한 변화 방지)
-        2. Overweight 섹터 → 비중 증가
-        3. Underweight 섹터 → 비중 감소
-        4. 나머지 → 균등 배분
+        2. Overweight 섹터 → 비중 증가 (+10~20%p)
+        3. Underweight 섹터 → 비중 감소 (-10~20%p)
+        4. 제약 조건 검증 및 적용
         """
         # CASH 제외
         stock_holdings = [h for h in current_holdings if h.get("stock_code") != "CASH"]
@@ -175,28 +175,176 @@ class PortfolioOptimizer:
                     "stock_name": holding["stock_name"],
                     "weight": round(equal_weight, 4),
                     "value": round(total_value * equal_weight, -3) if total_value else 0.0,
+                    "sector": holding.get("sector", "기타"),
                 })
             return proposed
 
-        # 비중 조정 (현재 비중 → 목표 비중으로 스케일링)
+        # 1. 실제 섹터 정보 수집
+        holdings_with_sectors = []
+        for holding in stock_holdings:
+            stock_code = holding["stock_code"]
+
+            # 섹터 정보 조회 (stock_data_service 활용)
+            sector = await self._get_stock_sector(stock_code)
+
+            holdings_with_sectors.append({
+                **holding,
+                "sector": sector,
+            })
+
+        # 2. 비중 조정 (기본 스케일링)
         scale_factor = equity_ratio / current_equity_weight
 
         proposed = []
-        for holding in stock_holdings:
+        for holding in holdings_with_sectors:
             current_weight = holding.get("weight", 0)
             new_weight = current_weight * scale_factor
+            sector = holding.get("sector", "기타")
 
-            # 섹터 선호도 반영 (TODO: 실제 섹터 정보 연동)
-            # 현재는 단순 스케일링만 수행
+            # 3. 섹터 선호도 반영
+            if sector_preferences:
+                preference = sector_preferences.get(sector)
+
+                if preference == "overweight":
+                    # Overweight → 비중 15% 증가
+                    new_weight *= 1.15
+                    logger.info(f"  - {holding['stock_name']} ({sector}): overweight → 비중 +15%")
+                elif preference == "underweight":
+                    # Underweight → 비중 15% 감소
+                    new_weight *= 0.85
+                    logger.info(f"  - {holding['stock_name']} ({sector}): underweight → 비중 -15%")
 
             proposed.append({
                 "stock_code": holding["stock_code"],
                 "stock_name": holding["stock_name"],
-                "weight": round(new_weight, 4),
+                "weight": new_weight,
                 "value": round(total_value * new_weight, -3) if total_value else 0.0,
+                "sector": sector,
             })
 
+        # 4. 제약 조건 검증 및 정규화
+        proposed = self._apply_constraints(proposed, equity_ratio)
+
         return proposed
+
+    async def _get_stock_sector(self, stock_code: str) -> str:
+        """
+        종목의 섹터 정보 조회
+
+        Args:
+            stock_code: 종목 코드
+
+        Returns:
+            섹터명 (예: "IT/전기전자", "자동차", "기타")
+        """
+        try:
+            # stock_data_service를 통해 종목 정보 조회
+            stock_info = await stock_data_service.get_stock_info(stock_code)
+
+            if stock_info and "sector" in stock_info:
+                return stock_info["sector"]
+
+            # Fallback: 기본값
+            logger.warning(f"⚠️ [Optimizer] {stock_code} 섹터 정보 없음, '기타'로 분류")
+            return "기타"
+
+        except Exception as e:
+            logger.warning(f"⚠️ [Optimizer] {stock_code} 섹터 조회 실패: {e}")
+            return "기타"
+
+    def _apply_constraints(
+        self,
+        proposed_holdings: List[Dict],
+        target_equity_ratio: float
+    ) -> List[Dict]:
+        """
+        포트폴리오 제약 조건 적용
+
+        제약:
+        1. 단일 종목 최대 비중: 30%
+        2. 단일 섹터 최대 비중: 50%
+        3. 총 비중: target_equity_ratio
+
+        Args:
+            proposed_holdings: 제안된 보유 종목 (제약 적용 전)
+            target_equity_ratio: 목표 주식 비중
+
+        Returns:
+            제약 조건을 만족하는 보유 종목
+        """
+        # 1. 단일 종목 최대 비중 제한 (30%)
+        max_stock_weight = 0.30
+        capped_holdings = []
+
+        for h in proposed_holdings:
+            weight = h["weight"]
+
+            if weight > max_stock_weight:
+                logger.warning(
+                    f"⚠️ [Optimizer/Constraint] {h['stock_name']} 비중 {weight:.1%} → {max_stock_weight:.1%} (최대 비중 초과)"
+                )
+                weight = max_stock_weight
+
+            capped_holdings.append({**h, "weight": weight})
+
+        # 2. 섹터별 비중 계산 및 제한 (50%)
+        max_sector_weight = 0.50
+        sector_totals = {}
+
+        for h in capped_holdings:
+            sector = h.get("sector", "기타")
+            sector_totals[sector] = sector_totals.get(sector, 0) + h["weight"]
+
+        # 섹터 비중 초과 확인
+        sector_adjustments = {}
+        for sector, total_weight in sector_totals.items():
+            if total_weight > max_sector_weight:
+                # 비율로 감소
+                adjustment_factor = max_sector_weight / total_weight
+                sector_adjustments[sector] = adjustment_factor
+
+                logger.warning(
+                    f"⚠️ [Optimizer/Constraint] {sector} 섹터 비중 {total_weight:.1%} → {max_sector_weight:.1%}"
+                )
+
+        # 섹터 조정 적용
+        adjusted_holdings = []
+        for h in capped_holdings:
+            sector = h.get("sector", "기타")
+            weight = h["weight"]
+
+            if sector in sector_adjustments:
+                weight *= sector_adjustments[sector]
+
+            adjusted_holdings.append({**h, "weight": weight})
+
+        # 3. 총 비중 정규화 (target_equity_ratio 맞추기)
+        total_weight = sum(h["weight"] for h in adjusted_holdings)
+
+        if total_weight == 0:
+            logger.warning("⚠️ [Optimizer/Constraint] 총 비중이 0, 제약 적용 실패")
+            return proposed_holdings
+
+        normalization_factor = target_equity_ratio / total_weight
+
+        normalized_holdings = []
+        for h in adjusted_holdings:
+            final_weight = h["weight"] * normalization_factor
+
+            normalized_holdings.append({
+                "stock_code": h["stock_code"],
+                "stock_name": h["stock_name"],
+                "weight": round(final_weight, 4),
+                "value": h["value"],
+                "sector": h.get("sector", "기타"),
+            })
+
+        logger.info(
+            f"✅ [Optimizer/Constraint] 제약 조건 적용 완료: "
+            f"총 비중 {sum(h['weight'] for h in normalized_holdings):.1%}"
+        )
+
+        return normalized_holdings
 
     async def _calculate_portfolio_metrics(
         self,
