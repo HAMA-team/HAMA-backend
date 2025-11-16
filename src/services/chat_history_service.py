@@ -32,7 +32,7 @@ class ChatHistoryService:
         """
         Create or update a chat session row.
 
-        Note: automation_level 제거됨. hitl_config는 user_settings 또는 session_metadata에서 관리됩니다.
+        HITL 설정(hitl_config)은 user_settings 또는 session_metadata에서 관리됩니다.
         """
 
         def _upsert() -> ChatSession:

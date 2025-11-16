@@ -51,7 +51,7 @@ def get_compiled_graph(level: int) -> CompiledGraph:
 ## HAMA 프로젝트 적용 제안
 
 1. **Supervisor 그래프 캐시화**  
-   - `src/agents/graph_master.py`에서 `build_graph()` 호출 결과를 automation level 캐시에 저장하고 동일 모듈에서 재사용.
+   - `src/agents/graph_master.py`에서 `build_graph()` 호출 결과를 `intervention_required` 조합별 캐시에 저장하고 동일 모듈에서 재사용.
 2. **LLM 팩토리 캐싱**  
    - `src/utils/llm_factory.py`에 `lru_cache` 또는 커스텀 캐시를 도입해 동일 설정의 LLM 인스턴스를 재활용.
 3. **Graph Config vs Instance 분리**  
@@ -67,4 +67,3 @@ def get_compiled_graph(level: int) -> CompiledGraph:
 2. `graph_master` 리팩터링 설계서 초안 작성 (그래프 캐시, configurable 적용).
 3. LLM 호출 카운터 계측을 위한 로깅/메트릭스 설계.
 4. 구현 후 `pytest`에 Supervisor 그래프 재사용 여부를 확인하는 회귀 테스트 추가 검토.
-

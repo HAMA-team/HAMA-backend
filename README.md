@@ -249,15 +249,23 @@ GET /api/v1/stocks/{stock_code}
 
 ### Settings API (`/api/v1/settings`)
 ```bash
-# 자동화 레벨 조회
+# HITL 개입 설정 조회
 GET /api/v1/settings/intervention?user_id=user-uuid
 
-# 자동화 레벨 변경
+# HITL 개입 설정 변경
 PUT /api/v1/settings/intervention
 {
   "user_id": "user-uuid",
-  "automation_level": 2,  # 1:Pilot, 2:Copilot, 3:Advisor
-  "required_approvals": ["trade", "portfolio"]
+  "hitl_config": {
+    "phases": {
+      "data_collection": false,
+      "analysis": true,
+      "portfolio": true,
+      "risk": true,
+      "trade": "conditional"
+    }
+  },
+  "confirm": true
 }
 ```
 

@@ -18,9 +18,9 @@ from src.schemas.hitl_config import (
     get_interrupt_points,
 )
 from src.schemas.settings import (
-    AutomationLevelResponse,
-    AutomationLevelUpdateRequest,
-    AutomationLevelUpdateResponse,
+    InterventionSettingsResponse,
+    InterventionSettingsUpdateRequest,
+    InterventionSettingsUpdateResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,10 @@ def _validate_hitl_config(config: HITLConfig) -> None:
         )
 
 
-@router.get("/intervention", response_model=AutomationLevelResponse)
+@router.get("/intervention", response_model=InterventionSettingsResponse)
 def get_intervention_settings(
     db: Session = Depends(get_db),
-) -> AutomationLevelResponse:
+) -> InterventionSettingsResponse:
     """
     현재 사용자의 HITL 설정을 반환한다.
     설정이 없으면 기본값(모든 phase False)을 사용한다.
@@ -75,17 +75,17 @@ def get_intervention_settings(
 
     logger.info("📡 [Settings] HITL config 조회")
 
-    return AutomationLevelResponse(
+    return InterventionSettingsResponse(
         hitl_config=config,
         interrupt_points=interrupt_points,
     )
 
 
-@router.put("/intervention", response_model=AutomationLevelUpdateResponse)
+@router.put("/intervention", response_model=InterventionSettingsUpdateResponse)
 def update_intervention_settings(
-    request: AutomationLevelUpdateRequest,
+    request: InterventionSettingsUpdateRequest,
     db: Session = Depends(get_db),
-) -> AutomationLevelUpdateResponse:
+) -> InterventionSettingsUpdateResponse:
     """
     사용자 HITL 설정 저장.
     """
@@ -102,7 +102,7 @@ def update_intervention_settings(
 
     logger.info("✅ [Settings] HITL config 저장 완료")
 
-    return AutomationLevelUpdateResponse(
+    return InterventionSettingsUpdateResponse(
         success=True,
         message="HITL 설정이 저장되었습니다",
         new_config=request.hitl_config,

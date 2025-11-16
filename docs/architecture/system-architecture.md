@@ -77,7 +77,7 @@
 │  - users, portfolios, positions, orders, transactions        │
 │  - chat_sessions, chat_messages, approval_requests           │
 │  - stocks, financial_statements, disclosures, news_articles  │
-│  - user_settings, automation_levels, artifacts, ...          │
+│  - user_settings, hitl_configs, artifacts, ...               │
 └─────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────┐
