@@ -839,6 +839,15 @@ async def blueprint_creation_node(state: QuantitativeState) -> Dict[str, Any]:
         # 간단한 Dashboard 생성 (LLM 사용)
         llm = get_llm(temperature=0.3, max_tokens=2000)
 
+        target_price = risk_reward.get("final_target_price", "N/A")
+        stop_loss_price = risk_reward.get("stop_loss_price", "N/A")
+        target_price_display = (
+            f"{target_price:,.0f}원" if isinstance(target_price, (int, float)) else str(target_price)
+        )
+        stop_loss_display = (
+            f"{stop_loss_price:,.0f}원" if isinstance(stop_loss_price, (int, float)) else str(stop_loss_price)
+        )
+
         dashboard_prompt = f"""당신은 투자 분석 리포트 작성 전문가입니다. 다음 분석 결과를 바탕으로 간결한 투자 Blueprint를 작성하세요.
 
 ## 종목: {stock_code}
@@ -857,8 +866,8 @@ async def blueprint_creation_node(state: QuantitativeState) -> Dict[str, Any]:
 ### 투자 가이드
 - 전략: {strategy.get('action', 'N/A').upper()}
 - 신뢰도: {strategy.get('confidence', 'N/A')}%
-- 목표가: {risk_reward.get('final_target_price', 'N/A'):,.0f}원
-- 손절가: {risk_reward.get('stop_loss_price', 'N/A'):,.0f}원
+- 목표가: {target_price_display}
+- 손절가: {stop_loss_display}
 
 다음 마크다운 형식으로 200-300자 요약을 작성하세요:
 
