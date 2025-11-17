@@ -39,7 +39,10 @@ class MultiAgentStreamRequest(BaseModel):
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     hitl_config: HITLConfig = Field(default_factory=HITLConfig)
-    intervention_required: bool = Field(default=False, description="분석/전략 단계부터 HITL 필요 여부")
+    intervention_required: bool = Field(
+        default=True,
+        description="분석/전략 단계부터 HITL 필요 여부 (기본적으로 분석도 승인을 기다림)",
+    )
     stream_thinking: bool = Field(default=True, description="LLM 사고 과정 실시간 스트리밍 활성화 (ChatGPT식)")
 
 

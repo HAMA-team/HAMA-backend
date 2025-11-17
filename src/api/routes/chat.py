@@ -76,9 +76,9 @@ class ChatRequest(BaseModel):
         description="HITL 단계별 설정",
     )
     intervention_required: bool = Field(
-        default=False,
+        default=True,
         validation_alias=AliasChoices("intervention_required", "interventionRequired"),
-        description="분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)",
+        description="분석/전략 단계부터 HITL 필요 여부 (기본적으로 분석/전략도 승인 대기)",
     )
 
     @field_validator("message")
@@ -1012,6 +1012,37 @@ async def approve_action(
 
             if combined_modifications:
                 logger.info("✏️ 사용자 수정사항 전달: %s", combined_modifications)
+
+            # State 업데이트를 위해 현재 State 조회
+            current_state = await configured_app.aget_state(config)
+            current_values = getattr(current_state, "values", {}) if current_state else {}
+
+            # State 업데이트: user_modifications와 실제 값을 모두 반영
+            state_update = {
+                "trade_approved": True,
+            }
+
+            if combined_modifications:
+                state_update["user_modifications"] = combined_modifications
+                # 수정된 값을 State에 직접 반영
+                if "quantity" in combined_modifications:
+                    state_update["trade_quantity"] = combined_modifications["quantity"]
+                    logger.info("📝 [Approve] trade_quantity 업데이트: %s → %s",
+                               current_values.get("trade_quantity"), combined_modifications["quantity"])
+                if "price" in combined_modifications:
+                    state_update["trade_price"] = combined_modifications["price"]
+                    logger.info("📝 [Approve] trade_price 업데이트: %s → %s",
+                               current_values.get("trade_price"), combined_modifications["price"])
+                if "action" in combined_modifications:
+                    state_update["trade_action"] = combined_modifications["action"]
+                    logger.info("📝 [Approve] trade_action 업데이트: %s → %s",
+                               current_values.get("trade_action"), combined_modifications["action"])
+
+            # State를 먼저 업데이트
+            await configured_app.aupdate_state(config, state_update)
+            logger.info("✅ [Approve] State 업데이트 완료")
+
+            # Resume value 준비
             resume_value = _build_resume_value(
                 approval_type=request_type,
                 user_id=DEMO_USER_UUID,
@@ -1019,6 +1050,7 @@ async def approve_action(
                 modifications=combined_modifications,
             )
 
+            # Resume 실행
             resume_command: Command = cast(Command, {"resume": resume_value})
             result = await configured_app.ainvoke(resume_command)
             state_after_resume = await configured_app.aget_state(config)
