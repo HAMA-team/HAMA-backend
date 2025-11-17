@@ -498,7 +498,8 @@ async def asset_allocation_node(state: QuantitativeState) -> Dict[str, Any]:
         # 1. KOSPI 변동성 계산
         from src.services.stock_data_service import stock_data_service
 
-        df = await stock_data_service.get_market_index("KS11", days=60)
+        # 서비스 계층은 지수명을 KOSPI/KOSDAQ 등으로 받아들이므로 KS11 대신 KOSPI로 요청한다.
+        df = await stock_data_service.get_market_index("KOSPI", days=60)
 
         volatility_index = None
         if df is not None and len(df) >= 20:
