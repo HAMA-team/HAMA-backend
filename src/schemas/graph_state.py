@@ -181,6 +181,12 @@ class GraphState(TypedDict):
     예: {"volatility": 0.14, "var_95": 0.031, "sharpe_ratio": 0.75, ...}
     """
 
+    simulation_failed: bool
+    """포트폴리오 시뮬레이션 실패 여부"""
+
+    simulation_error: Optional[str]
+    """포트폴리오 시뮬레이션 에러 메시지"""
+
     # ==================== 리밸런싱 실행 상태 플래그 ====================
 
     rebalance_prepared: bool

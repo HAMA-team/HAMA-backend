@@ -12,7 +12,7 @@ from src.subgraphs.tools.ticker_tools import get_ticker_tools
 from src.subgraphs.tools.risk_tools import get_risk_tools
 from src.subgraphs.tools.portfolio_tools import get_portfolio_tools
 from src.subgraphs.tools.report_tools import get_report_tools
-from src.subgraphs.tools.trading_tools import get_trading_tools
+from src.subgraphs.trading_subgraph.tools import get_trading_tools
 
 
 def get_all_tools() -> List[BaseTool]:
