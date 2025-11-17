@@ -6,9 +6,11 @@ PostgreSQL 기반 영속성 checkpointer만 제공
 - Fallback 없이 PostgreSQL 연결 실패 시 에러 반환
 - 동기/비동기 checkpointer 모두 지원
 """
+import asyncio
 import logging
+from typing import Any, AsyncIterator, Sequence
 
-from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 
 from src.config.settings import settings
 
@@ -56,6 +58,64 @@ def get_checkpointer() -> BaseCheckpointSaver:
             "다음 명령어로 설치하세요: pip install langgraph-checkpoint-postgres"
         ) from e
 
+    class AsyncReadyPostgresSaver(PostgresSaver):
+        """PostgresSaver에 async API를 얇게 래핑해 ainvoke 경로에서 재사용한다."""
+
+        async def aget_tuple(self, config) -> CheckpointTuple | None:
+            return await asyncio.to_thread(PostgresSaver.get_tuple, self, config)
+
+        async def alist(
+            self,
+            config,
+            *,
+            filter: dict[str, Any] | None = None,
+            before=None,
+            limit: int | None = None,
+        ) -> AsyncIterator[CheckpointTuple]:
+            def _load_list():
+                return list(
+                    PostgresSaver.list(
+                        self,
+                        config,
+                        filter=filter,
+                        before=before,
+                        limit=limit,
+                    )
+                )
+
+            rows = await asyncio.to_thread(_load_list)
+            for row in rows:
+                yield row
+
+        async def aput(self, config, checkpoint, metadata, new_versions):
+            return await asyncio.to_thread(
+                PostgresSaver.put,
+                self,
+                config,
+                checkpoint,
+                metadata,
+                new_versions,
+            )
+
+        async def aput_writes(
+            self,
+            config,
+            writes: Sequence[tuple[str, Any]],
+            task_id: str,
+            task_path: str = "",
+        ) -> None:
+            await asyncio.to_thread(
+                PostgresSaver.put_writes,
+                self,
+                config,
+                writes,
+                task_id,
+                task_path,
+            )
+
+        async def adelete_thread(self, thread_id: str) -> None:
+            await asyncio.to_thread(PostgresSaver.delete_thread, self, thread_id)
+
     db_uri = settings.database_url
 
     # 보안을 위해 호스트 정보만 로깅
@@ -64,7 +124,7 @@ def get_checkpointer() -> BaseCheckpointSaver:
 
     try:
         # Context manager 생성 및 진입
-        _checkpointer_cm = PostgresSaver.from_conn_string(db_uri)
+        _checkpointer_cm = AsyncReadyPostgresSaver.from_conn_string(db_uri)
         _checkpointer_instance = _checkpointer_cm.__enter__()
 
         # 최초 실행 시 테이블 생성 (멱등성 보장)
