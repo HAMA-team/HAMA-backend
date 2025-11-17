@@ -195,7 +195,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         result = await configured_app.ainvoke(initial_state)
 
         # Check for interrupt
-        state = await configured_app.aget_state()
+        state = await configured_app.aget_state(config)
 
         if state.next:  # Interrupt 발생
             hitl_result = await handle_hitl_interrupt(
@@ -563,6 +563,280 @@ def _build_resume_value(
     return resume_value
 
 
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_quantity(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"{int(round(value)):,}주"
+
+
+def _format_quantity_delta(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{int(round(value)):,}주"
+
+
+def _format_currency(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"{int(round(value)):,}원"
+
+
+def _format_currency_delta(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{int(round(value)):,}원"
+
+
+def _format_percent(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _format_percent_delta(value: Optional[float]) -> str:
+    if value is None:
+        return "-"
+    sign = "+" if value > 0 else ""
+    return f"{sign}{value * 100:.1f}%"
+
+
+def _extract_holding(portfolio: Optional[Dict[str, Any]], stock_code: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not portfolio or not stock_code:
+        return None
+    code = stock_code.upper()
+    for holding in portfolio.get("holdings", []) or []:
+        holding_code = (holding.get("stock_code") or "").upper()
+        if holding_code == code:
+            return holding
+    return None
+
+
+def _build_portfolio_effect(
+    *,
+    stock_code: Optional[str],
+    stock_name: Optional[str],
+    portfolio_before: Optional[Dict[str, Any]],
+    portfolio_after: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not stock_code:
+        return None
+
+    before_holding = _extract_holding(portfolio_before, stock_code)
+    after_holding = _extract_holding(portfolio_after, stock_code)
+
+    before_qty = _safe_float(before_holding.get("quantity")) if before_holding else 0.0
+    after_qty = _safe_float(after_holding.get("quantity")) if after_holding else 0.0
+    before_avg = _safe_float(before_holding.get("average_price")) if before_holding else None
+    after_avg = _safe_float(after_holding.get("average_price")) if after_holding else before_avg
+    before_weight = _safe_float(before_holding.get("weight")) if before_holding else 0.0
+    after_weight = _safe_float(after_holding.get("weight")) if after_holding else 0.0
+
+    diff_qty = (after_qty or 0.0) - (before_qty or 0.0)
+    diff_avg = (after_avg - before_avg) if (after_avg is not None and before_avg is not None) else None
+    diff_weight = (after_weight or 0.0) - (before_weight or 0.0)
+
+    table_lines = [
+        "|구분|보유 수량|평균 단가|포트폴리오 비중|",
+        "|---|---|---|---|",
+        f"|승인 전|{_format_quantity(before_qty)}|{_format_currency(before_avg)}|{_format_percent(before_weight)}|",
+        f"|승인 후|{_format_quantity(after_qty)}|{_format_currency(after_avg)}|{_format_percent(after_weight)}|",
+    ]
+    table_lines.append(
+        f"|증감|{_format_quantity_delta(diff_qty)}|{_format_currency_delta(diff_avg)}|{_format_percent_delta(diff_weight)}|"
+    )
+    table_markdown = "\n".join(table_lines)
+
+    cash_before = _safe_float((portfolio_before or {}).get("cash_balance"))
+    cash_after = _safe_float((portfolio_after or {}).get("cash_balance"))
+    cash_effect = None
+    if cash_before is not None or cash_after is not None:
+        diff_cash = None
+        if cash_before is not None and cash_after is not None:
+            diff_cash = cash_after - cash_before
+        cash_effect = {
+            "before": cash_before,
+            "after": cash_after,
+            "diff": diff_cash,
+        }
+
+    portfolio_effect = {
+        "stock_code": stock_code,
+        "stock_name": stock_name or stock_code,
+        "before": {
+            "quantity": before_qty,
+            "average_price": before_avg,
+            "weight": before_weight,
+        },
+        "after": {
+            "quantity": after_qty,
+            "average_price": after_avg,
+            "weight": after_weight,
+        },
+        "diff": {
+            "quantity": diff_qty,
+            "average_price": diff_avg,
+            "weight": diff_weight,
+        },
+        "table_markdown": table_markdown,
+    }
+
+    if cash_effect:
+        portfolio_effect["cash"] = cash_effect
+
+    return portfolio_effect
+
+
+def _build_risk_effect(
+    *,
+    risk_before: Optional[Dict[str, Any]],
+    risk_after: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if not risk_before and not risk_after:
+        return None
+
+    metrics = [
+        "portfolio_volatility",
+        "var_95",
+        "sharpe_ratio",
+        "max_drawdown_estimate",
+    ]
+    effect: Dict[str, Dict[str, Optional[float]]] = {}
+    for key in metrics:
+        before_val = _safe_float((risk_before or {}).get(key))
+        after_val = _safe_float((risk_after or {}).get(key))
+        diff_val = None
+        if before_val is not None and after_val is not None:
+            diff_val = after_val - before_val
+        effect[key] = {
+            "before": before_val,
+            "after": after_val,
+            "diff": diff_val,
+        }
+
+    return effect
+
+
+def _build_trade_execution_payload(
+    *,
+    resume_result: Dict[str, Any],
+    state_values: Dict[str, Any],
+    approval_data: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    approval_data = approval_data or {}
+    trade_result = (
+        (resume_result or {}).get("trade_result")
+        or state_values.get("trade_result")
+        or {}
+    )
+
+    stock_code = (
+        state_values.get("stock_code")
+        or approval_data.get("stock_code")
+        or trade_result.get("stock_code")
+    )
+    stock_name = (
+        state_values.get("stock_name")
+        or approval_data.get("stock_name")
+        or trade_result.get("stock_name")
+        or stock_code
+    )
+    trade_action = (state_values.get("trade_action") or approval_data.get("action") or "buy").lower()
+    action_label = "매수" if trade_action == "buy" else "매도"
+    executed_qty = (
+        trade_result.get("quantity")
+        or state_values.get("trade_quantity")
+        or approval_data.get("quantity")
+    )
+    executed_price = (
+        trade_result.get("price")
+        or state_values.get("trade_price")
+        or approval_data.get("price")
+    )
+
+    summary_text = None
+    if executed_qty and executed_price:
+        total_amount = int(round(float(executed_qty) * float(executed_price)))
+        summary_text = (
+            f"✅ {stock_name or stock_code} {action_label} 완료 - "
+            f"{int(executed_qty):,}주 @ {int(executed_price):,}원 (총 {total_amount:,}원)"
+        )
+    elif stock_name:
+        summary_text = f"✅ {stock_name} {action_label}가 완료되었습니다."
+    else:
+        summary_text = "✅ 매매가 실행되었습니다."
+
+    portfolio_effect = _build_portfolio_effect(
+        stock_code=stock_code,
+        stock_name=stock_name,
+        portfolio_before=state_values.get("portfolio_before") or approval_data.get("portfolio_before"),
+        portfolio_after=state_values.get("portfolio_after") or approval_data.get("portfolio_after"),
+    )
+
+    risk_effect = _build_risk_effect(
+        risk_before=state_values.get("risk_before") or approval_data.get("risk_before"),
+        risk_after=state_values.get("risk_after") or approval_data.get("risk_after"),
+    )
+
+    payload: Dict[str, Any] = {
+        "summary": summary_text,
+    }
+    if trade_result:
+        payload["trade_result"] = trade_result
+    if portfolio_effect:
+        payload["portfolio_effect"] = portfolio_effect
+    if risk_effect:
+        payload["risk_effect"] = risk_effect
+
+    return payload
+
+
+def _build_generic_final_response(
+    *,
+    resume_result: Dict[str, Any],
+    state_values: Dict[str, Any],
+) -> Dict[str, Any]:
+    summary_text = (
+        resume_result.get("summary")
+        or state_values.get("summary")
+        or "처리가 완료되었습니다."
+    )
+    details = resume_result.get("details") or state_values.get("agent_results")
+
+    payload: Dict[str, Any] = {"summary": summary_text}
+    if details:
+        payload["details"] = details
+    return payload
+
+
+def _build_final_response_payload(
+    *,
+    request_type: str,
+    resume_result: Dict[str, Any],
+    state_values: Dict[str, Any],
+    approval_data: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if request_type == "trade_approval":
+        return _build_trade_execution_payload(
+            resume_result=resume_result,
+            state_values=state_values,
+            approval_data=approval_data,
+        )
+
+    return _build_generic_final_response(
+        resume_result=resume_result,
+        state_values=state_values,
+    )
+
+
 class ApprovalRequest(BaseModel):
     """승인 요청 스키마"""
 
@@ -612,10 +886,14 @@ async def approve_action(
             .filter(ChatSession.conversation_id == conversation_uuid)
             .first()
         )
-        # intervention_required는 session_metadata에서 가져오거나 기본값 사용
+        # intervention_required/hitl_config는 session_metadata에서 복원하거나 기본값 사용
         intervention_required = False
+        hitl_config = HITLConfig()
         if session_row and session_row.session_metadata:
             intervention_required = session_row.session_metadata.get("intervention_required", False)
+            hitl_meta = session_row.session_metadata.get("hitl_config")
+            if hitl_meta:
+                hitl_config = HITLConfig(**hitl_meta)
 
         decision_metadata = {
             "decision": approval.decision,
@@ -648,16 +926,67 @@ async def approve_action(
         def _trade_summary(payload: Dict[str, Any]) -> str:
             summary_text = payload.get("summary")
             trade = payload.get("trade_result") or {}
-            parts = [summary_text] if summary_text else []
-            if trade:
+            portfolio_effect = payload.get("portfolio_effect") or {}
+            risk_effect = payload.get("risk_effect") or {}
+
+            parts: List[str] = []
+            if summary_text:
+                parts.append(summary_text)
+
+            table_markdown = portfolio_effect.get("table_markdown")
+            if table_markdown:
+                parts.append(table_markdown)
+
+            cash_effect = portfolio_effect.get("cash") if portfolio_effect else None
+            if cash_effect and (
+                cash_effect.get("before") is not None or cash_effect.get("after") is not None
+            ):
                 parts.append(
-                    f"주문 {trade.get('order_id', 'N/A')} 상태 {trade.get('status', 'N/A')} "
-                    f"체결가 {trade.get('price', 0)} 수량 {trade.get('quantity', 0)}"
+                    "💵 현금 잔액: "
+                    f"{_format_currency(cash_effect.get('before'))} → "
+                    f"{_format_currency(cash_effect.get('after'))} "
+                    f"({_format_currency_delta(cash_effect.get('diff'))})"
                 )
-            return "\n".join(filter(None, parts)) or "처리가 완료되었습니다."
+
+            if risk_effect:
+                risk_parts: List[str] = []
+                vol = risk_effect.get("portfolio_volatility")
+                if vol and (vol.get("before") is not None or vol.get("after") is not None):
+                    risk_parts.append(
+                        f"변동성 {_format_percent(vol.get('before'))} → {_format_percent(vol.get('after'))}"
+                    )
+                var95 = risk_effect.get("var_95")
+                if var95 and (var95.get("before") is not None or var95.get("after") is not None):
+                    risk_parts.append(
+                        f"VaR95 {_format_percent(var95.get('before'))} → {_format_percent(var95.get('after'))}"
+                    )
+                sharpe = risk_effect.get("sharpe_ratio")
+                if sharpe and (sharpe.get("before") is not None or sharpe.get("after") is not None):
+                    sharpe_before = sharpe.get("before")
+                    sharpe_after = sharpe.get("after")
+                    before_text = f"{sharpe_before:.2f}" if sharpe_before is not None else "-"
+                    after_text = f"{sharpe_after:.2f}" if sharpe_after is not None else "-"
+                    risk_parts.append(f"샤프 {before_text} → {after_text}")
+                if risk_parts:
+                    parts.append("⚖️ 리스크 변화: " + ", ".join(risk_parts))
+
+            if trade:
+                order_id = trade.get("order_id", "N/A")
+                status = trade.get("status", "완료")
+                price = trade.get("price")
+                quantity = trade.get("quantity")
+                order_line = (
+                    f"🧾 주문 {order_id} | 상태 {status} | "
+                    f"체결가 {_format_currency(price)} | 수량 {_format_quantity(quantity)}"
+                )
+                parts.append(order_line)
+
+            return "\n\n".join(filter(None, parts)) or "처리가 완료되었습니다."
 
         # DB에 사용자 결정 저장 (request_id가 있는 경우)
-        request_type, _ = _get_approval_request_context(db, approval.request_id)
+        request_type, approval_context = _get_approval_request_context(
+            db, approval.request_id
+        )
 
         if approval.request_id:
             try:
@@ -692,7 +1021,8 @@ async def approve_action(
 
             resume_command: Command = cast(Command, {"resume": resume_value})
             result = await configured_app.ainvoke(resume_command)
-            state_after_resume = await configured_app.aget_state()
+            state_after_resume = await configured_app.aget_state(config)
+            state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
 
             if getattr(state_after_resume, "next", None):
                 hitl_result = await handle_hitl_interrupt(
@@ -715,7 +1045,14 @@ async def approve_action(
                         },
                     )
 
-            final_response = result.get("final_response", {})
+            final_response = result.get("final_response") or {}
+            if not final_response:
+                final_response = _build_final_response_payload(
+                    request_type=request_type,
+                    resume_result=result,
+                    state_values=state_values,
+                    approval_data=approval_context,
+                )
             message_text = _trade_summary(final_response)
 
             await chat_history_service.append_message(
