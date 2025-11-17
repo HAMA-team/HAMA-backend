@@ -234,7 +234,7 @@ async def trade_planner_node(state: TradingState) -> TradingState:
     if price == 0:
         logger.info("📈 [Trading/Planner] 시장가 주문 → 현재가 조회 시도")
         try:
-            price_info = await stock_data_service.fetch_realtime_price(stock_code)
+            price_info = await stock_data_service.get_realtime_price(stock_code)
             price = price_info.get("close", 0) or price_info.get("price", 0) or 0
             logger.info("✅ [Trading/Planner] 현재가 조회 성공: %s = %d", stock_code, price)
         except Exception as exc:
