@@ -3,6 +3,7 @@ Application configuration and settings
 """
 import os
 import uuid
+from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import List, Optional
 
@@ -108,6 +109,15 @@ class Settings(BaseSettings):
     KIS_APP_KEY: str | None = None
     KIS_APP_SECRET: str | None = None
     KIS_ACCOUNT_NUMBER: str | None = None
+    KIS_TOKEN_CACHE_PATH: str | None = ".cache/kis_token.json"
+
+    @property
+    def kis_token_cache_path(self) -> Path | None:
+        """KIS 토큰 캐시 파일 경로를 반환합니다."""
+        path = (self.KIS_TOKEN_CACHE_PATH or "").strip()
+        if not path:
+            return None
+        return Path(path).expanduser()
 
     # LangSmith (Optional)
     LANGSMITH_API_KEY: str | None = None

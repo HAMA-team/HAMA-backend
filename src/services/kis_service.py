@@ -19,6 +19,7 @@ import time
 import types
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -101,6 +102,7 @@ class KISService:
         app_secret: Optional[str] = None,
         account_number: Optional[str] = None,
         env: str = "demo",  # "real" or "demo"
+        token_cache_path: Optional[str | Path] = None,
     ):
         """
         KIS 서비스 초기화
@@ -132,6 +134,10 @@ class KISService:
         # Base URL 설정
         self.base_url = KIS_BASE_URLS["prod"] if env == "real" else KIS_BASE_URLS["demo"]
 
+        # 캐시 경로 설정
+        resolved_cache = token_cache_path or settings.kis_token_cache_path
+        self._token_cache_path = Path(resolved_cache).expanduser() if resolved_cache else None
+
         # 토큰 관리
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
@@ -142,7 +148,65 @@ class KISService:
 
         logger.info(f"✅ KIS Service initialized (env={env}, base_url={self.base_url})")
 
+        # 캐시된 토큰이 있다면 초기화 시 불러옵니다.
+        self._load_cached_token()
+
     # ==================== 인증 ====================
+
+    def _load_cached_token(self) -> bool:
+        """디스크에서 저장된 토큰을 가져옵니다."""
+        path = self._token_cache_path
+        if not path or not path.exists():
+            return False
+
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                payload = json.load(stream)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("⚠️ KIS 토큰 캐시를 읽는 동안 오류가 발생했습니다: %s", exc)
+            return False
+
+        cached_env = payload.get("env")
+        if cached_env and cached_env != self.env:
+            logger.debug("🔁 KIS 캐시 엔트리(env=%s)가 현재 env(%s)와 다릅니다.", cached_env, self.env)
+            return False
+
+        access_token = payload.get("access_token")
+        expires_at_raw = payload.get("expires_at")
+        if not access_token or not expires_at_raw:
+            return False
+
+        try:
+            expires_at = datetime.fromisoformat(expires_at_raw)
+        except ValueError as exc:
+            logger.warning("⚠️ KIS 토큰 만료시간 파싱에 실패했습니다: %s", exc)
+            return False
+
+        if datetime.now() >= expires_at - timedelta(minutes=5):
+            return False
+
+        self._access_token = access_token
+        self._token_expires_at = expires_at
+        logger.info("✅ 캐시된 KIS 액세스 토큰을 불러왔습니다 (%s)", path)
+        return True
+
+    def _persist_token_cache(self) -> None:
+        """유효한 토큰을 디스크에 저장합니다."""
+        path = self._token_cache_path
+        if not path or not self._access_token or not self._token_expires_at:
+            return
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                "env": self.env,
+                "access_token": self._access_token,
+                "expires_at": self._token_expires_at.isoformat(),
+            }
+            with path.open("w", encoding="utf-8") as stream:
+                json.dump(data, stream, ensure_ascii=False)
+        except OSError as exc:
+            logger.warning("⚠️ KIS 토큰 캐시 저장 실패: %s", exc)
 
     async def _get_access_token(self) -> str:
         """
@@ -208,6 +272,7 @@ class KISService:
                 self._token_expires_at = datetime.now() + timedelta(seconds=expires_in)
 
                 logger.info(f"✅ KIS access token obtained (expires in {expires_in}s)")
+                self._persist_token_cache()
                 return access_token
 
             except RequestException as e:
@@ -838,9 +903,10 @@ async def init_kis_service(env: str = "demo") -> None:
     logger.info(f"🔄 [KIS] 환경 변경: {env}, base_url={kis_service.base_url}")
 
     # 토큰 미리 발급 (검증)
-    try:
-        await kis_service._get_access_token()
-        logger.info("✅ KIS Service initialized and authenticated")
-    except KISAuthError as e:
-        logger.warning(f"⚠️ KIS authentication failed: {e}")
-        logger.info("KIS API will be unavailable. Please check KIS_APP_KEY and KIS_APP_SECRET in .env")
+    if not kis_service._load_cached_token():
+        try:
+            await kis_service._get_access_token()
+            logger.info("✅ KIS Service initialized and authenticated")
+        except KISAuthError as e:
+            logger.warning(f"⚠️ KIS authentication failed: {e}")
+            logger.info("KIS API will be unavailable. Please check KIS_APP_KEY and KIS_APP_SECRET in .env")

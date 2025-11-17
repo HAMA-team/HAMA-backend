@@ -47,6 +47,9 @@ uv.lock
 *.log
 logs/
 
+# Cache
+.cache/
+
 # Testing
 .pytest_cache/
 .coverage
