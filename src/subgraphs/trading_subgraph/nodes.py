@@ -5,11 +5,14 @@ trade_planner → portfolio_simulator → trade_hitl → execute_trade
 """
 from __future__ import annotations
 
+import ast
+import json
 import logging
 import uuid
 from datetime import datetime
+from typing import Any, Dict, Optional
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import interrupt
 
 from src.services import trading_service
@@ -18,6 +21,156 @@ from src.services.stock_data_service import stock_data_service
 from .state import TradingState
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_json_loads(payload: Any) -> Any:
+    """문자열 payload를 dict로 변환한다."""
+
+    if payload is None:
+        return None
+
+    if isinstance(payload, (dict, list)):
+        return payload
+
+    if isinstance(payload, str):
+        text = payload.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                return ast.literal_eval(text)
+            except (ValueError, SyntaxError):
+                return None
+
+    return payload
+
+
+def _extract_tool_payload(messages, tool_name: str) -> Optional[Dict[str, Any]]:
+    """messages에서 가장 최근 tool 응답(payload)을 추출한다."""
+
+    for msg in reversed(messages or []):
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", "") == tool_name:
+            return _safe_json_loads(msg.content)
+    return None
+
+
+def _build_portfolio_from_positions(messages) -> Optional[Dict[str, Any]]:
+    """get_portfolio_positions tool 응답을 기반으로 포트폴리오 스냅샷을 구성한다."""
+
+    payload = _extract_tool_payload(messages, "get_portfolio_positions")
+    if not payload:
+        return None
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not data and isinstance(payload, dict):
+        # 일부 응답은 최상위에 positions를 담고 있음
+        data = payload
+
+    if not isinstance(data, dict):
+        return None
+
+    positions = data.get("positions") or data.get("stocks") or []
+    if not isinstance(positions, list):
+        positions = []
+
+    holdings = []
+    for item in positions:
+        if not isinstance(item, dict):
+            continue
+        stock_code = item.get("ticker") or item.get("stock_code") or item.get("pdno")
+        if not stock_code:
+            continue
+        holdings.append(
+            {
+                "stock_code": stock_code,
+                "stock_name": item.get("name")
+                or item.get("stock_name")
+                or item.get("prdt_name")
+                or stock_code,
+                "quantity": int(item.get("quantity") or item.get("hldg_qty") or 0),
+                "average_price": int(
+                    item.get("avg_price")
+                    or item.get("average_price")
+                    or item.get("pchs_avg_pric")
+                    or 0
+                ),
+                "current_price": int(
+                    item.get("current_price")
+                    or item.get("price")
+                    or item.get("prpr")
+                    or 0
+                ),
+            }
+        )
+
+    cash_balance = data.get("cash_balance") or data.get("cash") or 0
+    try:
+        cash_balance = int(cash_balance)
+    except (TypeError, ValueError):
+        cash_balance = 0
+
+    total_value = (
+        data.get("total_value")
+        or data.get("total_assets")
+        or data.get("total_evaluation")
+        or 0
+    )
+    try:
+        total_value = int(total_value)
+    except (TypeError, ValueError):
+        total_value = 0
+
+    if total_value <= 0:
+        holdings_value = sum(h["quantity"] * h["current_price"] for h in holdings)
+        total_value = holdings_value + cash_balance
+
+    return {
+        "holdings": holdings,
+        "cash_balance": cash_balance,
+        "total_value": total_value,
+        "sectors": data.get("sectors") or {},
+        "source": "get_portfolio_positions",
+    }
+
+
+def _find_holding_quantity(portfolio: Optional[Dict[str, Any]], stock_code: Optional[str]) -> int:
+    """포트폴리오에서 특정 종목의 수량을 찾는다."""
+
+    if not portfolio or not stock_code:
+        return 0
+
+    for holding in portfolio.get("holdings", []):
+        if holding.get("stock_code") == stock_code:
+            return int(holding.get("quantity") or 0)
+    return 0
+
+
+def _get_sell_ratio_hint(state: TradingState) -> Optional[float]:
+    """정량 에이전트 결과에서 target_sell_ratio 힌트를 추출한다."""
+
+    agent_results = state.get("agent_results") or {}
+    quantitative_result = agent_results.get("quantitative_agent") or {}
+
+    candidates = []
+
+    sell_decision = quantitative_result.get("sell_decision") or {}
+    if isinstance(sell_decision, dict):
+        candidates.append(sell_decision.get("target_sell_ratio"))
+
+    strategy = quantitative_result.get("strategy_synthesis") or {}
+    if isinstance(strategy, dict):
+        candidates.append(strategy.get("target_sell_ratio"))
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            return float(candidate)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 async def trade_planner_node(state: TradingState) -> TradingState:
@@ -35,6 +188,7 @@ async def trade_planner_node(state: TradingState) -> TradingState:
         calculate_concentration_risk_metrics,
     )
 
+    messages = state.get("messages", [])
     action = state.get("trade_action")
     stock_code = state.get("stock_code")
     quantity = state.get("trade_quantity")
@@ -49,9 +203,7 @@ async def trade_planner_node(state: TradingState) -> TradingState:
 
     if not stock_code or not quantity:
         logger.info("🔍 [Trading/Planner] State에 매매 정보 없음, messages에서 추출 시도")
-        from langchain_core.messages import AIMessage as _AIMessage, ToolMessage
-
-        messages = state.get("messages", [])
+        from langchain_core.messages import AIMessage as _AIMessage
 
         for msg in reversed(messages):
             if isinstance(msg, _AIMessage) and getattr(msg, "tool_calls", None):
@@ -93,18 +245,35 @@ async def trade_planner_node(state: TradingState) -> TradingState:
     user_id = state.get("user_id")
     portfolio_before = None
     risk_before = None
+    portfolio_from_tools = _build_portfolio_from_positions(messages)
 
     try:
         logger.info("📊 [Trading/Planner] 현재 포트폴리오 조회 시작")
         snapshot = await portfolio_service.get_portfolio_snapshot(user_id=user_id)
 
-        if snapshot:
+        if portfolio_from_tools:
+            portfolio_before = portfolio_from_tools
+            market_data = snapshot.market_data if snapshot else {}
+            holdings_before = portfolio_before.get("holdings", [])
+            sectors_before = portfolio_before.get("sectors", {})
+
+            concentration_risk = calculate_concentration_risk_metrics(
+                holdings_before, sectors_before
+            )
+            market_risk = calculate_market_risk_metrics(portfolio_before, market_data)
+
+            risk_before = {**concentration_risk, **market_risk}
+
+            logger.info("✅ [Trading/Planner] KIS tool 포트폴리오 사용")
+            logger.info("  - holdings: %d개", len(holdings_before))
+            logger.info("  - cash_balance: %s원", portfolio_before.get("cash_balance", 0))
+
+        elif snapshot:
             portfolio_before = snapshot.portfolio_data
             market_data = snapshot.market_data
             holdings_before = portfolio_before.get("holdings", [])
             sectors_before = portfolio_before.get("sectors", {})
 
-            # 리스크 계산
             concentration_risk = calculate_concentration_risk_metrics(
                 holdings_before, sectors_before
             )
@@ -120,7 +289,6 @@ async def trade_planner_node(state: TradingState) -> TradingState:
             logger.info("  - cash_balance: %s원", portfolio_before.get("cash_balance", 0))
         else:
             logger.warning("⚠️ [Trading/Planner] 포트폴리오를 찾을 수 없습니다")
-            # 기본 빈 포트폴리오 생성
             portfolio_before = {
                 "holdings": [],
                 "cash_balance": 10_000_000,  # 기본 1000만원
@@ -139,6 +307,26 @@ async def trade_planner_node(state: TradingState) -> TradingState:
             "sectors": {},
         }
         risk_before = {}
+
+    available_quantity = _find_holding_quantity(portfolio_before, stock_code)
+    sell_ratio_hint = _get_sell_ratio_hint(state)
+    sell_all_requested = (
+        action == "sell"
+        and sell_ratio_hint is not None
+        and sell_ratio_hint >= 0.99
+    )
+
+    if sell_all_requested and available_quantity > 0:
+        logger.info(
+            "🔁 [Trading/Planner] 정량 분석 결과 전량 매도 판단 → 수량 %d주로 조정",
+            available_quantity,
+        )
+        quantity = available_quantity
+    elif action == "sell" and available_quantity > 0 and quantity > available_quantity:
+        raise ValueError(
+            f"요청 수량({quantity}주)가 보유 수량({available_quantity}주)을 초과합니다. "
+            "전량 매도라면 정량 분석 단계에서 target_sell_ratio를 1.0으로 지정해주세요."
+        )
 
     total_amount = quantity * price
     trade_proposal = {
