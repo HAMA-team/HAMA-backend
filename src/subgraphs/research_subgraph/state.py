@@ -41,6 +41,9 @@ class ResearchState(TypedDict, total=False):
     perspectives: Optional[List[str]]
     """선택된 관점: ["macro", "fundamental", "technical", "flow", "strategy", "bull_case", "bear_case"]"""
 
+    analysis_depth: Optional[str]
+    """실제 데이터 수집에 사용되는 깊이: "brief" | "detailed" | "comprehensive" """
+
     method: Optional[str]
     """분석 방법: "qualitative" | "quantitative" | "both" (UI 표시용)"""
 
@@ -62,6 +65,9 @@ class ResearchState(TypedDict, total=False):
     - structured: {depth, scope, perspectives} 구조화된 수정
     - user_input: 자유 텍스트 (예: '반도체 사업부에 집중해주세요')
     """
+
+    hitl_config: Optional[Dict[str, Any]]
+    """HITL 설정 (phases.analysis, phases.data_collection 등)"""
 
     # 작업 추적
     plan: Optional[Dict[str, Any]]
@@ -99,6 +105,9 @@ class ResearchState(TypedDict, total=False):
     investor_trading_data: Optional[dict]
     """투자주체별 매매 동향 (외국인, 기관, 개인)"""
 
+    news_data: Optional[List[dict]]
+    """뉴스 데이터 (네이버 뉴스 API)"""
+
     # 기술적 지표
     technical_indicators: Optional[dict]
     """기술적 지표 계산 결과 (RSI, MACD, Bollinger Bands 등)"""
@@ -121,6 +130,9 @@ class ResearchState(TypedDict, total=False):
 
     consensus: Optional[dict]
     """최종 합의 의견"""
+
+    information_analysis: Optional[dict]
+    """정보/뉴스 분석 결과"""
 
     # 메타데이터
     error: Optional[str]

@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.types import Interrupt
+from langgraph.types import interrupt
 
 from src.utils.llm_factory import get_research_llm as get_llm
 from src.utils.json_parser import safe_json_parse
@@ -27,13 +27,13 @@ from .tools import (
     get_market_cap_data_tool,
     get_market_index_tool,
     search_corp_code_tool,
-    get_financial_statement_tool,
     get_company_info_tool,
     get_macro_summary_tool,
 )
 from src.prompts.research import (
     build_bull_case_prompt,
     build_bear_case_prompt,
+    build_information_prompt,
     build_macro_impact_prompt,
     build_research_technical_prompt,
     build_trading_flow_prompt,
@@ -41,7 +41,7 @@ from src.prompts.research import (
 
 logger = logging.getLogger(__name__)
 
-ALLOWED_WORKERS = {"data", "bull", "bear", "macro", "technical", "trading_flow"}
+ALLOWED_WORKERS = {"data", "bull", "bear", "macro", "technical", "trading_flow", "information"}
 
 
 def _json_default(value: Any) -> Union[float, str, list]:
@@ -222,6 +222,115 @@ def _task_complete(
     return update
 
 
+def _resolve_price_column(price_df: Any, target_names: List[str]) -> Optional[str]:
+    """
+    주가 DataFrame에서 특정 컬럼명을 찾습니다.
+    """
+    if not hasattr(price_df, "columns"):
+        return None
+    lower_columns = {str(col).lower(): col for col in price_df.columns}
+    for name in target_names:
+        candidate = name.lower()
+        if candidate in lower_columns:
+            return lower_columns[candidate]
+    return None
+
+
+def _build_mock_investor_trading_data(price_df: Any) -> Dict[str, Any]:
+    """
+    KIS API 미지원으로 인한 투심 데이터를 대체하기 위한 간단한 모의 정보 생성
+    """
+    try:
+        if price_df is None or len(price_df) < 2:
+            return {}
+
+        close_col = _resolve_price_column(price_df, ["Close", "Adj Close"])
+        if close_col is None:
+            return {}
+
+        latest_close = float(price_df.iloc[-1][close_col])
+        prev_close = float(price_df.iloc[-2][close_col])
+        change_amount = latest_close - prev_close
+        change_pct = (change_amount / prev_close * 100) if prev_close else 0.0
+        abs_pct = abs(change_pct)
+
+        if change_pct >= 0.2:
+            trend = "순매수"
+        elif change_pct <= -0.2:
+            trend = "순매도"
+        else:
+            trend = "보합"
+
+        strength = min(5, max(1, int(abs_pct // 0.3) + 1))
+        net_amount = int(abs(change_amount) * 1_000_000)
+        correlation = "양의 상관관계" if change_pct >= 0 else "음의 상관관계"
+
+        supply_strength = "보통"
+        if abs_pct >= 1:
+            supply_strength = "강함"
+        elif abs_pct < 0.2:
+            supply_strength = "약함"
+
+        if change_pct > 0.15:
+            outlook = "긍정적"
+        elif change_pct < -0.15:
+            outlook = "부정적"
+        else:
+            outlook = "중립"
+
+        if change_pct > 0.1:
+            leading = "외국인"
+        elif change_pct < -0.1:
+            leading = "기관"
+        else:
+            leading = "혼재"
+
+        analysis_template = (
+            f"최근 종가 {latest_close:.0f}원, 전일 대비 {change_pct:.2f}% 변동 "
+            f"({'+' if change_pct >= 0 else ''}{change_pct:.2f}%), 수급은 {trend}입니다."
+        )
+
+        opposite_trading = trend == "순매도" and leading == "외국인"
+
+        return {
+            "foreign_investor": {
+                "trend": trend,
+                "strength": strength,
+                "correlation_with_price": correlation,
+                "net_amount": net_amount,
+                "analysis": analysis_template,
+            },
+            "institutional_investor": {
+                "trend": "순매수" if change_pct >= 0 else "순매도",
+                "strength": max(1, 6 - strength),
+                "correlation_with_price": correlation,
+                "net_amount": max(0, net_amount - 100_000),
+                "analysis": f"기관은 {trend}을 따라가는 흐름이며, 실거래 추세가 {'강함' if abs_pct > 0.5 else '보통'}입니다.",
+            },
+            "individual_investor": {
+                "trend": "순매수" if change_pct >= 0 else "순매도",
+                "opposite_trading": opposite_trading,
+                "analysis": "개인 투자자는 외국인/기관과 상반된 매매를 하는 경향이 있습니다."
+                if opposite_trading
+                else "개인 투자자도 주요 세력과 함께 움직이는 흐름입니다.",
+            },
+            "supply_demand_analysis": {
+                "leading_investor": leading,
+                "supply_strength": supply_strength,
+                "outlook": outlook,
+                "forecast": (
+                    "상승 여력을 지켜보며 추가적인 수급 확인 필요"
+                    if outlook == "중립"
+                    else f"수급은 {outlook}이며, 단기적으로 {leading} 주도로 흘러갈 것으로 보입니다."
+                ),
+            },
+            "confidence": strength,
+            "source": "synthetic",
+        }
+    except Exception:
+        return {}
+
+
 def _perspectives_to_workers(perspectives: List[str]) -> List[str]:
     """
     UI Perspectives → Workers 변환
@@ -267,7 +376,7 @@ def _apply_scope_limit(workers: List[str], scope: str) -> List[str]:
     limit = scope_config["max_workers"]
 
     # 우선순위: data > technical > macro > trading_flow > bull > bear
-    priority = ["data", "technical", "macro", "trading_flow", "bull", "bear"]
+    priority = ["data", "technical", "information", "macro", "trading_flow", "bull", "bear"]
 
     sorted_workers = []
     for p in priority:
@@ -419,6 +528,7 @@ async def planner_node(state: ResearchState) -> ResearchState:
             scope = state.get("scope", "balanced")
             perspectives = state.get("perspectives", [])
 
+        analysis_depth = state.get("analysis_depth") or depth or "detailed"
         # perspectives → workers 변환
         workers = _perspectives_to_workers(perspectives)
 
@@ -442,6 +552,7 @@ async def planner_node(state: ResearchState) -> ResearchState:
             "depth": depth,
             "scope": scope,
             "perspectives": perspectives,
+            "analysis_depth": analysis_depth,
             "pending_tasks": pending_tasks,
             "completed_tasks": [],
             "task_notes": [],
@@ -499,13 +610,16 @@ JSON 형식으로만 답변하세요:
 
         recommended_depth = plan.get("depth", "detailed")
         recommended_scope = plan.get("scope", "balanced")
-        recommended_perspectives = plan.get("perspectives", ["fundamental", "technical"])
+        recommended_perspectives = plan.get(
+            "perspectives",
+            ["fundamental", "technical", "information"],
+        )
 
     except Exception as exc:
         logger.warning("⚠️ [Research/Planner] LLM 계획 실패, 기본값 사용: %s", exc)
         recommended_depth = "detailed"
         recommended_scope = "balanced"
-        recommended_perspectives = ["fundamental", "technical"]
+        recommended_perspectives = ["fundamental", "technical", "information"]
 
     # 2. intervention_required 체크
     intervention_required = state.get("intervention_required", False)
@@ -514,6 +628,7 @@ JSON 형식으로만 답변하세요:
         # 분석 단계는 자동 진행 (매매만 HITL)
         logger.info("✅ [Research/Planner] 분석 자동 진행 (intervention_required=False)")
 
+        analysis_depth = recommended_depth
         workers = _perspectives_to_workers(recommended_perspectives)
         workers = _apply_scope_limit(workers, recommended_scope)
 
@@ -534,6 +649,7 @@ JSON 형식으로만 답변하세요:
             "depth": recommended_depth,
             "scope": recommended_scope,
             "perspectives": recommended_perspectives,
+            "analysis_depth": analysis_depth,
             "method": "both",
             "pending_tasks": pending_tasks,
             "completed_tasks": [],
@@ -550,18 +666,6 @@ JSON 형식으로만 답변하세요:
     approval_id = str(uuid.uuid4())
 
     logger.info("⚠️ [Research/Planner] INTERRUPT 발생 - 사용자 승인 대기")
-
-    # Interrupt를 발생시키기 전에 State 업데이트
-    # (재개 시 사용할 기본값 저장)
-    state_update: ResearchState = {
-        "depth": recommended_depth,
-        "scope": recommended_scope,
-        "perspectives": recommended_perspectives,
-        "method": "both",
-        "plan_approval_id": approval_id,
-        "stock_code": stock_code,
-        "messages": [AIMessage(content="분석 계획을 수립했습니다. 승인을 기다립니다...")],
-    }
 
     # Interrupt payload 생성
     interrupt_payload = {
@@ -581,15 +685,26 @@ JSON 형식으로만 답변하세요:
             "depths": ["brief", "detailed", "comprehensive"],
             "scopes": ["key_points", "balanced", "wide_coverage"],
             "perspectives": ["macro", "fundamental", "technical", "flow",
-                           "strategy", "bull_case", "bear_case"],
+                           "strategy", "bull_case", "bear_case", "information"],
             "methods": ["qualitative", "quantitative", "both"],
         },
         "message": "다음과 같이 분석할 예정입니다. 진행하시겠습니까?",
     }
 
-    # State 업데이트 후 Interrupt 발생
-    # Note: LangGraph는 interrupt 전 return된 state를 저장함
-    raise Interrupt(state_update, value=interrupt_payload)
+    # Trading 패턴과 동일하게 interrupt() 함수 직접 호출
+    interrupt(interrupt_payload)
+
+    # Interrupt 후 State 업데이트 (재개 시 사용할 기본값 저장)
+    return {
+        "depth": recommended_depth,
+        "scope": recommended_scope,
+        "perspectives": recommended_perspectives,
+        "analysis_depth": recommended_depth,
+        "method": "both",
+        "plan_approval_id": approval_id,
+        "stock_code": stock_code,
+        "messages": [AIMessage(content="분석 계획을 수립했습니다. 승인을 기다립니다...")],
+    }
 
 
 async def data_worker_node(state: ResearchState) -> ResearchState:
@@ -600,13 +715,17 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
 
     try:
         # 분석 깊이에 따라 주가 데이터 기간 동적 설정
-        analysis_depth = state.get("analysis_depth", "standard")
-        days_map = {
-            "quick": 60,            # 빠른 분석 (2개월)
-            "standard": 180,        # 표준 분석 (6개월)
-            "comprehensive": 365,   # 종합 분석 (1년)
-        }
-        days = days_map.get(analysis_depth, 180)
+        from src.constants.analysis_depth import (
+            get_data_days_for_depth,
+            get_default_depth,
+        )
+
+        analysis_depth = (
+            state.get("analysis_depth")
+            or state.get("depth")
+            or get_default_depth()
+        )
+        days = get_data_days_for_depth(analysis_depth)
 
         # Tool을 사용하여 주가 데이터 조회
         price_result = await get_stock_price_tool.ainvoke({"stock_code": stock_code, "days": days})
@@ -622,28 +741,18 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             price_df = price_df.set_index("Date")
 
         price_data = price_result
+        investor_trading_data = _build_mock_investor_trading_data(price_df)
 
         # Tool을 사용하여 DART 데이터 조회
         corp_code = await search_corp_code_tool.ainvoke({"stock_code": stock_code})
         if corp_code:
-            # 재무제표 연도를 동적으로 설정 (상반기면 전년도, 하반기면 당해년도)
-            current_year = datetime.now().year
-            current_month = datetime.now().month
-            # 1~6월: 전년도 재무제표, 7~12월: 당해년도 재무제표
-            bsns_year = str(current_year - 1 if current_month < 7 else current_year)
-
-            financial_statements = await get_financial_statement_tool.ainvoke({
-                "corp_code": corp_code,
-                "bsns_year": bsns_year
-            })
+            # 재무제표 조회는 제외 (DART API 데이터 불안정)
+            # 기업 정보만 조회
             company_info = await get_company_info_tool.ainvoke({"corp_code": corp_code})
-            financial_data = {
-                "stock_code": stock_code,
-                "corp_code": corp_code,
-                "year": bsns_year,  # 동적 연도
-                "statements": financial_statements or {},
-                "source": "DART",
-            }
+
+            # 재무제표는 조회하지 않음
+            financial_data = None
+
             company_data = {
                 "stock_code": stock_code,
                 "corp_code": corp_code,
@@ -691,6 +800,44 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             logger.warning("⚠️ [Research/Data] 시장 지수 조회 실패: %s", exc)
             market_data = {"index": "KOSPI", "current": None, "change": None, "change_rate": None}
 
+        # 뉴스 데이터 수집
+        news_data = []
+        try:
+            from src.services.news_crawler_service import fetch_and_save_news
+            from src.repositories.news_repository import news_repository
+
+            # 종목명 추출 (기업 정보에서)
+            stock_name = company_info.get("corp_name") if company_info else None
+
+            if stock_name:
+                # 뉴스 수집 및 저장
+                logger.info("📰 [Research/Data] 뉴스 수집 시작: %s (%s)", stock_code, stock_name)
+                await fetch_and_save_news(stock_code, stock_name, max_articles=20)
+
+                # DB에서 최근 뉴스 조회
+                recent_news = news_repository.list_recent(limit=20)
+
+                # 해당 종목 관련 뉴스만 필터링 (최대 10개)
+                stock_news = [
+                    {
+                        "title": news.title,
+                        "summary": news.summary,
+                        "url": news.url,
+                        "source": news.source,
+                        "published_at": news.published_at.isoformat() if news.published_at else None,
+                    }
+                    for news in recent_news
+                    if news.related_stocks and stock_code in news.related_stocks
+                ][:10]
+
+                news_data = stock_news
+                logger.info("✅ [Research/Data] 뉴스 %d건 수집 완료", len(news_data))
+            else:
+                logger.warning("⚠️ [Research/Data] 종목명이 없어 뉴스 수집을 건너뜁니다.")
+        except Exception as exc:
+            logger.warning("⚠️ [Research/Data] 뉴스 수집 실패: %s", exc)
+            news_data = []
+
         cols = {
             "closing": price_data["latest_close"],
             "per": fundamental_data.get("PER") if fundamental_data else None,
@@ -717,8 +864,11 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             "market_index_data": market_data,
             "fundamental_data": fundamental_data,
             "market_cap_data": market_cap_data,
-            # investor_trading_data 제거됨 (KIS API 미지원)
+            "analysis_depth": analysis_depth,
+            "investor_trading_data": investor_trading_data,
+            # investor_trading_data는 모의 데이터 사용
             "technical_indicators": technical_indicators,
+            "news_data": news_data,
             "messages": [message],
             "request_id": request_id,
         }
@@ -1204,7 +1354,68 @@ async def trading_flow_analyst_worker_node(state: ResearchState) -> ResearchStat
             if attempt < max_retries - 1:
                 await asyncio.sleep(2)
                 continue
-            raise RuntimeError(f"거래 동향 분석 실패: {exc}") from exc
+        raise RuntimeError(f"거래 동향 분석 실패: {exc}") from exc
+
+
+async def information_worker_node(state: ResearchState) -> ResearchState:
+    """
+    정보/뉴스 관점에서 종합적인 시장 현실을 요약합니다.
+    """
+    if state.get("error"):
+        return state
+
+    stock_code = state.get("stock_code") or await _extract_stock_code(state)
+    logger.info("📰 [Research/Information] 정보 분석 시작: %s", stock_code)
+
+    price_data = state.get("price_data") or {}
+    fundamental = state.get("fundamental_data") or {}
+    technical_indicators = state.get("technical_indicators") or {}
+    company_data = state.get("company_data") or {}
+    macro_analysis = state.get("macro_analysis") or {}
+    macro_summary = macro_analysis.get("analysis") if isinstance(macro_analysis, dict) else {}
+    company_info = company_data.get("info", {})
+    news_data = state.get("news_data") or []
+
+    llm = get_llm(max_tokens=2000, temperature=0.25)
+    prompt = build_information_prompt(
+        stock_code=stock_code,
+        company_info=company_info,
+        price_snapshot=price_data,
+        fundamental_data=fundamental,
+        technical_indicators=technical_indicators,
+        macro_summary=macro_summary,
+        user_query=state.get("query"),
+        news_data=news_data,
+    )
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = await llm.ainvoke(prompt)
+            analysis = safe_json_parse(response.content, "Research/Information")
+            if not isinstance(analysis, dict):
+                analysis = {}
+
+            summary = analysis.get("summary") or "정보 분석을 완료했습니다."
+            message = AIMessage(content=f"정보 요약: {summary}")
+
+            payload: ResearchState = {
+                "information_analysis": analysis,
+                "messages": [message],
+            }
+            return _task_complete(state, "information", "정보 분석 완료", payload)
+
+        except Exception as exc:
+            logger.error(
+                "❌ [Research/Information] 실패 (시도 %s/%s): %s",
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            if attempt < max_retries - 1:
+                await asyncio.sleep(2)
+                continue
+            raise RuntimeError(f"정보 분석 실패: {exc}") from exc
 
 
 async def synthesis_node(state: ResearchState) -> ResearchState:
@@ -1235,15 +1446,10 @@ async def synthesis_node(state: ResearchState) -> ResearchState:
     trading_flow_analysis = state.get("trading_flow_analysis") or {}
     macro_analysis = state.get("macro_analysis") or {}
     information_analysis = state.get("information_analysis") or {}
-
-    # Information Analyst 결과 추출 (미구현 시 기본값)
     if not information_analysis:
-        logger.warning("⚠️ [Research/Synthesis] Information Analyst 미실행 - 기본값 사용")
-        market_sentiment = "중립"
-        risk_level = "보통"
-    else:
-        market_sentiment = information_analysis.get("market_sentiment", "중립")
-        risk_level = information_analysis.get("risk_level", "보통")
+        logger.debug("ℹ️ [Research/Synthesis] 정보 분석 없이 기본 센티먼트 사용")
+    market_sentiment = information_analysis.get("market_sentiment", "중립")
+    risk_level = information_analysis.get("risk_level", "보통")
 
     current_price = price_data.get("latest_close") or 0
     bull_target = _coerce_number(bull.get("target_price"), current_price * 1.1)

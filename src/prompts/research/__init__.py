@@ -1,7 +1,7 @@
 """
 Research Agent 전용 프롬프트 모음
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import json
 
 from ..utils import build_prompt
@@ -288,6 +288,67 @@ def build_trading_flow_prompt(
         input_data=input_data,
         task=task,
         output_format=output_format,
+    )
+
+
+def build_information_prompt(
+    stock_code: str,
+    company_info: Dict[str, Any],
+    price_snapshot: Dict[str, Any],
+    fundamental_data: Dict[str, Any],
+    technical_indicators: Dict[str, Any],
+    macro_summary: Dict[str, Any],
+    user_query: Optional[str] = None,
+    news_data: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    context = {
+        "종목코드": stock_code,
+        "기업명": company_info.get("corp_name", "알 수 없음"),
+        "사용자 질의": user_query or "정보 요약 요청",
+    }
+
+    input_data = _compose_data_sections(
+        {
+            "company": company_info,
+            "price": price_snapshot,
+            "fundamental": fundamental_data,
+            "technical": technical_indicators,
+            "macro": macro_summary,
+            "news": news_data if news_data else [],
+        }
+    )
+
+    task = """주어진 데이터를 기반으로 정보/뉴스 관점의 정성적 분석을 작성하세요.
+
+<requirements>
+1. 시장/기업 센티먼트를 "긍정적/부정적/중립/데이터없음" 중 하나로 정리하고 근거를 서술하세요.
+2. 리스크 레벨을 "낮음/보통/높음" 중 하나로 분류하고, 변화를 이끄는 요인을 적으세요.
+3. positive_factors, negative_factors, key_themes는 각각 최소 2개씩 제시하세요. 데이터가 부족하면 "데이터 부족"으로 명시하세요.
+4. summary에는 전체 요약 문장을 넣고, analysis에는 2-3줄 상세 설명을 포함하세요.
+5. 반드시 JSON만, '{'로 시작하는 형식을 유지하세요.
+</requirements>"""
+
+    output_format = """{
+  "market_sentiment": "긍정적" | "부정적" | "중립" | "데이터없음",
+  "sentiment_reason": "간단한 이유",
+  "risk_level": "낮음" | "보통" | "높음",
+  "risk_drivers": ["리스크 요인"],
+  "positive_factors": ["강점", "..."],
+  "negative_factors": ["약점", "..."],
+  "key_themes": ["키워드1", "키워드2"],
+  "summary": "3줄 요약",
+  "analysis": "2-3줄 상세 설명"
+}"""
+
+    guidelines = """1. 데이터를 명시적으로 언급하면서 요약하세요. 2. 숫자/지표를 사용할 수 없으면 '데이터 부족'을 재확인하세요. 3. JSON 외 텍스트는 추가하지 마세요."""
+
+    return build_prompt(
+        role="정보 분석 전문가",
+        context=context,
+        input_data=input_data,
+        task=task,
+        output_format=output_format,
+        guidelines=guidelines,
     )
 
 
