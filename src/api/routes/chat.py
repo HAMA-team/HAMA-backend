@@ -906,14 +906,23 @@ async def approve_action(
             .filter(ChatSession.conversation_id == conversation_uuid)
             .first()
         )
-        # intervention_required/hitl_config는 session_metadata에서 복원하거나 기본값 사용
-        intervention_required = False
+
+        # ⚠️ 중요: interrupt가 발생했다는 것 자체가 intervention_required=True였다는 의미
+        # 그래프 구조가 일치해야 LangGraph 체크포인터가 올바르게 작동함
+        intervention_required = True  # 기본값을 True로 설정
         hitl_config = HITLConfig()
+
+        logger.info("🔍 [Approve] session_row 존재: %s", session_row is not None)
         if session_row and session_row.session_metadata:
-            intervention_required = session_row.session_metadata.get("intervention_required", False)
+            logger.info("🔍 [Approve] session_metadata: %s", session_row.session_metadata)
+            # session_metadata에 명시적으로 설정된 경우 그 값을 사용
+            intervention_required = session_row.session_metadata.get("intervention_required", True)
+            logger.info("🔍 [Approve] 복원된 intervention_required: %s", intervention_required)
             hitl_meta = session_row.session_metadata.get("hitl_config")
             if hitl_meta:
                 hitl_config = HITLConfig(**hitl_meta)
+        else:
+            logger.info("🔍 [Approve] session_metadata 없음 → 기본값 True 사용 (interrupt 발생 시점에는 True였음)")
 
         decision_metadata = {
             "decision": approval.decision,
@@ -1054,33 +1063,30 @@ async def approve_action(
             # ainvoke()로 그래프를 계속 진행시켜야 함
 
             logger.info(
-                "▶️ [Approve] State 업데이트 시작: approval_type=%s, trade_approved=%s, has_modifications=%s",
+                "▶️ [Approve] Graph 재개 시작: approval_type=%s, trade_approved=%s, has_modifications=%s",
                 request_type,
                 resume_value.get("trade_approved"),
                 bool(resume_value.get("user_modifications")),
             )
 
-            # Step 1: State 업데이트 (Master graph의 state에 resume_value 병합)
-            await configured_app.aupdate_state(config, resume_value)
-            logger.info("✅ State 업데이트 완료")
+            # ⚠️ LangGraph 올바른 패턴: Command(update={...}) 사용
+            # - aupdate_state()를 사용하면 새 체크포인트 생성으로 interrupt 정보(next) 손실
+            # - Command(update={...})를 사용하면 State 업데이트 + interrupt 정보 유지
+            from langgraph.types import Command
 
-            # Step 2: SubGraph의 interrupt를 올바르게 처리
-            # ⚠️ 중요: astream(None)은 Master만 진행하고 SubGraph의 interrupt를 처리하지 못함
-            # ainvoke(None)을 사용하면 SubGraph의 interrupt 상태까지 함께 처리됨
             result = {}
             try:
-                result = await configured_app.ainvoke(None, config=config)
-                logger.info("✅ [Approve] ainvoke로 SubGraph interrupt 처리 완료")
+                result = await configured_app.ainvoke(
+                    Command(update=resume_value),
+                    config=config
+                )
+                logger.info("✅ [Approve] Command(update) + ainvoke로 SubGraph 재개 완료")
             except Exception as e:
-                logger.warning("⚠️ [Approve] ainvoke 실행 중 오류: %s", e)
-                # 폴백: astream 사용
-                async for event in configured_app.astream(None, config=config):
-                    if "final_state" in event:
-                        result = event.get("final_state", {})
-                    elif isinstance(event, dict):
-                        for node_name, node_result in event.items():
-                            if isinstance(node_result, dict) and "messages" in node_result:
-                                result.update(node_result)
+                logger.error("❌ [Approve] Command ainvoke 실패: %s", e, exc_info=True)
+                # 폴백: aupdate_state + ainvoke 시도
+                logger.info("⚠️ [Approve] 폴백: aupdate_state + ainvoke 시도")
+                await configured_app.aupdate_state(config, resume_value)
+                result = await configured_app.ainvoke(None, config=config)
 
             state_after_resume = await configured_app.aget_state(config)
             state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
@@ -1149,7 +1155,7 @@ async def approve_action(
             )
 
         if approval.decision == "rejected":
-            # Rejection의 경우도 aupdate_state + ainvoke 사용
+            # Rejection의 경우도 Command(update) 사용
             resume_value = _build_resume_value(
                 approval_type=request_type,
                 user_id=DEMO_USER_UUID,
@@ -1158,15 +1164,22 @@ async def approve_action(
                 decision="rejected",
             )
 
-            logger.info("▶️ [Approve] 거부 - State 업데이트 시작")
+            logger.info("▶️ [Approve] 거부 처리 시작")
 
-            # Step 1: State 업데이트
-            await configured_app.aupdate_state(config, resume_value)
-            logger.info("✅ State 업데이트 완료")
+            # Command(update) 사용하여 interrupt 정보 유지
+            from langgraph.types import Command
 
-            # Step 2: 그래프 계속 실행
-            await configured_app.ainvoke(None, config=config)
-            logger.info("✅ [Approve] 거부 처리 완료")
+            try:
+                await configured_app.ainvoke(
+                    Command(update=resume_value),
+                    config=config
+                )
+                logger.info("✅ [Approve] Command(update)로 거부 처리 완료")
+            except Exception as e:
+                logger.error("❌ [Approve] Command 거부 처리 실패: %s", e, exc_info=True)
+                # 폴백
+                await configured_app.aupdate_state(config, resume_value)
+                await configured_app.ainvoke(None, config=config)
 
             message_text = "승인 거부 - 매매가 취소되었습니다."
             await chat_history_service.append_message(

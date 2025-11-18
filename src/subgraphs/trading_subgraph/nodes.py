@@ -502,37 +502,67 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     logger.info("=" * 60)
     logger.info("🔄 [Trading/HITL] 노드 진입")
 
-    # ⚠️ 멱등성 체크: 이미 interrupt했는가?
-    if state.get("user_pending_approval"):
-        logger.info("✅ [Trading/HITL] 멱등성 체크: 이미 interrupt 완료")
-        logger.info("  - user_decision: %s", state.get("user_decision"))
+    # 1️⃣ [수정됨] user_pending_approval 대신 user_decision 존재 여부로 판단
+    # Resume 될 때 API가 user_decision을 주입하므로 이 값이 있으면 승인 처리 단계임
+    user_decision = state.get("user_decision")
 
-        # ⚠️ SubGraph state 업데이트 필요: Master의 aupdate_state가 SubGraph에 자동으로 전달되지 않음
-        # → trade_hitl_resume_node로의 conditional edge가 user_decision을 감지하도록
-        # trade_hitl_resume_node에 직접 forward
-        user_decision = state.get("user_decision")
+    if user_decision:
+        logger.info("✅ [Trading/HITL] 사용자 결정 감지: %s", user_decision)
+
         if user_decision == "approved":
-            logger.info("  → trade_prepared=True로 설정하여 execute_trade 진행")
+            logger.info("  → 승인됨: execute_trade로 진행")
             return {
                 "trade_prepared": True,
                 "trade_approved": True,
+                # 처리가 끝났으니 플래그 정리
+                "user_pending_approval": False
             }
         elif user_decision == "rejected":
-            logger.info("  → trade_approved=False로 설정하여 거부 처리")
+            logger.info("  → 거부됨: 중단")
             return {
                 "trade_approved": False,
                 "trade_prepared": False,
+                "user_pending_approval": False
             }
         elif user_decision == "modified":
-            logger.info("  → 수정 승인, trade_prepared=False로 재시뮬레이션")
+            logger.info("  → 수정됨: 재시뮬레이션 필요")
             return {
                 "trade_approved": True,
                 "trade_prepared": False,
+                "user_pending_approval": False
             }
 
-        # user_decision이 설정되지 않았으면 대기
-        logger.info("  → user_decision 미설정, 대기 중")
-        return {}
+    # # ⚠️ 멱등성 체크: 이미 interrupt했는가?
+    # if state.get("user_pending_approval"):
+    #     logger.info("✅ [Trading/HITL] 멱등성 체크: 이미 interrupt 완료")
+    #     logger.info("  - user_decision: %s", state.get("user_decision"))
+    #
+    #     # ⚠️ SubGraph state 업데이트 필요: Master의 aupdate_state가 SubGraph에 자동으로 전달되지 않음
+    #     # → trade_hitl_resume_node로의 conditional edge가 user_decision을 감지하도록
+    #     # trade_hitl_resume_node에 직접 forward
+    #     user_decision = state.get("user_decision")
+    #     if user_decision == "approved":
+    #         logger.info("  → trade_prepared=True로 설정하여 execute_trade 진행")
+    #         return {
+    #             "trade_prepared": True,
+    #             "trade_approved": True,
+    #         }
+    #     elif user_decision == "rejected":
+    #         logger.info("  → trade_approved=False로 설정하여 거부 처리")
+    #         return {
+    #             "trade_approved": False,
+    #             "trade_prepared": False,
+    #         }
+    #     elif user_decision == "modified":
+    #         logger.info("  → 수정 승인, trade_prepared=False로 재시뮬레이션")
+    #         return {
+    #             "trade_approved": True,
+    #             "trade_prepared": False,
+    #         }
+    #
+    #     # user_decision이 설정되지 않았으면 대기
+    #     logger.info("  → user_decision 미설정, 대기 중")
+    #     return {}
 
     # 시뮬레이션 실패 체크 (변경 없음)
     if state.get("simulation_failed"):
@@ -595,11 +625,7 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
 
     # 첫 진입 시 return하여 interrupt 발생시키고,
     # Resume 시에는 아래로 진행하지 않음 (graph edge가 다시 진입시킬 것)
-    return {
-        "trade_approval_id": approval_id,
-        "user_pending_approval": True,  # ← 멱등성 체크를 위한 플래그
-        "messages": [AIMessage(content="사용자 승인을 기다리고 있습니다.")],
-    }
+    return {}
 
 
 async def trade_hitl_resume_node(state: TradingState) -> TradingState:
