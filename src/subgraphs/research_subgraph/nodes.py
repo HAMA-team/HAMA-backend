@@ -621,78 +621,15 @@ JSON 형식으로만 답변하세요:
 
 async def approval_check_node(state: ResearchState) -> ResearchState:
     """
-    Approval Check Node - HITL 승인 체크
+    Approval Check Node - 분석 자동 시작
 
-    역할:
-    1. intervention_required 확인
-    2. True이면 INTERRUPT 발생하여 사용자 승인 대기
-    3. False이면 바로 통과
+    ⚠️ 변경: 분석 요청 시 무조건 바로 분석 시작 (HITL 제거)
     """
-    intervention_required = state.get("intervention_required", False)
-
-    if not intervention_required:
-        # 분석 단계는 자동 진행 (매매만 HITL)
-        logger.info("✅ [Research/ApprovalCheck] 분석 자동 진행 (intervention_required=False)")
-        return {
-            "analysis_plan_approved": True,
-            "messages": [AIMessage(content="분석을 시작합니다...")],
-        }
-
-    # HITL 필요 - INTERRUPT 발생
-    from src.constants.analysis_depth import get_depth_config
-
-    depth = state.get("depth", "detailed")
-    scope = state.get("scope", "balanced")
-    perspectives = state.get("perspectives", [])
-    stock_code = state.get("stock_code")
-    query = state.get("query", "종목 분석")
-
-    depth_config = get_depth_config(depth)
-    approval_id = str(uuid.uuid4())
-
-    logger.info("⚠️ [Research/ApprovalCheck] INTERRUPT 발생 - 사용자 승인 대기")
-
-    interrupt_payload = {
-        "type": "research_plan_approval",
-        "approval_id": approval_id,
-        "stock_code": stock_code,
-        "query": query,
-        "plan": {
-            "depth": depth,
-            "depth_name": depth_config["name"],
-            "scope": scope,
-            "perspectives": perspectives,
-            "method": "both",
-            "estimated_time": depth_config["estimated_time"],
-        },
-        "options": {
-            "depths": ["brief", "detailed", "comprehensive"],
-            "scopes": ["key_points", "balanced", "wide_coverage"],
-            "perspectives": ["macro", "fundamental", "technical", "flow",
-                           "strategy", "bull_case", "bear_case", "information"],
-            "methods": ["qualitative", "quantitative", "both"],
-        },
-        "message": "다음과 같이 분석할 예정입니다. 진행하시겠습니까?",
-    }
-
-    # LangGraph interrupt/resume 패턴:
-    # 1. interrupt() 호출 - 그래프 중단
-    # 2. API가 Command(resume=value)로 재개
-    # 3. interrupt()가 value를 반환 (이 부분이 핵심!)
-    # 4. 반환값을 state 업데이트에 포함
-    approval_value = interrupt(interrupt_payload)
-
-    logger.info(
-        "▶️ [Research/Approval-Resume] interrupt 반환값 수신: analysis_plan_approved=%s, modifications=%s",
-        approval_value.get("analysis_plan_approved"),
-        bool(approval_value.get("user_modifications")),
-    )
+    logger.info("✅ [Research/ApprovalCheck] 분석 자동 시작 (HITL 비활성화)")
 
     return {
-        "plan_approval_id": approval_id,
-        "analysis_plan_approved": approval_value.get("analysis_plan_approved", False),  # ← 핵심!
-        "user_modifications": approval_value.get("user_modifications"),                  # ← 핵심!
-        "messages": [AIMessage(content="분석 계획 승인을 기다립니다...")],
+        "analysis_plan_approved": True,
+        "messages": [AIMessage(content="분석을 시작합니다...")],
     }
 
 

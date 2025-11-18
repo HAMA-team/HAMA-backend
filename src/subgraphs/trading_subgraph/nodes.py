@@ -498,9 +498,12 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     사용자 승인(Resume) 경로를 처리합니다.
     """
     from langgraph.types import interrupt  # Import 확인
-
     logger.info("=" * 60)
     logger.info("🔄 [Trading/HITL] 노드 진입")
+
+    # 🔍 [디버깅] 현재 State의 모든 키를 출력하여 user_decision이 있는지 확인
+    logger.info(f"🔍 [DEBUG] Current State Keys: {list(state.keys())}")
+    logger.info(f"🔍 [DEBUG] user_decision value: {state.get('user_decision')}")
 
     # 1️⃣ [수정됨] user_pending_approval 대신 user_decision 존재 여부로 판단
     # Resume 될 때 API가 user_decision을 주입하므로 이 값이 있으면 승인 처리 단계임
@@ -588,6 +591,7 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
         logger.error("❌ [Trading/HITL] 포트폴리오 시뮬레이션 결과가 없습니다.")
         raise ValueError("포트폴리오 시뮬레이션 결과가 없습니다.")
 
+
     # 2. Interrupt Payload 구성
     # trade_approval_id가 이미 있다면 재사용
     approval_id = state.get("trade_approval_id") or str(uuid.uuid4())
@@ -609,6 +613,42 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
         "risk_after": risk_after,
     }
 
+    logger.info("🔔 [Trading/HITL] 사용자 승인 요청 (Interrupt)")
+
+    # 여기서 실행이 멈춥니다.
+    # Resume이 되면, API에서 보낸 데이터가 'resume_data'에 담겨서 아래로 진행됩니다.
+    resume_data = interrupt(interrupt_payload)
+    if not resume_data:
+        logger.error("❌ Resume 데이터가 비어있습니다.")
+        return {}  # 다시 대기
+
+        # API가 보낸 데이터 구조에 따라 키값 확인 (예: {"decision": "approved"})
+        # resume_data 자체가 문자열("approved")일 수도 있고 딕셔너리일 수도 있음
+    decision = resume_data.get("decision") if isinstance(resume_data, dict) else resume_data
+
+    if decision == "approved":
+        logger.info("🎉 승인됨! 매매 실행 단계로 이동")
+        return {
+            "trade_approved": True,
+            "trade_prepared": True,
+            "user_decision": "approved"  # 기록용으로 State에 남김
+        }
+
+    elif decision == "rejected":
+        logger.info("❌ 거절됨.")
+        return {
+            "trade_approved": False,
+            "trade_prepared": False,
+            "user_decision": "rejected"
+        }
+
+    elif decision == "modified":
+      logger.info("")
+      return {
+            "trade_approved": True,
+            "trade_prepared": True,
+            "user_decision": "approved"
+      }
     # ============================================================
     # 3. Interrupt 호출 및 Resume 데이터 캡처 (핵심 로직)
     # ============================================================

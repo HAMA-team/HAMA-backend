@@ -1069,24 +1069,19 @@ async def approve_action(
                 bool(resume_value.get("user_modifications")),
             )
 
-            # ⚠️ LangGraph 올바른 패턴: Command(update={...}) 사용
-            # - aupdate_state()를 사용하면 새 체크포인트 생성으로 interrupt 정보(next) 손실
-            # - Command(update={...})를 사용하면 State 업데이트 + interrupt 정보 유지
-            from langgraph.types import Command
-
+            # ⚠️ LangGraph SubGraph interrupt/resume 올바른 패턴
+            # SubGraph의 경우 Command(update)가 SubGraph State에 전달되지 않음
+            # → 직접 ainvoke(resume_value)로 입력 전달
             result = {}
             try:
                 result = await configured_app.ainvoke(
-                    Command(update=resume_value),
+                    resume_value,  # Command 없이 직접 전달
                     config=config
                 )
-                logger.info("✅ [Approve] Command(update) + ainvoke로 SubGraph 재개 완료")
+                logger.info("✅ [Approve] ainvoke(resume_value)로 SubGraph 재개 완료")
             except Exception as e:
-                logger.error("❌ [Approve] Command ainvoke 실패: %s", e, exc_info=True)
-                # 폴백: aupdate_state + ainvoke 시도
-                logger.info("⚠️ [Approve] 폴백: aupdate_state + ainvoke 시도")
-                await configured_app.aupdate_state(config, resume_value)
-                result = await configured_app.ainvoke(None, config=config)
+                logger.error("❌ [Approve] ainvoke 실패: %s", e, exc_info=True)
+                raise
 
             state_after_resume = await configured_app.aget_state(config)
             state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
@@ -1155,7 +1150,7 @@ async def approve_action(
             )
 
         if approval.decision == "rejected":
-            # Rejection의 경우도 Command(update) 사용
+            # Rejection의 경우도 직접 전달
             resume_value = _build_resume_value(
                 approval_type=request_type,
                 user_id=DEMO_USER_UUID,
@@ -1166,20 +1161,15 @@ async def approve_action(
 
             logger.info("▶️ [Approve] 거부 처리 시작")
 
-            # Command(update) 사용하여 interrupt 정보 유지
-            from langgraph.types import Command
-
             try:
                 await configured_app.ainvoke(
-                    Command(update=resume_value),
+                    resume_value,  # Command 없이 직접 전달
                     config=config
                 )
-                logger.info("✅ [Approve] Command(update)로 거부 처리 완료")
+                logger.info("✅ [Approve] ainvoke(resume_value)로 거부 처리 완료")
             except Exception as e:
-                logger.error("❌ [Approve] Command 거부 처리 실패: %s", e, exc_info=True)
-                # 폴백
-                await configured_app.aupdate_state(config, resume_value)
-                await configured_app.ainvoke(None, config=config)
+                logger.error("❌ [Approve] 거부 처리 실패: %s", e, exc_info=True)
+                raise
 
             message_text = "승인 거부 - 매매가 취소되었습니다."
             await chat_history_service.append_message(
