@@ -1076,6 +1076,8 @@ async def approve_action(
                 modifications=combined_modifications,
             )
 
+            logger.info("📋 [Approve] Resume value 상세: %s", resume_value)
+
             # Resume 실행 (입력 없음, command 파라미터로 전달해야 LangGraph가 재개됨)
             resume_command: Command = cast(Command, cast(object, {"resume": resume_value}))
             logger.info(
@@ -1084,7 +1086,9 @@ async def approve_action(
                 resume_value.get("trade_approved"),
                 bool(resume_value.get("user_modifications")),
             )
+            logger.info("📍 [Approve] ainvoke 호출 직전 - thread_id=%s", conversation_id)
             result = await configured_app.ainvoke(None, config=config, command=resume_command)
+            logger.info("📍 [Approve] ainvoke 호출 직후 - result 수신 완료")
             logger.info("✅ [Approve] LangGraph resume 완료 (result_keys=%s)", list(result.keys()))
             state_after_resume = await configured_app.aget_state(config)
             state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
