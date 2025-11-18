@@ -506,8 +506,32 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     if state.get("user_pending_approval"):
         logger.info("✅ [Trading/HITL] 멱등성 체크: 이미 interrupt 완료")
         logger.info("  - user_decision: %s", state.get("user_decision"))
-        logger.info("  - conditional edge가 trade_hitl_resume으로 이동시킬 것")
-        # 아무것도 하지 않음. conditional edge가 user_decision을 감지해서 진행
+
+        # ⚠️ SubGraph state 업데이트 필요: Master의 aupdate_state가 SubGraph에 자동으로 전달되지 않음
+        # → trade_hitl_resume_node로의 conditional edge가 user_decision을 감지하도록
+        # trade_hitl_resume_node에 직접 forward
+        user_decision = state.get("user_decision")
+        if user_decision == "approved":
+            logger.info("  → trade_prepared=True로 설정하여 execute_trade 진행")
+            return {
+                "trade_prepared": True,
+                "trade_approved": True,
+            }
+        elif user_decision == "rejected":
+            logger.info("  → trade_approved=False로 설정하여 거부 처리")
+            return {
+                "trade_approved": False,
+                "trade_prepared": False,
+            }
+        elif user_decision == "modified":
+            logger.info("  → 수정 승인, trade_prepared=False로 재시뮬레이션")
+            return {
+                "trade_approved": True,
+                "trade_prepared": False,
+            }
+
+        # user_decision이 설정되지 않았으면 대기
+        logger.info("  → user_decision 미설정, 대기 중")
         return {}
 
     # 시뮬레이션 실패 체크 (변경 없음)
