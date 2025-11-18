@@ -10,6 +10,7 @@ from langgraph.types import Send
 from .state import ResearchState
 from .nodes import (
     planner_node,
+    approval_check_node,
     data_worker_node,
     macro_worker_node,
     bull_worker_node,
@@ -58,18 +59,33 @@ def _route_workers(state: ResearchState) -> list[Send]:
     return workers_to_run
 
 
+def _route_after_approval(state: ResearchState):
+    """
+    approval_check 이후 라우팅
+
+    - user_modifications가 있으면 planner로 되돌아가서 재계획
+    - 없으면 바로 workers 실행
+    """
+    if state.get("user_modifications"):
+        logger.info("🔄 [Research] 사용자 수정사항 있음 - planner 재실행")
+        return "planner"
+
+    return _route_workers(state)
+
+
 def build_research_subgraph():
     """
     Research Agent 서브그래프 생성 (HITL 패턴)
 
     Flow:
-    planner (INTERRUPT for user approval) → (workers 병렬 실행) → synthesis → END
+    planner → approval_check (INTERRUPT for user approval) → (workers 병렬 실행) → synthesis → END
 
     HITL (Human-in-the-Loop) Pattern:
-    - planner: 사용자 선호도 기반 분석 계획 수립 및 승인 요청 (INTERRUPT)
-      - UI에서 Depth/Scope/Perspectives 선택
+    - planner: 분석 계획 수립 (depth, scope, perspectives) 및 pending_tasks 생성
+    - approval_check: HITL 체크 및 INTERRUPT (intervention_required=True인 경우)
       - intervention_required=False이면 자동 승인 (매매만 HITL)
-    - workers: 사용자가 선택한 worker들이 병렬로 실행 (데이터 수집 및 분석)
+      - intervention_required=True이면 사용자 승인 대기
+    - workers: pending_tasks 기반으로 병렬 실행 (데이터 수집 및 분석)
     - synthesis: 모든 worker 결과를 통합하여 최종 의견 생성
 
     Workers (병렬 실행):
@@ -79,11 +95,13 @@ def build_research_subgraph():
     - macro_worker: 거시경제 분석
     - bull_worker: 강세 시나리오
     - bear_worker: 약세 시나리오
+    - information_analyst: 뉴스 및 시장 정보 분석
     """
     workflow = StateGraph(ResearchState)
 
     # 노드 추가
     workflow.add_node("planner", planner_node)
+    workflow.add_node("approval_check", approval_check_node)
     workflow.add_node("data_worker", data_worker_node)
     workflow.add_node("technical_analyst", technical_analyst_worker_node)
     workflow.add_node("trading_flow_analyst", trading_flow_analyst_worker_node)
@@ -93,13 +111,18 @@ def build_research_subgraph():
     workflow.add_node("information_analyst", information_worker_node)
     workflow.add_node("synthesis", synthesis_node)
 
-    # 시작점: planner에서 바로 시작 (HITL 패턴)
+    # 시작점: planner에서 시작
     workflow.set_entry_point("planner")
 
-    # planner 이후 조건부 병렬 라우팅 (Send 객체를 사용하여 병렬 실행)
+    # planner → approval_check
+    workflow.add_edge("planner", "approval_check")
+
+    # approval_check 이후 조건부 라우팅
+    # - user_modifications 있음 → planner 재실행
+    # - user_modifications 없음 → workers 병렬 실행
     workflow.add_conditional_edges(
-        "planner",
-        _route_workers,
+        "approval_check",
+        _route_after_approval,
     )
 
     # 모든 워커는 완료 후 synthesis로 직행
@@ -119,7 +142,7 @@ def build_research_subgraph():
 
     app = workflow.compile(name="research_agent")
 
-    logger.info("✅ [Research] 서브그래프 빌드 완료 (병렬 실행 구조)")
+    logger.info("✅ [Research] 서브그래프 빌드 완료 (planner → approval_check → workers 병렬 실행)")
 
     return app
 

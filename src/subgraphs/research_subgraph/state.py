@@ -48,7 +48,7 @@ class ResearchState(TypedDict, total=False):
     """분석 방법: "qualitative" | "quantitative" | "both" (UI 표시용)"""
 
     # HITL 플래그
-    plan_approved: Optional[bool]
+    analysis_plan_approved: Optional[bool]
     """사용자 승인 완료"""
 
     plan_approval_id: Optional[str]

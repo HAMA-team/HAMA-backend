@@ -136,10 +136,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         logger.info("📋 [Chat] UserProfile 로드 완료: preferred_depth=%s, expertise_level=%s",
                     user_profile.get("preferred_depth"), user_profile.get("expertise_level"))
 
-        # Ensure session exists and store the incoming user message
+        # Ensure session exists and store the incintervention_requiredoming user message
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=DEMO_USER_UUID,
+            metadata={
+                "intervention_required": intervention_required,
+                "hitl_config": hitl_config.model_dump(),
+            },
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
@@ -551,7 +555,7 @@ def _build_resume_value(
     }
 
     if approval_type == "research_plan_approval":
-        resume_value["plan_approved"] = True
+        resume_value["analysis_plan_approved"] = True
     elif approval_type == "rebalance_approval":
         resume_value["rebalance_approved"] = True
     else:  # trade_approval 및 기타 기본값
@@ -607,6 +611,53 @@ def _format_percent_delta(value: Optional[float]) -> str:
         return "-"
     sign = "+" if value > 0 else ""
     return f"{sign}{value * 100:.1f}%"
+
+
+def _parse_numeric(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        normalized = value.replace(",", "").strip()
+        if not normalized:
+            return None
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+    return None
+
+
+def _values_differ(new_value: Any, existing_value: Any) -> bool:
+    if new_value is None and existing_value is None:
+        return False
+    if new_value is None or existing_value is None:
+        return True
+
+    new_numeric = _parse_numeric(new_value)
+    existing_numeric = _parse_numeric(existing_value)
+    if new_numeric is not None and existing_numeric is not None:
+        return new_numeric != existing_numeric
+
+    return str(new_value).strip().lower() != str(existing_value).strip().lower()
+
+
+def _has_trade_changes(
+    modifications: Dict[str, Any],
+    current_values: Dict[str, Any],
+) -> bool:
+    comparison_pairs = (
+        ("quantity", "trade_quantity"),
+        ("price", "trade_price"),
+        ("action", "trade_action"),
+    )
+    for mod_field, state_field in comparison_pairs:
+        if mod_field not in modifications:
+            continue
+        if _values_differ(modifications[mod_field], current_values.get(state_field)):
+            return True
+    return False
 
 
 def _extract_holding(portfolio: Optional[Dict[str, Any]], stock_code: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -1013,36 +1064,11 @@ async def approve_action(
             if combined_modifications:
                 logger.info("✏️ 사용자 수정사항 전달: %s", combined_modifications)
 
-            # State 업데이트를 위해 현재 State 조회
-            current_state = await configured_app.aget_state(config)
-            current_values = getattr(current_state, "values", {}) if current_state else {}
-
-            # State 업데이트: user_modifications와 실제 값을 모두 반영
-            state_update = {
-                "trade_approved": True,
-            }
-
-            if combined_modifications:
-                state_update["user_modifications"] = combined_modifications
-                # 수정된 값을 State에 직접 반영
-                if "quantity" in combined_modifications:
-                    state_update["trade_quantity"] = combined_modifications["quantity"]
-                    logger.info("📝 [Approve] trade_quantity 업데이트: %s → %s",
-                               current_values.get("trade_quantity"), combined_modifications["quantity"])
-                if "price" in combined_modifications:
-                    state_update["trade_price"] = combined_modifications["price"]
-                    logger.info("📝 [Approve] trade_price 업데이트: %s → %s",
-                               current_values.get("trade_price"), combined_modifications["price"])
-                if "action" in combined_modifications:
-                    state_update["trade_action"] = combined_modifications["action"]
-                    logger.info("📝 [Approve] trade_action 업데이트: %s → %s",
-                               current_values.get("trade_action"), combined_modifications["action"])
-
-            # State를 먼저 업데이트
-            await configured_app.aupdate_state(config, state_update)
-            logger.info("✅ [Approve] State 업데이트 완료")
-
             # Resume value 준비
+            # ⚠️ LangGraph 베스트 프랙티스:
+            # - aupdate_state를 호출하면 안 됨 (새로운 체크포인트 생성으로 interrupt 정보 손실)
+            # - resume value를 통해 모든 필요한 정보를 전달
+            # - 중단된 노드가 resume value를 처리하며 state 업데이트
             resume_value = _build_resume_value(
                 approval_type=request_type,
                 user_id=DEMO_USER_UUID,
@@ -1050,11 +1076,25 @@ async def approve_action(
                 modifications=combined_modifications,
             )
 
-            # Resume 실행
-            resume_command: Command = cast(Command, {"resume": resume_value})
-            result = await configured_app.ainvoke(resume_command)
+            # Resume 실행 (입력 없음, command 파라미터로 전달해야 LangGraph가 재개됨)
+            resume_command: Command = cast(Command, cast(object, {"resume": resume_value}))
+            logger.info(
+                "▶️ [Approve] LangGraph resume 호출 시작: approval_type=%s, trade_approved=%s, has_modifications=%s",
+                request_type,
+                resume_value.get("trade_approved"),
+                bool(resume_value.get("user_modifications")),
+            )
+            result = await configured_app.ainvoke(None, config=config, command=resume_command)
+            logger.info("✅ [Approve] LangGraph resume 완료 (result_keys=%s)", list(result.keys()))
             state_after_resume = await configured_app.aget_state(config)
             state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
+            logger.info(
+                "📊 [Approve] Resume 이후 상태: next=%s, trade_prepared=%s, trade_executed=%s, trade_order_id=%s",
+                getattr(state_after_resume, "next", None),
+                state_values.get("trade_prepared"),
+                state_values.get("trade_executed"),
+                state_values.get("trade_order_id"),
+            )
 
             if getattr(state_after_resume, "next", None):
                 hitl_result = await handle_hitl_interrupt(

@@ -131,7 +131,7 @@ def _build_positions(holdings: List[Dict[str, Any]]) -> List[Position]:
         positions.append(
             Position(
                 stock_code=stock_code,
-                stock_name=holding.get("stock_name") or stock_code,
+                stock_name=holding.get("stock_name"),
                 quantity=quantity_value,
                 average_price=_to_decimal(holding.get("average_price")),
                 current_price=_to_decimal(holding.get("current_price")),

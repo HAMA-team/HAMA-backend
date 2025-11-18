@@ -478,100 +478,69 @@ JSON 형식으로만 답변하세요:
 
 async def planner_node(state: ResearchState) -> ResearchState:
     """
-    Planner Node - HITL 패턴 구현
+    Planner Node - 계획 수립 및 pending_tasks 생성
 
-    경로 1: 첫 실행 - UserProfile + LLM 기반 계획 수립 후 INTERRUPT
-    경로 2: 승인 후 재개 - perspectives를 workers로 변환하여 pending_tasks 생성
+    역할:
+    1. LLM을 사용하여 분석 계획 수립 (depth, scope, perspectives)
+    2. perspectives를 workers로 변환
+    3. pending_tasks 생성 및 State에 저장
+
+    Note:
+    - 첫 실행: LLM으로 계획 수립
+    - 재실행 (승인 후 user_modifications 있음): modifications 적용
     """
-
-    # ========== 경로 2: 승인 후 재개 (두 번째 실행) ==========
-    if state.get("plan_approved"):
-        logger.info("✅ [Research/Planner] 사용자 승인 완료, 분석 시작")
-
-        # 사용자 수정사항 처리
-        modifications = state.get("user_modifications")
-
-        if modifications:
-            logger.info("✏️ [Research/Planner] 사용자 수정사항 반영: %s", modifications)
-
-            # 1. 구조화된 수정사항 적용 (depth, scope, perspectives)
-            depth = modifications.get("depth", state.get("depth", "detailed"))
-            scope = modifications.get("scope", state.get("scope", "balanced"))
-            perspectives = modifications.get("perspectives", state.get("perspectives", []))
-
-            # 2. 자유 텍스트 입력 처리 (user_input)
-            user_input = modifications.get("user_input")
-            if user_input:
-                logger.info("💬 [Research/Planner] 사용자 입력 해석: %s", user_input[:100])
-
-                # LLM을 사용하여 사용자 입력 해석 및 plan 재조정
-                refined_plan = await _refine_plan_with_user_input(
-                    original_plan={
-                        "depth": depth,
-                        "scope": scope,
-                        "perspectives": perspectives,
-                    },
-                    user_input=user_input,
-                    stock_code=state.get("stock_code"),
-                    query=state.get("query"),
-                )
-
-                # 해석된 결과로 plan 업데이트
-                depth = refined_plan.get("depth", depth)
-                scope = refined_plan.get("scope", scope)
-                perspectives = refined_plan.get("perspectives", perspectives)
-
-                logger.info("🔄 [Research/Planner] 재조정된 plan: depth=%s, scope=%s, perspectives=%s",
-                           depth, scope, perspectives)
-        else:
-            # 수정 없음 - 기존 state의 plan 사용
-            depth = state.get("depth", "detailed")
-            scope = state.get("scope", "balanced")
-            perspectives = state.get("perspectives", [])
-
-        analysis_depth = state.get("analysis_depth") or depth or "detailed"
-        # perspectives → workers 변환
-        workers = _perspectives_to_workers(perspectives)
-
-        # scope에 따라 worker 개수 제한
-        workers = _apply_scope_limit(workers, scope)
-
-        # pending_tasks 생성
-        pending_tasks = []
-        for worker in workers:
-            pending_tasks.append({
-                "id": f"task_{worker}",
-                "worker": worker,
-                "description": f"{worker} 분석",
-            })
-
-        logger.info(
-            f"🚀 [Research/Planner] 실행할 workers: {workers} (총 {len(workers)}개)"
-        )
-
-        return {
-            "depth": depth,
-            "scope": scope,
-            "perspectives": perspectives,
-            "analysis_depth": analysis_depth,
-            "pending_tasks": pending_tasks,
-            "completed_tasks": [],
-            "task_notes": [],
-            "messages": [AIMessage(content="분석을 시작합니다...")],
-        }
-
-    # ========== 경로 1: 첫 실행 (계획 수립 및 INTERRUPT) ==========
-
     query = state.get("query") or "종목 분석"
     stock_code = await _extract_stock_code(state)
 
     logger.info("🧠 [Research/Planner] 계획 수립 시작: %s", query[:50])
 
-    # 1. UserProfile + LLM 기반 기본 계획 수립
-    user_profile = state.get("user_profile") or {}
+    # analysis_plan_approved가 True이면 재실행 (승인 후)
+    is_rerun = state.get("analysis_plan_approved", False)
 
-    llm = get_llm(temperature=0, max_tokens=1200)
-    prompt = f"""당신은 주식 투자 분석 계획을 수립하는 전문가입니다.
+    # 1. 재실행 + 사용자 수정사항이 있으면 적용
+    modifications = state.get("user_modifications")
+    if is_rerun and modifications:
+        logger.info("✏️ [Research/Planner] 사용자 수정사항 반영: %s", modifications)
+
+        # 구조화된 수정사항 적용 (기존 State 값을 우선 fallback)
+        depth = modifications.get("depth") or state.get("depth") or "detailed"
+        scope = modifications.get("scope") or state.get("scope") or "balanced"
+        perspectives = modifications.get("perspectives") or state.get("perspectives") or []
+
+        # 자유 텍스트 입력 처리
+        user_input = modifications.get("user_input")
+        if user_input:
+            logger.info("💬 [Research/Planner] 사용자 입력 해석: %s", user_input[:100])
+
+            # LLM을 사용하여 사용자 입력 해석 및 plan 재조정
+            refined_plan = await _refine_plan_with_user_input(
+                original_plan={
+                    "depth": depth,
+                    "scope": scope,
+                    "perspectives": perspectives,
+                },
+                user_input=user_input,
+                stock_code=stock_code,
+                query=query,
+            )
+
+            depth = refined_plan.get("depth", depth)
+            scope = refined_plan.get("scope", scope)
+            perspectives = refined_plan.get("perspectives", perspectives)
+
+            logger.info("🔄 [Research/Planner] 재조정된 plan: depth=%s, scope=%s, perspectives=%s",
+                       depth, scope, perspectives)
+    # 2. 재실행이지만 수정사항이 없으면 기존 계획 재사용
+    elif is_rerun:
+        depth = state.get("depth", "detailed")
+        scope = state.get("scope", "balanced")
+        perspectives = state.get("perspectives", [])
+        logger.info("♻️ [Research/Planner] 기존 계획 재사용: depth=%s, scope=%s", depth, scope)
+    # 3. 첫 실행 - LLM으로 새 계획 수립
+    else:
+        logger.info("🆕 [Research/Planner] 새 계획 수립 (LLM 호출)")
+        llm = get_llm(temperature=0, max_tokens=1200)
+        prompt = f"""당신은 주식 투자 분석 계획을 수립하는 전문가입니다.
 
 사용자 요청: {query}
 종목코드: {stock_code}
@@ -594,91 +563,105 @@ async def planner_node(state: ResearchState) -> ResearchState:
 - technical: 기술적 분석
 - flow: 거래 동향 (외국인/기관)
 - strategy: 투자 전략 (bull/bear 시나리오)
-- bull_case: 강세 시나리오만
-- bear_case: 약세 시나리오만
+- information: 뉴스 및 시장 정보
 
 JSON 형식으로만 답변하세요:
 {{
   "depth": "detailed",
   "scope": "balanced",
-  "perspectives": ["fundamental", "technical"]
+  "perspectives": ["fundamental", "technical", "information"]
 }}
 """
 
-    try:
-        response = await llm.ainvoke(prompt)
-        plan = safe_json_parse(response.content, "Research/Planner")
+        try:
+            response = await llm.ainvoke(prompt)
+            plan = safe_json_parse(response.content, "Research/Planner")
 
-        recommended_depth = plan.get("depth", "detailed")
-        recommended_scope = plan.get("scope", "balanced")
-        recommended_perspectives = plan.get(
-            "perspectives",
-            ["fundamental", "technical", "information"],
-        )
+            depth = plan.get("depth", "detailed")
+            scope = plan.get("scope", "balanced")
+            perspectives = plan.get("perspectives", ["fundamental", "technical", "information"])
 
-    except Exception as exc:
-        logger.warning("⚠️ [Research/Planner] LLM 계획 실패, 기본값 사용: %s", exc)
-        recommended_depth = "detailed"
-        recommended_scope = "balanced"
-        recommended_perspectives = ["fundamental", "technical", "information"]
+        except Exception as exc:
+            logger.warning("⚠️ [Research/Planner] LLM 계획 실패, 기본값 사용: %s", exc)
+            depth = "detailed"
+            scope = "balanced"
+            perspectives = ["fundamental", "technical", "information"]
 
-    # 2. intervention_required 체크
+    # 4. perspectives → workers 변환
+    workers = _perspectives_to_workers(perspectives)
+    workers = _apply_scope_limit(workers, scope)
+
+    # 5. pending_tasks 생성
+    pending_tasks = []
+    for worker in workers:
+        pending_tasks.append({
+            "id": f"task_{worker}",
+            "worker": worker,
+            "description": f"{worker} 분석",
+        })
+
+    logger.info(f"✅ [Research/Planner] 계획 수립 완료: {len(workers)}개 worker (depth={depth}, scope={scope}, perspectives={perspectives})")
+
+    from src.constants.analysis_depth import get_depth_config
+    depth_config = get_depth_config(depth)
+
+    return {
+        "depth": depth,
+        "scope": scope,
+        "perspectives": perspectives,
+        "analysis_depth": depth,
+        "method": "both",
+        "pending_tasks": pending_tasks,
+        "completed_tasks": [],
+        "task_notes": [],
+        "stock_code": stock_code,
+        "messages": [AIMessage(content=f"{depth_config['name']} 분석 계획이 수립되었습니다.")],
+    }
+
+
+async def approval_check_node(state: ResearchState) -> ResearchState:
+    """
+    Approval Check Node - HITL 승인 체크
+
+    역할:
+    1. intervention_required 확인
+    2. True이면 INTERRUPT 발생하여 사용자 승인 대기
+    3. False이면 바로 통과
+    """
     intervention_required = state.get("intervention_required", False)
 
     if not intervention_required:
         # 분석 단계는 자동 진행 (매매만 HITL)
-        logger.info("✅ [Research/Planner] 분석 자동 진행 (intervention_required=False)")
-
-        analysis_depth = recommended_depth
-        workers = _perspectives_to_workers(recommended_perspectives)
-        workers = _apply_scope_limit(workers, recommended_scope)
-
-        pending_tasks = []
-        for worker in workers:
-            pending_tasks.append({
-                "id": f"task_{worker}",
-                "worker": worker,
-                "description": f"{worker} 분석",
-            })
-
-        from src.constants.analysis_depth import get_depth_config
-
-        depth_config = get_depth_config(recommended_depth)
-
+        logger.info("✅ [Research/ApprovalCheck] 분석 자동 진행 (intervention_required=False)")
         return {
-            "plan_approved": True,
-            "depth": recommended_depth,
-            "scope": recommended_scope,
-            "perspectives": recommended_perspectives,
-            "analysis_depth": analysis_depth,
-            "method": "both",
-            "pending_tasks": pending_tasks,
-            "completed_tasks": [],
-            "task_notes": [],
-            "messages": [AIMessage(content=f"{depth_config['name']} 분석을 시작합니다.")],
-            "stock_code": stock_code,
+            "analysis_plan_approved": True,
+            "messages": [AIMessage(content="분석을 시작합니다...")],
         }
 
-    # 3. INTERRUPT 발생 (사용자 승인 대기) - intervention_required=True
+    # HITL 필요 - INTERRUPT 발생
     from src.constants.analysis_depth import get_depth_config
 
-    depth_config = get_depth_config(recommended_depth)
+    depth = state.get("depth", "detailed")
+    scope = state.get("scope", "balanced")
+    perspectives = state.get("perspectives", [])
+    stock_code = state.get("stock_code")
+    query = state.get("query", "종목 분석")
 
+    depth_config = get_depth_config(depth)
     approval_id = str(uuid.uuid4())
 
-    logger.info("⚠️ [Research/Planner] INTERRUPT 발생 - 사용자 승인 대기")
+    logger.info("⚠️ [Research/ApprovalCheck] INTERRUPT 발생 - 사용자 승인 대기")
 
-    # Interrupt payload 생성
     interrupt_payload = {
         "type": "research_plan_approval",
         "approval_id": approval_id,
         "stock_code": stock_code,
         "query": query,
         "plan": {
-            "depth": recommended_depth,
+            "depth": depth,
             "depth_name": depth_config["name"],
-            "scope": recommended_scope,
-            "perspectives": recommended_perspectives,
+            "scope": scope,
+            "perspectives": perspectives,
             "method": "both",
             "estimated_time": depth_config["estimated_time"],
         },
@@ -692,19 +675,11 @@ JSON 형식으로만 답변하세요:
         "message": "다음과 같이 분석할 예정입니다. 진행하시겠습니까?",
     }
 
-    # Trading 패턴과 동일하게 interrupt() 함수 직접 호출
     interrupt(interrupt_payload)
 
-    # Interrupt 후 State 업데이트 (재개 시 사용할 기본값 저장)
     return {
-        "depth": recommended_depth,
-        "scope": recommended_scope,
-        "perspectives": recommended_perspectives,
-        "analysis_depth": recommended_depth,
-        "method": "both",
         "plan_approval_id": approval_id,
-        "stock_code": stock_code,
-        "messages": [AIMessage(content="분석 계획을 수립했습니다. 승인을 기다립니다...")],
+        "messages": [AIMessage(content="분석 계획 승인을 기다립니다...")],
     }
 
 

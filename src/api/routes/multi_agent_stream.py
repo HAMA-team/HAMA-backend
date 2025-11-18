@@ -591,7 +591,10 @@ async def stream_multi_agent_execution(
         await chat_history_service.upsert_session(
             conversation_id=conversation_uuid,
             user_id=demo_user_uuid,
-            metadata={"intervention_required": intervention_required},
+            metadata={
+                "intervention_required": intervention_required,
+                "hitl_config": hitl_config.model_dump(),
+            },
         )
         await chat_history_service.append_message(
             conversation_id=conversation_uuid,
