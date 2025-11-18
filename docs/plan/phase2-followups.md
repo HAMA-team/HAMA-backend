@@ -33,6 +33,12 @@ Phase 2 통합 사항을 검토한 결과, 현재 코드베이스는 KIS 주문 
 
 ---
 
+## 5. KIS 데이터 피드 안정화
+- `src/services/stock_data_service.py`는 pykrx/FDR에 앞서 KIS의 `inquire-price`/`inquire-daily-price`를 호출하여 실제 시세와 지수, `finance/financial-ratio` 기반 지표, `inquire-investor` 흐름을 취합합니다. OAuth 2.0으로 발급한 토큰은 `RateLimiter`(`src/services/kis_service.py:50`)의 초당 1회 제한과 함께 `.cache/kis_token.json`(`settings.KIS_TOKEN_CACHE_PATH`)에 캐시/리프레시합니다.
+- `Research` 에이전트에서는 `get_investor_flow_tool`가 LangGraph 노드에 수급 데이터를 전달하고, 실패 시 `_build_mock_investor_trading_data`로 보정하여 `trading_flow` 노드가 항상 데이터를 받을 수 있게 했습니다.
+- 섹터 성과/모멘텀은 `src/services/sector_data_service.py`에서 KIS 업종 인덱스를 직접 불러오고, 실패하면 기존 샘플 스냅샷(30일 기준)에 스케일링을 적용합니다. 실제 업종 코드 매핑은 `settings.KIS_SECTOR_INDEX_CODES`를 통해 환경별로 주입하여 `sector_data_service`를 인스턴스화할 수 있습니다.
+- `kis_service`는 `KIS_BASE_URLS`에서 `demo`/`real` 출처를 분리하며, 토큰 만료 5분 전에 자동 재발급하고 분산된 `RateLimiter`/`_token_lock`으로 동시 요청을 제어합니다. 테스트 서버에서는 `.env`에서 `ENV=demo`를 설정하면 `https://openapivts.koreainvestment.com:29443` 도메인을 사용합니다.
+
 ## 참고 자료 (KIS Open Trading API)
 - 공식 깃허브: https://github.com/koreainvestment/open-trading-api  
   - 인증: `/oauth2/tokenP` (POST, appkey/appsecret)  

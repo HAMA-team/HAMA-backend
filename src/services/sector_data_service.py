@@ -1,14 +1,21 @@
-"""
-섹터 데이터 서비스
+"""섹터 데이터 서비스
 
-실제 구현 시 DART API 또는 사내 DB에서 섹터-종목 매핑을 가져와야 하지만
-테스트 및 오프라인 실행을 위해 결정론적인 샘플 데이터를 제공한다.
+KIS 업종 지수(혹은 샘플 데이터)를 기반으로 섹터 성과/모멘텀을 제공합니다.
+모의 환경이나 KIS 코드가 지원되지 않을 경우 기존 샘플 스냅샷이 사용됩니다.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+import pandas as pd
+
+from src.config.settings import settings
+from src.services.kis_service import kis_service
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -22,7 +29,6 @@ class SectorSnapshot:
     trend: str
 
 
-# CI/테스트 환경에서도 재현 가능한 고정 데이터
 DEFAULT_SECTOR_SNAPSHOTS: List[SectorSnapshot] = [
     SectorSnapshot("IT/전기전자", 6.4, 0.78, 17.5, "up"),
     SectorSnapshot("2차전지", 5.1, 0.72, 22.3, "up"),
@@ -36,53 +42,110 @@ DEFAULT_SECTOR_SNAPSHOTS: List[SectorSnapshot] = [
     SectorSnapshot("에너지/화학", -4.1, 0.30, 16.0, "down"),
 ]
 
+DEFAULT_SECTOR_INDEX_CODES: Dict[str, str] = {
+    "KOSPI": "0001",  # 코스피 지수
+    "KOSDAQ": "1001",  # 코스닥 지수
+    "KOSPI200": "2001",  # 코스피200
+}
+
 
 class SectorDataService:
-    """
-    섹터 데이터 서비스
+    """섹터/업종별 성과를 제공하는 서비스"""
 
-    실제 서비스 연결 전까지는 DEFAULT_SECTOR_SNAPSHOTS 값을 기반으로
-    간단한 모멘텀 지표를 만든다. 외부 의존성이 없기 때문에 LangGraph 노드들이
-    즉시 동작하며, 향후 실데이터 연동 시 인터페이스만 유지하면 된다.
-    """
-
-    def __init__(self, snapshots: List[SectorSnapshot] | None = None):
+    def __init__(
+        self,
+        snapshots: Optional[List[SectorSnapshot]] = None,
+        index_codes: Optional[Dict[str, str]] = None,
+    ):
         self._snapshots = snapshots or DEFAULT_SECTOR_SNAPSHOTS
+        merged_codes = {
+            **DEFAULT_SECTOR_INDEX_CODES,
+            **(index_codes or {}),
+            **(settings.KIS_SECTOR_INDEX_CODES or {}),
+        }
+        self._sector_index_codes = {
+            str(key).strip(): str(value).strip()
+            for key, value in merged_codes.items()
+            if key and value
+        }
 
     def _normalize_days(self, days: int) -> int:
         return max(1, days)
 
-    def get_sector_performance(
-        self,
-        days: int = 30
-    ) -> Dict[str, Dict]:
-        """
-        섹터별 성과 데이터 (고정 샘플 기반)
+    def _scale_snapshot(self, snapshot: SectorSnapshot, scale: float, days: int) -> Dict[str, float]:
+        return {
+            "return": round(snapshot.return_pct * scale, 2),
+            "momentum": snapshot.momentum,
+            "volatility": snapshot.volatility,
+            "trend": snapshot.trend,
+            "days": days,
+            "source": "sample",
+        }
 
-        Args:
-            days: 비교 기간. 베이스는 30일 데이터이며 단순 비율로 스케일한다.
-        """
+    async def _fetch_kis_snapshot(
+        self, sector: str, days: int
+    ) -> Optional[SectorSnapshot]:
+        index_code = self._sector_index_codes.get(sector)
+        if not index_code:
+            return None
+
+        try:
+            df = await kis_service.get_index_daily_price(
+                index_code=index_code,
+                period="D",
+                days=days,
+            )
+        except Exception as exc:
+            logger.warning("⚠️ [SectorData] KIS 지수 조회 실패: %s (%s)", sector, exc)
+            return None
+
+        if df is None or df.empty:
+            return None
+
+        close = df["Close"].dropna()
+        if len(close) < 2:
+            return None
+
+        start = close.iloc[0]
+        end = close.iloc[-1]
+        if start == 0:
+            return None
+
+        return_pct = round((end - start) / start * 100, 2)
+        returns = close.pct_change().dropna()
+        momentum = float(returns.tail(min(5, len(returns))).mean() * 100) if not returns.empty else 0.0
+        volatility = (
+            float(returns.std() * (252 ** 0.5) * 100)
+            if len(returns) > 1
+            else 0.0
+        )
+        trend = "up" if return_pct > 0.5 else "down" if return_pct < -0.5 else "flat"
+
+        return SectorSnapshot(sector, return_pct, momentum, volatility, trend)
+
+    async def get_sector_performance(self, days: int = 30) -> Dict[str, Dict]:
         period = self._normalize_days(days)
         scale = period / 30.0
 
         performance: Dict[str, Dict] = {}
         for snapshot in self._snapshots:
-            scaled_return = round(snapshot.return_pct * scale, 2)
-            performance[snapshot.sector] = {
-                "return": scaled_return,
-                "momentum": snapshot.momentum,
-                "volatility": snapshot.volatility,
-                "trend": snapshot.trend,
-                "days": period,
-            }
+            kis_snapshot = await self._fetch_kis_snapshot(snapshot.sector, period)
+            if kis_snapshot:
+                performance[snapshot.sector] = {
+                    "return": kis_snapshot.return_pct,
+                    "momentum": kis_snapshot.momentum,
+                    "volatility": kis_snapshot.volatility,
+                    "trend": kis_snapshot.trend,
+                    "days": period,
+                    "source": "KIS",
+                }
+            else:
+                performance[snapshot.sector] = self._scale_snapshot(snapshot, scale, period)
 
         return performance
 
-    def get_sector_ranking(self, days: int = 30) -> List[Dict]:
-        """
-        섹터 성과 순위 (수익률 내림차순)
-        """
-        performance = self.get_sector_performance(days=days)
+    async def get_sector_ranking(self, days: int = 30) -> List[Dict]:
+        performance = await self.get_sector_performance(days=days)
 
         ranking = [
             {
@@ -91,36 +154,23 @@ class SectorDataService:
                 "volatility": data["volatility"],
                 "trend": data["trend"],
                 "momentum": data["momentum"],
+                "source": data.get("source", "sample"),
             }
             for sector, data in performance.items()
         ]
         ranking.sort(key=lambda item: item["return"], reverse=True)
         return ranking
 
-    def get_overweight_sectors(
-        self,
-        days: int = 30,
-        threshold: float = 5.0
-    ) -> List[str]:
-        """
-        비중 확대 추천 섹터
-        """
-        performance = self.get_sector_performance(days=days)
+    async def get_overweight_sectors(self, days: int = 30, threshold: float = 5.0) -> List[str]:
+        performance = await self.get_sector_performance(days=days)
         return [
             sector
             for sector, data in performance.items()
             if data["return"] >= threshold
         ]
 
-    def get_underweight_sectors(
-        self,
-        days: int = 30,
-        threshold: float = -3.0
-    ) -> List[str]:
-        """
-        비중 축소 추천 섹터
-        """
-        performance = self.get_sector_performance(days=days)
+    async def get_underweight_sectors(self, days: int = 30, threshold: float = -3.0) -> List[str]:
+        performance = await self.get_sector_performance(days=days)
         return [
             sector
             for sector, data in performance.items()
@@ -128,5 +178,4 @@ class SectorDataService:
         ]
 
 
-# Global instance
 sector_data_service = SectorDataService()

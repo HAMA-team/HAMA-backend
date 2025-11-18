@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 class Settings(BaseSettings):
@@ -110,6 +110,7 @@ class Settings(BaseSettings):
     KIS_APP_SECRET: str | None = None
     KIS_ACCOUNT_NUMBER: str | None = None
     KIS_TOKEN_CACHE_PATH: str | None = ".cache/kis_token.json"
+    KIS_SECTOR_INDEX_CODES: Dict[str, str] = {}
 
     @property
     def kis_token_cache_path(self) -> Path | None:

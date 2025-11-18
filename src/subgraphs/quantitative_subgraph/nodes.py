@@ -289,7 +289,7 @@ async def market_cycle_node(state: QuantitativeState) -> Dict[str, Any]:
             macro_data = macro_data_service.macro_summary()
 
         # 2. 섹터 성과 데이터 수집
-        sector_ranking = sector_data_service.get_sector_ranking(days=30)
+        sector_ranking = await sector_data_service.get_sector_ranking(days=30)
 
         # 3. LLM 기반 시장 사이클 분석
         llm = get_llm(max_tokens=2000, temperature=0.1)
@@ -365,7 +365,7 @@ async def market_cycle_node(state: QuantitativeState) -> Dict[str, Any]:
         # Fallback: 섹터 성과 기반 간단 판단
         try:
             from src.services.sector_data_service import sector_data_service
-            sector_ranking = sector_data_service.get_sector_ranking(days=30)
+            sector_ranking = await sector_data_service.get_sector_ranking(days=30)
             top_sectors_positive = sum(1 for s in sector_ranking[:5] if s['return'] > 0)
 
             if top_sectors_positive >= 4:
@@ -410,7 +410,7 @@ async def sector_allocation_node(state: QuantitativeState) -> Dict[str, Any]:
         from src.services.sector_data_service import sector_data_service
 
         # 1. 섹터 성과 데이터 수집
-        sector_performance = sector_data_service.get_sector_performance(days=30)
+        sector_performance = await sector_data_service.get_sector_performance(days=30)
 
         # 2. LLM 기반 섹터 비중 결정
         llm = get_llm(max_tokens=2000, temperature=0.1)

@@ -208,6 +208,171 @@ class KISService:
         except OSError as exc:
             logger.warning("⚠️ KIS 토큰 캐시 저장 실패: %s", exc)
 
+    @staticmethod
+    def _try_parse_number(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = value.replace(",", "").strip()
+            if cleaned in ("", "-", "--"):  # 빈값 인식
+                return None
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _trend_from_net(net: Optional[float]) -> str:
+        if net is None:
+            return "데이터없음"
+        if net > 0:
+            return "순매수"
+        if net < 0:
+            return "순매도"
+        return "보합"
+
+    @staticmethod
+    def _strength_from_net(net: Optional[float]) -> int:
+        if net is None or net == 0:
+            return 1
+        magnitude = abs(net)
+        level = int(magnitude // 100_000_000) + 1
+        return min(5, max(1, level))
+
+    @staticmethod
+    def _supply_strength(total_net: Optional[float]) -> str:
+        if total_net is None:
+            return "데이터없음"
+        magnitude = abs(total_net)
+        if magnitude >= 1_000_000_000:
+            return "강함"
+        if magnitude <= 200_000_000:
+            return "약함"
+        return "보통"
+
+    @staticmethod
+    def _extract_value(record: Dict[str, Any], candidates: List[str]) -> Optional[float]:
+        for candidate in candidates:
+            value = record.get(candidate)
+            result = KISService._try_parse_number(value)
+            if result is not None:
+                return result
+        return None
+
+    @staticmethod
+    def _determine_leading_investor(amounts: Dict[str, Optional[float]]) -> str:
+        max_leader = None
+        max_value = 0.0
+        for label, value in amounts.items():
+            if value is None:
+                continue
+            magnitude = abs(value)
+            if magnitude > max_value:
+                max_value = magnitude
+                max_leader = label
+        if max_leader is None or max_value == 0.0:
+            return "혼재"
+        return max_leader
+
+    @staticmethod
+    def _select_numeric(record: Dict[str, Any], keywords: List[str]) -> Optional[float]:
+        best_value: Optional[float] = None
+        best_score = -1
+        for key, raw in record.items():
+            lower = key.lower()
+            if not any(keyword in lower for keyword in keywords):
+                continue
+            value = KISService._try_parse_number(raw)
+            if value is None:
+                continue
+            score = sum(5 for keyword in keywords if keyword in lower)
+            if "net" in lower:
+                score += 3
+            if "amt" in lower or "value" in lower:
+                score += 1
+            if "buy" in lower or "sell" in lower:
+                score -= 1
+            if score <= 0:
+                score = 1
+            if score > best_score:
+                best_score = score
+                best_value = value
+        return best_value
+
+    def _build_investor_segment(self, stock_code: str, label: str, net_value: Optional[float]) -> Dict[str, Any]:
+        magnitude = abs(net_value) if net_value is not None else 0
+        formatted_amount = f"{int(magnitude):,}" if net_value is not None else "데이터없음"
+        trend = self._trend_from_net(net_value)
+        strength = self._strength_from_net(net_value)
+        if net_value is None:
+            analysis = f"{label} 거래 데이터가 부족하여 추세를 판단할 수 없습니다."
+        else:
+            direction = "매수" if trend == "순매수" else "매도" if trend == "순매도" else "보합"
+            analysis = (
+                f"{stock_code}에서 {label}은 {trend}이며, 순{direction}금액 {formatted_amount}원 수준입니다."
+            )
+
+        return {
+            "trend": trend,
+            "strength": strength,
+            "net_amount": int(net_value) if net_value is not None else None,
+            "analysis": analysis,
+        }
+
+    def _build_investor_payload(self, stock_code: str, record: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_record = {}
+        for key, value in record.items():
+            if isinstance(value, Decimal):
+                normalized_record[key] = float(value)
+            else:
+                normalized_record[key] = value
+
+        foreign_net = self._select_numeric(normalized_record, ["frgn", "foreign"])
+        institutional_net = self._select_numeric(normalized_record, ["inst", "institution"])
+        individual_net = self._select_numeric(normalized_record, ["indv", "individual", "private"])
+
+        segments = {
+            "외국인": foreign_net,
+            "기관": institutional_net,
+            "개인": individual_net,
+        }
+
+        total_net = sum(value for value in segments.values() if value is not None)
+
+        supply_strength = self._supply_strength(total_net)
+        outlook = (
+            "긍정적" if total_net and total_net > 0 else "부정적" if total_net and total_net < 0 else "중립"
+        )
+        leading = self._determine_leading_investor(segments)
+        if leading == "혼재":
+            forecast = "세부 투자자 흐름이 혼조라 뚜렷한 방향성을 판단하기 어렵습니다."
+        else:
+            forecast = f"{leading} 중심으로 {outlook} 수급 흐름이 지속될 가능성이 높습니다."
+
+        return {
+            "foreign_investor": self._build_investor_segment(stock_code, "외국인", foreign_net),
+            "institutional_investor": self._build_investor_segment(
+                stock_code, "기관", institutional_net
+            ),
+            "individual_investor": self._build_investor_segment(
+                stock_code, "개인", individual_net
+            ),
+            "supply_demand_analysis": {
+                "leading_investor": leading,
+                "supply_strength": supply_strength,
+                "outlook": outlook,
+                "forecast": forecast,
+            },
+            "raw_output": normalized_record,
+            "timestamp": datetime.now().isoformat(),
+            "source": "KIS",
+        }
+
     async def _get_access_token(self) -> str:
         """
         OAuth 2.0 액세스 토큰 발급 (캐싱 + Race Condition 방지)
@@ -505,6 +670,37 @@ class KISService:
 
         logger.info(f"✅ Account balance fetched: {len(stocks)} stocks, total={total_assets:,}원, cash={cash_balance:,}원")
         return response
+
+    async def get_investor_flow(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """투자자별 매매 흐름 조회"""
+
+        logger.info("📡 [KIS] 투자자 흐름 조회: %s", stock_code)
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+        }
+
+        try:
+            result = await self._api_call(
+                KIS_ENDPOINTS["investor_flow"],
+                KIS_TR_IDS["investor_flow"],
+                params,
+                method="GET",
+            )
+
+            output = result.get("output") or result.get("output1") or result.get("output2") or {}
+            record = output[0] if isinstance(output, list) and output else output or {}
+
+            if not record:
+                logger.warning("⚠️ [KIS] 투자자 흐름 데이터 없음: %s", stock_code)
+                return {}
+
+            return self._build_investor_payload(stock_code, record)
+
+        except Exception as exc:
+            logger.warning("⚠️ [KIS] 투자자 흐름 조회 실패: %s", exc)
+            return {}
 
     # ==================== 시세 조회 ====================
 
@@ -865,6 +1061,58 @@ class KISService:
 
         logger.info(f"✅ [KIS] 지수 일자별 조회 완료: {index_code} ({len(df)}일)")
         return df
+
+
+    async def get_financial_ratios(
+        self, stock_code: str, date: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """재무비율을 조회하여 표준화된 dict로 반환합니다."""
+
+        logger.info("📋 [KIS] 재무비율 조회: %s", stock_code)
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": stock_code,
+            "FID_INPUT_DATE_1": date or datetime.now().strftime("%Y%m%d"),
+        }
+
+        try:
+            result = await self._api_call(
+                KIS_ENDPOINTS["financial_ratio"],
+                KIS_TR_IDS["financial_ratio"],
+                params,
+                method="GET",
+            )
+
+            output = result.get("output") or {}
+            record = output[0] if isinstance(output, list) and output else output
+
+            if not record:
+                logger.warning("⚠️ [KIS] 재무비율 응답 없음: %s", stock_code)
+                return {}
+
+            normalized = {k.lower(): v for k, v in record.items()}
+
+            ratio_data = {
+                "per": self._extract_value(normalized, ["per", "priceearningsratio"]),
+                "pbr": self._extract_value(normalized, ["pbr", "pricebookratio"]),
+                "eps": self._extract_value(normalized, ["eps", "earningspershare"]),
+                "bps": self._extract_value(normalized, ["bps", "bookvaluepershare"]),
+                "roe": self._extract_value(normalized, ["roe", "returnonequity"]),
+                "roa": self._extract_value(normalized, ["roa", "returnonassets"]),
+                "dps": self._extract_value(normalized, ["dps", "dividendper"]),
+                "dividend_yield": self._extract_value(
+                    normalized, ["dividend_yield", "dividendyield", "dividendratio"]
+                ),
+                "raw_output": normalized,
+            }
+
+            logger.info("✅ [KIS] 재무비율 조회 완료: %s", stock_code)
+            return ratio_data
+
+        except Exception as exc:
+            logger.warning("⚠️ [KIS] 재무비율 조회 실패: %s", exc)
+            return {}
 
 
 # 전역 인스턴스

@@ -16,6 +16,7 @@ from .nodes import (
     bear_worker_node,
     technical_analyst_worker_node,
     trading_flow_analyst_worker_node,
+    information_worker_node,
     synthesis_node,
 )
 
@@ -39,6 +40,7 @@ def _route_workers(state: ResearchState) -> list[Send]:
         "macro": "macro_worker",
         "bull": "bull_worker",
         "bear": "bear_worker",
+        "information": "information_analyst",
     }
 
     # pending_tasks에서 worker 추출 (중복 제거)
@@ -88,6 +90,7 @@ def build_research_subgraph():
     workflow.add_node("macro_worker", macro_worker_node)
     workflow.add_node("bull_worker", bull_worker_node)
     workflow.add_node("bear_worker", bear_worker_node)
+    workflow.add_node("information_analyst", information_worker_node)
     workflow.add_node("synthesis", synthesis_node)
 
     # 시작점: planner에서 바로 시작 (HITL 패턴)
@@ -107,6 +110,7 @@ def build_research_subgraph():
         "macro_worker",
         "bull_worker",
         "bear_worker",
+        "information_analyst",
     ):
         workflow.add_edge(worker, "synthesis")
 

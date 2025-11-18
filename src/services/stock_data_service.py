@@ -725,24 +725,32 @@ class StockDataService:
             }
         """
         try:
-            # KIS API로 현재가 조회 (PER/PBR 포함)
             price_data = await kis_service.get_stock_price(stock_code)
+            ratio_data = await kis_service.get_financial_ratios(stock_code, date=date)
+            ratio_data = ratio_data or {}
 
-            if price_data:
-                fundamental = {
-                    "PER": price_data.get("per"),  # KIS API 제공
-                    "PBR": price_data.get("pbr"),  # KIS API 제공
-                    "EPS": None,  # KIS API 미제공
-                    "DIV": None,  # KIS API 미제공 (배당수익률)
-                    "DPS": None,  # KIS API 미제공 (주당배당금)
-                    "BPS": None,  # KIS API 미제공 (주당순자산가치)
-                }
-
-                logger.info(f"✅ 펀더멘털 데이터 조회 성공 (KIS API): {stock_code}")
-                return fundamental
-            else:
+            data_available = bool(price_data or ratio_data)
+            if not data_available:
                 logger.warning(f"⚠️ 펀더멘털 데이터 없음: {stock_code}")
                 return None
+
+            per_value = ratio_data.get("per") or (price_data.get("per") if price_data else None)
+            pbr_value = ratio_data.get("pbr") or (price_data.get("pbr") if price_data else None)
+
+            fundamental = {
+                "PER": per_value,
+                "PBR": pbr_value,
+                "EPS": ratio_data.get("eps"),
+                "BPS": ratio_data.get("bps"),
+                "ROE": ratio_data.get("roe"),
+                "ROA": ratio_data.get("roa"),
+                "DIV": ratio_data.get("dividend_yield"),
+                "DPS": ratio_data.get("dps"),
+                "raw_output": ratio_data.get("raw_output"),
+            }
+
+            logger.info(f"✅ 펀더멘털 데이터 조회 성공 (KIS API): {stock_code}")
+            return fundamental
 
         except Exception as e:
             logger.error(f"❌ 펀더멘털 데이터 조회 실패 (KIS API): {stock_code} - {e}")
@@ -787,6 +795,16 @@ class StockDataService:
         except Exception as e:
             logger.error(f"❌ 시가총액 데이터 조회 실패 (KIS API): {stock_code} - {e}")
             return None
+
+    async def get_investor_flow(self, stock_code: str) -> Dict[str, Any]:
+        """KIS의 투자자별 거래 흐름을 조회합니다."""
+
+        try:
+            data = await kis_service.get_investor_flow(stock_code)
+            return data or {}
+        except Exception as exc:
+            logger.warning("⚠️ 투자자 흐름 조회 실패: %s - %s", stock_code, exc)
+            return {}
 
     # get_investor_trading() 메서드 제거됨 (2025-01-08)
     # KIS API에서 투자자별 매매 동향 데이터를 제공하지 않아 제거

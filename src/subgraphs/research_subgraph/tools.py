@@ -60,6 +60,11 @@ class MarketIndexInput(BaseModel):
     days: int = Field(default=30, description="조회 기간 (일)")
 
 
+class InvestorFlowInput(BaseModel):
+    """투자자 별 매매 흐름 조회 입력"""
+    stock_code: str = Field(description="6자리 종목 코드")
+
+
 # ==================== Stock Data Tools ====================
 
 @tool(args_schema=StockPriceInput)
@@ -208,6 +213,21 @@ async def get_market_index_tool(index_name: str = "KOSPI", days: int = 30) -> Di
         return {"error": str(e)}
 
 
+@tool(args_schema=InvestorFlowInput)
+async def get_investor_flow_tool(stock_code: str) -> Dict[str, Any]:
+    """KIS 투자자별 매매 흐름 데이터를 반환합니다."""
+    try:
+        from src.services.stock_data_service import stock_data_service
+
+        logger.info(f"📡 [Tool] 투자자 흐름 조회: {stock_code}")
+        data = await stock_data_service.get_investor_flow(stock_code)
+        return data or {"stock_code": stock_code, "source": "KIS", "message": "자료 없음"}
+
+    except Exception as e:
+        logger.error(f"❌ [Tool] 투자자 흐름 조회 실패: {stock_code}, {e}")
+        return {"error": str(e), "stock_code": stock_code}
+
+
 # ==================== DART Tools ====================
 
 @tool(args_schema=CorpCodeInput)
@@ -323,6 +343,7 @@ def get_research_tools() -> List:
         get_fundamental_data_tool,
         get_market_cap_data_tool,
         get_market_index_tool,
+        get_investor_flow_tool,
         # DART Tools
         search_corp_code_tool,
         get_financial_statement_tool,
@@ -339,6 +360,7 @@ __all__ = [
     "get_fundamental_data_tool",
     "get_market_cap_data_tool",
     "get_market_index_tool",
+    "get_investor_flow_tool",
     "search_corp_code_tool",
     "get_financial_statement_tool",
     "get_company_info_tool",

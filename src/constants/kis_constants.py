@@ -15,6 +15,8 @@ KIS_ENDPOINTS = {
     "account_balance": "/uapi/domestic-stock/v1/trading/inquire-account-balance",
     "stock_price": "/uapi/domestic-stock/v1/quotations/inquire-price",
     "stock_daily_price": "/uapi/domestic-stock/v1/quotations/inquire-daily-price",  # 국내주식 일자별 시세
+    "investor_flow": "/uapi/domestic-stock/v1/quotations/inquire-investor",
+    "financial_ratio": "/uapi/domestic-stock/v1/finance/financial-ratio",
     "order": "/uapi/domestic-stock/v1/trading/order-cash",
     # 지수 조회 관련
     "index_price": "/uapi/domestic-stock/v1/quotations/inquire-index-price",
@@ -29,6 +31,8 @@ KIS_TR_IDS = {
     },
     "stock_price": "FHKST01010100",
     "stock_daily_price": "FHKST03010100",  # 국내주식 일자별 시세
+    "investor_flow": "FHKST01010900",
+    "financial_ratio": "FHKST66430300",
     "order_buy": {
         "real": "TTTC0012U",
         "demo": "VTTC0012U",

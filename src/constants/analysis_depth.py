@@ -38,7 +38,7 @@ ANALYSIS_DEPTH_LEVELS: Dict[str, AnalysisDepthConfig] = {
         "name": "표준 분석",
         "description": "균형잡힌 분석 (기본값)",
         "required_workers": ["data", "technical"],
-        "optional_workers": ["trading_flow", "bull", "bear", "macro"],  # information 제거
+        "optional_workers": ["trading_flow", "bull", "bear", "macro", "information"],
         "max_workers": 5,
         "estimated_time": "30-45초",
         "use_cases": [
@@ -52,7 +52,7 @@ ANALYSIS_DEPTH_LEVELS: Dict[str, AnalysisDepthConfig] = {
         "name": "종합 분석",
         "description": "모든 관점에서 심층 분석",
         "required_workers": ["data", "technical", "trading_flow"],  # information 제거
-        "optional_workers": ["macro", "bull", "bear"],
+        "optional_workers": ["macro", "bull", "bear", "information"],
         "max_workers": 6,  # information 제거로 7 → 6
         "estimated_time": "60-90초",
         "use_cases": [
@@ -108,6 +108,7 @@ PERSPECTIVE_TO_WORKER_MAPPING = {
     "fundamental": ["data"],  # data_worker가 재무제표 포함
     "technical": ["technical"],
     "flow": ["trading_flow"],
+    "information": ["information"],
     "strategy": ["bull", "bear"],  # Strategy는 bull + bear 통합
     "bull_case": ["bull"],
     "bear_case": ["bear"],
@@ -140,6 +141,27 @@ FOCUS_AREA_WORKER_MAPPING = {
 def get_default_depth() -> str:
     """기본 분석 깊이 반환"""
     return "detailed"  # standard → detailed 변경
+
+
+ANALYSIS_DEPTH_DAY_MAP: Dict[str, int] = {
+    "brief": 60,
+    "detailed": 180,
+    "comprehensive": 365,
+}
+
+
+def get_data_days_for_depth(depth: str) -> int:
+    """
+    분석 깊이에 따라 가격 조회 기간을 결정합니다.
+
+    Args:
+        depth: "brief" | "detailed" | "comprehensive"
+
+    Returns:
+        조회 기간 (일)
+    """
+    fallback = ANALYSIS_DEPTH_DAY_MAP.get(get_default_depth(), 180)
+    return ANALYSIS_DEPTH_DAY_MAP.get(depth, fallback)
 
 
 def get_depth_config(depth: str) -> AnalysisDepthConfig:

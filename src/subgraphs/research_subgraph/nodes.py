@@ -26,6 +26,7 @@ from .tools import (
     get_fundamental_data_tool,
     get_market_cap_data_tool,
     get_market_index_tool,
+    get_investor_flow_tool,
     search_corp_code_tool,
     get_company_info_tool,
     get_macro_summary_tool,
@@ -741,7 +742,20 @@ async def data_worker_node(state: ResearchState) -> ResearchState:
             price_df = price_df.set_index("Date")
 
         price_data = price_result
-        investor_trading_data = _build_mock_investor_trading_data(price_df)
+        investor_flow_result = await get_investor_flow_tool.ainvoke({"stock_code": stock_code})
+        if (
+            investor_flow_result
+            and not investor_flow_result.get("error")
+            and investor_flow_result.get("foreign_investor")
+        ):
+            investor_trading_data = investor_flow_result
+            logger.info("🔍 [Research/Data] KIS 투자자 흐름 데이터 확보: %s", stock_code)
+        else:
+            logger.warning(
+                "⚠️ [Research/Data] KIS 투자자 흐름 데이터 부족 (%s), 모의 수급 사용",
+                stock_code,
+            )
+            investor_trading_data = _build_mock_investor_trading_data(price_df)
 
         # Tool을 사용하여 DART 데이터 조회
         corp_code = await search_corp_code_tool.ainvoke({"stock_code": stock_code})
