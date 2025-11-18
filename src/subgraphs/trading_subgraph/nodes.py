@@ -497,14 +497,23 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     경로 1: 첫 실행 → 전/후 비교 데이터와 함께 Interrupt 발생
     경로 2: 승인 후 재개 → 사용자 수정사항 반영 후 재시뮬레이션 또는 실행
     """
+    logger.info("=" * 60)
+    logger.info("🔄 [Trading/HITL] 노드 진입 - 상태 점검")
+    logger.info("  - simulation_failed: %s", state.get("simulation_failed"))
+    logger.info("  - trade_approved: %s", state.get("trade_approved"))
+    logger.info("  - trade_prepared: %s", state.get("trade_prepared"))
+    logger.info("  - user_modifications: %s", bool(state.get("user_modifications")))
+    logger.info("=" * 60)
+
     # 시뮬레이션 실패 체크
     if state.get("simulation_failed"):
         error_msg = state.get("simulation_error", "알 수 없는 오류")
         logger.error("❌ [Trading/HITL] 포트폴리오 시뮬레이션 실패로 매매 중단: %s", error_msg)
         raise ValueError(f"포트폴리오 시뮬레이션 실패: {error_msg}")
 
+    logger.info("✔️ [Trading/HITL] 시뮬레이션 완료, trade_approved=%s 확인 중", state.get("trade_approved"))
     if state.get("trade_approved"):
-        logger.info("✅ [Trading/HITL] 사용자 승인 완료")
+        logger.info("✅ [Trading/HITL] 사용자 승인 완료 - Resume 경로 시작")
         modifications = state.get("user_modifications")
 
         if modifications:
@@ -599,13 +608,20 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     # 2. API가 Command(resume=value)로 재개
     # 3. interrupt()가 value를 반환 (이 부분이 핵심!)
     # 4. 반환값을 state 업데이트에 포함
-    approval_value = interrupt(interrupt_payload)
+    try:
+        logger.info("📍 [Trading/HITL] interrupt() 호출 직전")
+        approval_value = interrupt(interrupt_payload)
+        logger.info("📍 [Trading/HITL] interrupt() 호출 직후 - 값 수신됨: %s", type(approval_value))
+    except Exception as exc:
+        logger.error("❌ [Trading/HITL] interrupt() 예외 발생: %s", exc, exc_info=True)
+        approval_value = {}
 
     logger.info(
         "▶️ [Trading/HITL-Resume] interrupt 반환값 수신: trade_approved=%s, modifications=%s",
         approval_value.get("trade_approved"),
         bool(approval_value.get("user_modifications")),
     )
+    logger.info("📊 [Trading/HITL-Resume] approval_value 전체: %s", approval_value)
 
     # Resume 후 logic: trade_approved 여부에 따라 다음 동작 결정
     is_trade_approved = approval_value.get("trade_approved", False)
