@@ -3,7 +3,7 @@
 """
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
-from typing import List, Optional, Dict, Any, Literal, cast
+from typing import List, Optional, Dict, Any, Literal
 import uuid
 import os
 import logging
@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 from src.subgraphs.graph_master import build_graph
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph_sdk.schema import Command
 from src.services import chat_history_service
 from src.services.hitl_interrupt_service import handle_hitl_interrupt
 from src.services.user_profile_service import UserProfileService
@@ -152,7 +151,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         )
 
         # Build graph with intervention_required
-        app = build_graph(intervention_required=intervention_required)
+        app = await build_graph(intervention_required=intervention_required)
 
         # Config for checkpointer
         config: RunnableConfig = {
@@ -170,7 +169,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "conversation_id": conversation_id,
             "hitl_config": hitl_config.model_dump(),
             "intervention_required": intervention_required,
-            "user_profile": user_profile,  # Dynamic worker selection을 위한 사용자 프로파일
+            "user_profile": user_profile,
             "intent": None,
             "query": request.message,
             "agent_results": {},
@@ -185,14 +184,8 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             "trade_result": None,
             "summary": None,
             "final_response": None,
-            "routing_decision": None,
-            "personalization": None,
-            "worker_action": None,
-            "worker_params": None,
-            "direct_answer": None,
-            "clarification_needed": False,
-            "clarification_message": None,
-            "conversation_history": [],
+            "user_pending_approval": False,
+            "user_decision": None,
         }
 
         # Run Langgraph
@@ -545,9 +538,13 @@ def _build_resume_value(
     user_id: uuid.UUID,
     user_notes: Optional[str],
     modifications: Optional[dict],
+    decision: str = "approved",
 ) -> dict:
     """
     LangGraph resume payload를 approval_type에 맞춰 생성한다.
+
+    ⚠️ LangGraph SubGraph에서 interrupt() 반환값은 작동하지 않으므로,
+    resume_value의 필드들이 State에 병합되어야 한다.
     """
     resume_value: dict = {
         "user_id": str(user_id),
@@ -559,7 +556,10 @@ def _build_resume_value(
     elif approval_type == "rebalance_approval":
         resume_value["rebalance_approved"] = True
     else:  # trade_approval 및 기타 기본값
-        resume_value["trade_approved"] = True
+        # ⚠️ State 플래그로 사용자 응답을 판단하는 방식으로 변경
+        resume_value["user_pending_approval"] = True  # 승인 대기 중이었음을 표시
+        resume_value["user_decision"] = decision  # "approved" or "rejected"
+        resume_value["trade_approved"] = (decision == "approved")
 
     if modifications:
         resume_value["user_modifications"] = modifications
@@ -627,37 +627,6 @@ def _parse_numeric(value: Any) -> Optional[float]:
         except ValueError:
             return None
     return None
-
-
-def _values_differ(new_value: Any, existing_value: Any) -> bool:
-    if new_value is None and existing_value is None:
-        return False
-    if new_value is None or existing_value is None:
-        return True
-
-    new_numeric = _parse_numeric(new_value)
-    existing_numeric = _parse_numeric(existing_value)
-    if new_numeric is not None and existing_numeric is not None:
-        return new_numeric != existing_numeric
-
-    return str(new_value).strip().lower() != str(existing_value).strip().lower()
-
-
-def _has_trade_changes(
-    modifications: Dict[str, Any],
-    current_values: Dict[str, Any],
-) -> bool:
-    comparison_pairs = (
-        ("quantity", "trade_quantity"),
-        ("price", "trade_price"),
-        ("action", "trade_action"),
-    )
-    for mod_field, state_field in comparison_pairs:
-        if mod_field not in modifications:
-            continue
-        if _values_differ(modifications[mod_field], current_values.get(state_field)):
-            return True
-    return False
 
 
 def _extract_holding(portfolio: Optional[Dict[str, Any]], stock_code: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -964,7 +933,7 @@ async def approve_action(
         )
 
         # 메모리 체크포인터를 사용해 그래프 상태를 복구
-        app = build_graph(intervention_required=intervention_required)
+        app = await build_graph(intervention_required=intervention_required)
 
         config: RunnableConfig = {
             "configurable": {
@@ -1074,30 +1043,52 @@ async def approve_action(
                 user_id=DEMO_USER_UUID,
                 user_notes=approval.user_notes,
                 modifications=combined_modifications,
+                decision="modified" if approval.decision == "modified" else "approved",
             )
 
             logger.info("📋 [Approve] Resume value 상세: %s", resume_value)
 
-            # Resume 실행 (입력 없음, command 파라미터로 전달해야 LangGraph가 재개됨)
-            resume_command: Command = cast(Command, cast(object, {"resume": resume_value}))
+            # ⚠️ LangGraph interrupt/resume 패턴 - SubGraph 올바른 구현
+            # SubGraph에서 interrupt()의 반환값이 직접 노드로 전달되지 않음
+            # 대신 aupdate_state()를 사용하여 state를 먼저 업데이트한 후,
+            # ainvoke()로 그래프를 계속 진행시켜야 함
+
             logger.info(
-                "▶️ [Approve] LangGraph resume 호출 시작: approval_type=%s, trade_approved=%s, has_modifications=%s",
+                "▶️ [Approve] State 업데이트 시작: approval_type=%s, trade_approved=%s, has_modifications=%s",
                 request_type,
                 resume_value.get("trade_approved"),
                 bool(resume_value.get("user_modifications")),
             )
-            logger.info("📍 [Approve] ainvoke 호출 직전 - thread_id=%s", conversation_id)
-            result = await configured_app.ainvoke(None, config=config, command=resume_command)
-            logger.info("📍 [Approve] ainvoke 호출 직후 - result 수신 완료")
-            logger.info("✅ [Approve] LangGraph resume 완료 (result_keys=%s)", list(result.keys()))
+
+            # Step 1: State 업데이트 (Master graph의 state에 resume_value 병합)
+            await configured_app.aupdate_state(config, resume_value)
+            logger.info("✅ State 업데이트 완료")
+
+            # Step 2: SubGraph의 interrupt를 올바르게 처리
+            # ⚠️ 중요: astream(None)은 Master만 진행하고 SubGraph의 interrupt를 처리하지 못함
+            # ainvoke(None)을 사용하면 SubGraph의 interrupt 상태까지 함께 처리됨
+            result = {}
+            try:
+                result = await configured_app.ainvoke(None, config=config)
+                logger.info("✅ [Approve] ainvoke로 SubGraph interrupt 처리 완료")
+            except Exception as e:
+                logger.warning("⚠️ [Approve] ainvoke 실행 중 오류: %s", e)
+                # 폴백: astream 사용
+                async for event in configured_app.astream(None, config=config):
+                    if "final_state" in event:
+                        result = event.get("final_state", {})
+                    elif isinstance(event, dict):
+                        for node_name, node_result in event.items():
+                            if isinstance(node_result, dict) and "messages" in node_result:
+                                result.update(node_result)
+
             state_after_resume = await configured_app.aget_state(config)
             state_values = getattr(state_after_resume, "values", {}) if state_after_resume else {}
+
             logger.info(
-                "📊 [Approve] Resume 이후 상태: next=%s, trade_prepared=%s, trade_executed=%s, trade_order_id=%s",
-                getattr(state_after_resume, "next", None),
+                "📊 [Approve] Graph 완료: trade_prepared=%s, trade_executed=%s",
                 state_values.get("trade_prepared"),
                 state_values.get("trade_executed"),
-                state_values.get("trade_order_id"),
             )
 
             if getattr(state_after_resume, "next", None):
@@ -1158,17 +1149,24 @@ async def approve_action(
             )
 
         if approval.decision == "rejected":
-            # LangGraph aupdate_state 시그니처: aupdate_state(config, values, as_node=None)
-            await configured_app.aupdate_state(
-                config,
-                {
-                    "final_response": {
-                        "summary": "사용자가 거부함",
-                        "cancelled": True,
-                        "reason": approval.user_notes or "User rejected",
-                    }
-                }
+            # Rejection의 경우도 aupdate_state + ainvoke 사용
+            resume_value = _build_resume_value(
+                approval_type=request_type,
+                user_id=DEMO_USER_UUID,
+                user_notes=approval.user_notes,
+                modifications=None,
+                decision="rejected",
             )
+
+            logger.info("▶️ [Approve] 거부 - State 업데이트 시작")
+
+            # Step 1: State 업데이트
+            await configured_app.aupdate_state(config, resume_value)
+            logger.info("✅ State 업데이트 완료")
+
+            # Step 2: 그래프 계속 실행
+            await configured_app.ainvoke(None, config=config)
+            logger.info("✅ [Approve] 거부 처리 완료")
 
             message_text = "승인 거부 - 매매가 취소되었습니다."
             await chat_history_service.append_message(
