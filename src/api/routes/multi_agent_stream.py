@@ -4,9 +4,12 @@ from __future__ import annotations
 멀티 에이전트 실행을 실시간으로 스트리밍
 Master Agent → 서브 에이전트들의 협업 과정을 시각화
 """
+import asyncio
 import json
 import logging
+import time
 import uuid
+from datetime import datetime
 from typing import AsyncGenerator, Optional, List, Any, Dict
 
 from fastapi import APIRouter
@@ -31,6 +34,9 @@ from src.config.settings import settings
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+HITL_APPROVAL_TIMEOUT_SECONDS = 300
+HITL_APPROVAL_POLL_INTERVAL_SECONDS = 1.0
 
 
 class MultiAgentStreamRequest(BaseModel):
@@ -85,6 +91,46 @@ def _serialize_for_json(data: Any) -> Any:
         return str(data)
     except Exception:
         return None
+
+
+def _normalize_metadata(metadata: Any) -> Dict[str, Any]:
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        try:
+            decoded = json.loads(metadata)
+            if isinstance(decoded, dict):
+                return decoded
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+async def _await_approved_response(
+    conversation_uuid: uuid.UUID,
+    interrupt_time: datetime,
+    timeout_seconds: float = HITL_APPROVAL_TIMEOUT_SECONDS,
+    poll_interval: float = HITL_APPROVAL_POLL_INTERVAL_SECONDS,
+) -> tuple[str, Dict[str, Any]] | None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        history = await chat_history_service.get_history(
+            conversation_id=conversation_uuid, limit=8
+        )
+        messages = history.get("messages") or []
+        for message in reversed(messages):
+            if getattr(message, "role", None) != "assistant":
+                continue
+            created_at = getattr(message, "created_at", None)
+            if created_at and created_at <= interrupt_time:
+                continue
+            metadata = _normalize_metadata(getattr(message, "message_metadata", None))
+            if metadata.get("decision"):
+                text = getattr(message, "content", "") or ""
+                if text.strip():
+                    return text, metadata
+        await asyncio.sleep(poll_interval)
+    return None
 
 
 def _sse(event: str, payload: dict) -> str:
@@ -637,16 +683,34 @@ async def stream_multi_agent_execution(
                         message="HITL 승인이 필요합니다.",
                     ),
                 )
+
+                interrupt_time = datetime.utcnow()
+                approved_payload = await _await_approved_response(
+                    conversation_uuid=conversation_uuid,
+                    interrupt_time=interrupt_time,
+                )
+
+                if approved_payload:
+                    final_message_text, final_metadata = approved_payload
+                else:
+                    logger.warning(
+                        "⚠️ [MultiAgentStream] 승인 결과 누락 - 타임아웃: %s",
+                        conversation_id,
+                    )
+                    final_message_text = "승인 결과가 아직 등록되지 않았습니다."
+                    final_metadata = {}
+
                 yield _sse(
                     "master_complete",
                     reasoning_builder.attach(
                         "master_complete",
-                        {"message": hitl_result["message"], "conversation_id": conversation_id},
+                        {"message": final_message_text, "conversation_id": conversation_id},
                         metadata={},
                         agent="supervisor",
                         node=None,
                         status=ReasoningStatus.COMPLETE,
-                        message="중단 지점 응답 생성",
+                        message="최종 응답 생성 완료",
+                        extra_metadata={"final_message_metadata": final_metadata},
                     ),
                 )
                 yield _sse(

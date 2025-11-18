@@ -606,32 +606,55 @@ async def execute_trade_node(state: TradingState) -> TradingState:
     """
     매매 실행 노드
 
-    trading_service를 통해 실제 주문 실행 (현재는 시뮬레이션)
+    trading_service를 통해 실제 주문 실행 (KIS API 연동)
     """
     action = state.get("trade_action", "buy")
     stock_code = state.get("stock_code", "")
     quantity = state.get("trade_quantity", 0)
     price = state.get("trade_price", 0)
+    order_type = state.get("trade_order_type", "limit")
 
     logger.info(
-        "💰 [Trading/Execute] 매매 실행: %s %s %d주 @ %d원",
+        "💰 [Trading/Execute] 매매 실행: %s %s %d주 @ %d원 (주문 유형: %s)",
         action,
         stock_code,
         quantity,
         price,
+        order_type,
     )
 
     try:
         user_id = state.get("user_id", str(uuid.UUID(int=0)))
-        order_result = await trading_service.execute_order(
+
+        # 1단계: pending order 생성 (DB에 저장)
+        logger.info("📝 [Trading/Execute] 주문 생성 중...")
+        pending_order = await trading_service.create_pending_order(
             user_id=user_id,
             stock_code=stock_code,
+            order_type=action.upper(),  # "BUY" or "SELL"
             quantity=quantity,
-            action=action,
-            price=price,
+            order_price=price if price > 0 else None,  # 0이면 시장가
+            order_price_type=order_type.upper() if order_type else None,
+            notes=f"AI 매매 제안 ({state.get('trade_approval_id', 'N/A')})",
+        )
+
+        order_id = pending_order.get("order_id")
+        logger.info("✅ [Trading/Execute] 주문 생성 완료: %s", order_id)
+
+        # 2단계: 주문 실행 (KIS API 호출)
+        logger.info("🚀 [Trading/Execute] KIS API 주문 실행 중...")
+        order_result = await trading_service.execute_order(
+            order_id=order_id,
+            execution_price=price if price > 0 else None,
         )
 
         logger.info("✅ [Trading/Execute] 매매 완료: %s", order_result.get("order_id"))
+
+        # KIS 주문 성공 여부 로깅
+        if order_result.get("kis_executed"):
+            logger.info("🎉 [Trading/Execute] KIS API 주문 성공: %s", order_result.get("kis_order_no"))
+        else:
+            logger.warning("⚠️ [Trading/Execute] KIS API 주문 실패, DB 시뮬레이션으로 처리됨")
 
         return {
             "trade_order_id": order_result.get("order_id"),
@@ -643,8 +666,9 @@ async def execute_trade_node(state: TradingState) -> TradingState:
         }
 
     except Exception as exc:
-        logger.error("❌ [Trading/Execute] 매매 실패: %s", exc)
+        logger.error("❌ [Trading/Execute] 매매 실패: %s", exc, exc_info=True)
         return {
+            "trade_executed": False,
             "messages": [AIMessage(content=f"매매 실행 실패: {exc}")],
         }
 
