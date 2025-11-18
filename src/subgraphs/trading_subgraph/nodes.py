@@ -529,8 +529,9 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
                 "trade_price": price,
                 "trade_action": action,
                 "trade_total_amount": total_amount,
-                "trade_approved": False,
-                "user_modifications": None,
+                "trade_approved": True,  # 승인됨 (재시뮬레이션을 위해 portfolio_simulator로 가야 함)
+                "trade_prepared": False,  # 재시뮬레이션 필요하므로 준비 상태 초기화
+                "user_modifications": None,  # 수정사항 처리 완료
                 "simulation_failed": False,  # 재시뮬레이션을 위해 플래그 초기화
                 "messages": [
                     AIMessage(
@@ -606,13 +607,48 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
         bool(approval_value.get("user_modifications")),
     )
 
-    return {
-        "trade_approval_id": approval_id,
-        "trade_total_amount": total_amount,
-        "trade_approved": approval_value.get("trade_approved", False),  # ← 핵심!
-        "user_modifications": approval_value.get("user_modifications"),    # ← 핵심!
-        "messages": [AIMessage(content="매매 승인을 기다립니다...")],
-    }
+    # Resume 후 logic: trade_approved 여부에 따라 다음 동작 결정
+    is_trade_approved = approval_value.get("trade_approved", False)
+    has_modifications = bool(approval_value.get("user_modifications"))
+
+    logger.info("🔍 [Trading/HITL-Resume] Approval 결과: approved=%s, has_modifications=%s",
+                is_trade_approved, has_modifications)
+
+    if is_trade_approved:
+        if has_modifications:
+            # 수정사항 있음 → 재시뮬레이션 필요
+            logger.info("✏️ [Trading/HITL-Resume] 수정사항 있음 → 재시뮬레이션 (portfolio_simulator)")
+            return {
+                "trade_approval_id": approval_id,
+                "trade_total_amount": total_amount,
+                "trade_quantity": approval_value.get("user_modifications", {}).get("quantity", quantity),
+                "trade_price": approval_value.get("user_modifications", {}).get("price", price),
+                "trade_action": approval_value.get("user_modifications", {}).get("action", action),
+                "trade_prepared": False,  # 재시뮬레이션 필요
+                "trade_approved": True,
+                "user_modifications": None,  # 수정사항 처리 완료
+                "messages": [AIMessage(content="수정된 주문으로 재시뮬레이션을 시작합니다.")],
+            }
+        else:
+            # 수정사항 없음 → 매매 실행
+            logger.info("✅ [Trading/HITL-Resume] 승인됨 → 매매 준비 (execute_trade)")
+            return {
+                "trade_approval_id": approval_id,
+                "trade_total_amount": total_amount,
+                "trade_prepared": True,  # ← 핵심: execute_trade 진행 가능
+                "trade_approved": True,
+                "user_modifications": None,
+                "messages": [AIMessage(content="매매를 실행합니다.")],
+            }
+    else:
+        # 거부됨
+        logger.info("❌ [Trading/HITL-Resume] 거부됨")
+        return {
+            "trade_approval_id": approval_id,
+            "trade_prepared": False,
+            "trade_approved": False,
+            "messages": [AIMessage(content="사용자가 매매를 거부했습니다.")],
+        }
 
 
 async def execute_trade_node(state: TradingState) -> TradingState:
