@@ -675,10 +675,23 @@ async def approval_check_node(state: ResearchState) -> ResearchState:
         "message": "다음과 같이 분석할 예정입니다. 진행하시겠습니까?",
     }
 
-    interrupt(interrupt_payload)
+    # LangGraph interrupt/resume 패턴:
+    # 1. interrupt() 호출 - 그래프 중단
+    # 2. API가 Command(resume=value)로 재개
+    # 3. interrupt()가 value를 반환 (이 부분이 핵심!)
+    # 4. 반환값을 state 업데이트에 포함
+    approval_value = interrupt(interrupt_payload)
+
+    logger.info(
+        "▶️ [Research/Approval-Resume] interrupt 반환값 수신: analysis_plan_approved=%s, modifications=%s",
+        approval_value.get("analysis_plan_approved"),
+        bool(approval_value.get("user_modifications")),
+    )
 
     return {
         "plan_approval_id": approval_id,
+        "analysis_plan_approved": approval_value.get("analysis_plan_approved", False),  # ← 핵심!
+        "user_modifications": approval_value.get("user_modifications"),                  # ← 핵심!
         "messages": [AIMessage(content="분석 계획 승인을 기다립니다...")],
     }
 

@@ -593,11 +593,24 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
         "risk_after": risk_after,
     }
 
-    interrupt(interrupt_payload)
+    # LangGraph interrupt/resume 패턴:
+    # 1. interrupt() 호출 - 그래프 중단
+    # 2. API가 Command(resume=value)로 재개
+    # 3. interrupt()가 value를 반환 (이 부분이 핵심!)
+    # 4. 반환값을 state 업데이트에 포함
+    approval_value = interrupt(interrupt_payload)
+
+    logger.info(
+        "▶️ [Trading/HITL-Resume] interrupt 반환값 수신: trade_approved=%s, modifications=%s",
+        approval_value.get("trade_approved"),
+        bool(approval_value.get("user_modifications")),
+    )
 
     return {
         "trade_approval_id": approval_id,
         "trade_total_amount": total_amount,
+        "trade_approved": approval_value.get("trade_approved", False),  # ← 핵심!
+        "user_modifications": approval_value.get("user_modifications"),    # ← 핵심!
         "messages": [AIMessage(content="매매 승인을 기다립니다...")],
     }
 
