@@ -89,10 +89,16 @@ def build_quantitative_subgraph() -> StateGraph:
 
 
 # Supervisor 패턴용 export (컴파일된 SubGraph)
-# checkpointer는 Supervisor에서 자동 상속되므로 생략
-quantitative_subgraph = build_quantitative_subgraph().compile(
-    name="quantitative_agent"
-)
+# ⚠️ 중요: SubGraph는 checkpointer를 사용하지 않음!
+# Master graph의 checkpointer를 상속하여 상태를 공유합니다.
+try:
+    quantitative_subgraph = build_quantitative_subgraph().compile(
+        name="quantitative_agent"
+    )
+    logger.info("✅ [Quantitative] Checkpointer 없이 컴파일 (Master graph 상속)")
+except Exception as exc:
+    logger.warning("⚠️ [Quantitative] 컴파일 실패: %s", exc)
+    raise
 
 # Alias for backward compatibility
 quantitative_agent = quantitative_subgraph

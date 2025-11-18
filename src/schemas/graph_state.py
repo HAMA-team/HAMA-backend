@@ -128,6 +128,13 @@ class GraphState(TypedDict):
     trade_executed: bool
     """거래 실행 완료 여부"""
 
+    hitl_interrupted: bool
+    """
+    HITL interrupt 호출 여부 (무한 루프 방지용)
+    - False: 첫 진입, interrupt() 호출 필요
+    - True: resume 후 재진입, 사용자 응답 처리
+    """
+
     trade_approval_id: Optional[str]
     """거래 승인 요청 ID"""
 
@@ -154,6 +161,12 @@ class GraphState(TypedDict):
 
     user_modifications: Optional[Dict[str, Any]]
     """사용자 수정사항 (HITL modify 시 사용)"""
+
+    user_pending_approval: bool
+    """사용자 승인 대기 중 여부 (LangGraph SubGraph에서 interrupt 반환값 대체용)"""
+
+    user_decision: Optional[str]
+    """사용자 결정 ("approved" | "rejected" | None)"""
 
     # ==================== 매매 시뮬레이션 및 전/후 비교 ====================
 
@@ -213,6 +226,17 @@ class GraphState(TypedDict):
 
     rebalance_result: Optional[Dict[str, Any]]
     """리밸런싱 실행 결과"""
+
+    # ==================== Sub-thread 추적 (Interrupt/Resume 용) ====================
+
+    trading_agent_thread_id: Optional[str]
+    """Trading SubGraph의 Sub-thread ID (Interrupt 상태 추적용)"""
+
+    research_agent_thread_id: Optional[str]
+    """Research SubGraph의 Sub-thread ID (Interrupt 상태 추적용)"""
+
+    quantitative_agent_thread_id: Optional[str]
+    """Quantitative SubGraph의 Sub-thread ID (Interrupt 상태 추적용)"""
 
     # ==================== 최종 결과 (하위 호환성) ====================
 

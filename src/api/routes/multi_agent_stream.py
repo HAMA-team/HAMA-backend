@@ -615,12 +615,12 @@ async def stream_multi_agent_execution(
             logger.warning("⚠️ [MultiAgentStream] 대화 히스토리 로드 실패: %s", history_error)
 
         # 비동기 checkpointer 사용 (astream_events를 위해 필수)
-        from src.utils.checkpointer_factory import get_async_checkpointer
+        from src.utils.checkpointer_factory import get_checkpointer
         from src.subgraphs.graph_master import build_supervisor
 
-        async_checkpointer = await get_async_checkpointer()
+        checkpointer = await get_checkpointer()
         supervisor_workflow = build_supervisor(intervention_required=intervention_required)
-        app = supervisor_workflow.compile(checkpointer=async_checkpointer)
+        app = supervisor_workflow.compile(checkpointer=checkpointer)
 
         config: RunnableConfig = {"configurable": {"thread_id": conversation_id}}
         configured_app = app.with_config(config)
@@ -642,6 +642,7 @@ async def stream_multi_agent_execution(
             "trade_prepared": False,
             "trade_approved": False,
             "trade_executed": False,
+            "hitl_interrupted": False,
             "trade_order_id": None,
             "trade_result": None,
             "summary": None,

@@ -494,73 +494,29 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     """
     매매 HITL 노드 - 사용자 승인 요청
 
-    경로 1: 첫 실행 → 전/후 비교 데이터와 함께 Interrupt 발생
-    경로 2: 승인 후 재개 → 사용자 수정사항 반영 후 재시뮬레이션 또는 실행
+    ⚠️ 핵심 수정: interrupt()의 반환값(resume_data)을 사용하여
+    사용자 승인(Resume) 경로를 처리합니다.
     """
-    logger.info("=" * 60)
-    logger.info("🔄 [Trading/HITL] 노드 진입 - 상태 점검")
-    logger.info("  - simulation_failed: %s", state.get("simulation_failed"))
-    logger.info("  - trade_approved: %s", state.get("trade_approved"))
-    logger.info("  - trade_prepared: %s", state.get("trade_prepared"))
-    logger.info("  - user_modifications: %s", bool(state.get("user_modifications")))
-    logger.info("=" * 60)
+    from langgraph.types import interrupt  # Import 확인
 
-    # 시뮬레이션 실패 체크
+    logger.info("=" * 60)
+    logger.info("🔄 [Trading/HITL] 노드 진입")
+
+    # ⚠️ 멱등성 체크: 이미 interrupt했는가?
+    if state.get("user_pending_approval"):
+        logger.info("✅ [Trading/HITL] 멱등성 체크: 이미 interrupt 완료")
+        logger.info("  - user_decision: %s", state.get("user_decision"))
+        logger.info("  - conditional edge가 trade_hitl_resume으로 이동시킬 것")
+        # 아무것도 하지 않음. conditional edge가 user_decision을 감지해서 진행
+        return {}
+
+    # 시뮬레이션 실패 체크 (변경 없음)
     if state.get("simulation_failed"):
         error_msg = state.get("simulation_error", "알 수 없는 오류")
         logger.error("❌ [Trading/HITL] 포트폴리오 시뮬레이션 실패로 매매 중단: %s", error_msg)
         raise ValueError(f"포트폴리오 시뮬레이션 실패: {error_msg}")
 
-    logger.info("✔️ [Trading/HITL] 시뮬레이션 완료, trade_approved=%s 확인 중", state.get("trade_approved"))
-    if state.get("trade_approved"):
-        logger.info("✅ [Trading/HITL] 사용자 승인 완료 - Resume 경로 시작")
-        modifications = state.get("user_modifications")
-
-        if modifications:
-            logger.info("✏️ [Trading/HITL] 사용자 수정사항 반영: %s", modifications)
-
-            quantity = modifications.get("quantity", state.get("trade_quantity"))
-            price = modifications.get("price", state.get("trade_price"))
-            action = modifications.get("action", state.get("trade_action"))
-            total_amount = quantity * price
-
-            logger.info(
-                "🔄 [Trading/HITL] 수정된 주문: %s %d주 @ %d원 = %d원",
-                action,
-                quantity,
-                price,
-                total_amount,
-            )
-            logger.info("🔄 [Trading/HITL] 재시뮬레이션을 위해 portfolio_simulator로 이동")
-
-            return {
-                "trade_quantity": quantity,
-                "trade_price": price,
-                "trade_action": action,
-                "trade_total_amount": total_amount,
-                "trade_approved": True,  # 승인됨 (재시뮬레이션을 위해 portfolio_simulator로 가야 함)
-                "trade_prepared": False,  # 재시뮬레이션 필요하므로 준비 상태 초기화
-                "user_modifications": None,  # 수정사항 처리 완료
-                "simulation_failed": False,  # 재시뮬레이션을 위해 플래그 초기화
-                "messages": [
-                    AIMessage(
-                        content=f"수정된 주문으로 재시뮬레이션을 시작합니다: {action} {quantity}주"
-                    )
-                ],
-            }
-
-        return {
-            "trade_prepared": True,
-            "messages": [AIMessage(content="매매 주문을 준비했습니다.")],
-        }
-
-    logger.info("🔍 [Trading/HITL] State 확인:")
-    logger.info("  - trade_action: %s", state.get("trade_action"))
-    logger.info("  - stock_code: %s", state.get("stock_code"))
-    logger.info("  - trade_quantity: %s", state.get("trade_quantity"))
-    logger.info("  - trade_price: %s", state.get("trade_price"))
-    logger.info("  - trade_order_type: %s", state.get("trade_order_type"))
-
+    # 1. 데이터 준비 (state에서 필요한 정보 추출)
     action = state.get("trade_action", "buy")
     stock_code = state.get("stock_code", "")
     stock_name = state.get("stock_name", stock_code)
@@ -573,18 +529,14 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
     risk_before = state.get("risk_before")
     risk_after = state.get("risk_after")
 
+    # 포트폴리오 데이터 검증 (변경 없음)
     if not portfolio_before or not portfolio_after:
         logger.error("❌ [Trading/HITL] 포트폴리오 시뮬레이션 결과가 없습니다.")
         raise ValueError("포트폴리오 시뮬레이션 결과가 없습니다.")
 
-    holdings_before = portfolio_before.get("holdings", [])
-    holdings_after = portfolio_after.get("holdings", [])
-
-    logger.info("✅ [Trading/HITL] 전/후 비교 데이터 검증 완료:")
-    logger.info("  - Before: %d개 holdings, cash=%s원", len(holdings_before), portfolio_before.get("cash_balance", 0))
-    logger.info("  - After: %d개 holdings, cash=%s원", len(holdings_after), portfolio_after.get("cash_balance", 0))
-
-    approval_id = str(uuid.uuid4())
+    # 2. Interrupt Payload 구성
+    # trade_approval_id가 이미 있다면 재사용
+    approval_id = state.get("trade_approval_id") or str(uuid.uuid4())
     interrupt_payload = {
         "type": "trade_approval",
         "approval_id": approval_id,
@@ -603,69 +555,96 @@ async def trade_hitl_node(state: TradingState) -> TradingState:
         "risk_after": risk_after,
     }
 
-    # LangGraph interrupt/resume 패턴:
-    # 1. interrupt() 호출 - 그래프 중단
-    # 2. API가 Command(resume=value)로 재개
-    # 3. interrupt()가 value를 반환 (이 부분이 핵심!)
-    # 4. 반환값을 state 업데이트에 포함
-    try:
-        logger.info("📍 [Trading/HITL] interrupt() 호출 직전")
-        approval_value = interrupt(interrupt_payload)
-        logger.info("📍 [Trading/HITL] interrupt() 호출 직후 - 값 수신됨: %s", type(approval_value))
-    except Exception as exc:
-        logger.error("❌ [Trading/HITL] interrupt() 예외 발생: %s", exc, exc_info=True)
-        approval_value = {}
+    # ============================================================
+    # 3. Interrupt 호출 및 Resume 데이터 캡처 (핵심 로직)
+    # ============================================================
+    logger.info("🔔 [Trading/HITL] Interrupt 호출 시도 및 Resume 대기")
+    logger.info("  - approval_id: %s", approval_id)
 
-    logger.info(
-        "▶️ [Trading/HITL-Resume] interrupt 반환값 수신: trade_approved=%s, modifications=%s",
-        approval_value.get("trade_approved"),
-        bool(approval_value.get("user_modifications")),
-    )
-    logger.info("📊 [Trading/HITL-Resume] approval_value 전체: %s", approval_value)
+    # 첫 실행 시: LangGraph가 여기서 실행을 중단(Throw)합니다.
+    # Resume 시: State에 user_decision과 user_pending_approval이 업데이트됩니다.
+    interrupt(interrupt_payload)
 
-    # Resume 후 logic: trade_approved 여부에 따라 다음 동작 결정
-    is_trade_approved = approval_value.get("trade_approved", False)
-    has_modifications = bool(approval_value.get("user_modifications"))
+    # ⚠️ LangGraph SubGraph에서 interrupt() 반환값은 작동하지 않습니다.
+    # 대신 aupdate_state()로 병합된 State 필드를 확인합니다.
+    logger.info("⏸️ [Trading/HITL] 사용자 승인 대기 - 노드 일시 중단")
 
-    logger.info("🔍 [Trading/HITL-Resume] Approval 결과: approved=%s, has_modifications=%s",
-                is_trade_approved, has_modifications)
+    # 첫 진입 시 return하여 interrupt 발생시키고,
+    # Resume 시에는 아래로 진행하지 않음 (graph edge가 다시 진입시킬 것)
+    return {
+        "trade_approval_id": approval_id,
+        "user_pending_approval": True,  # ← 멱등성 체크를 위한 플래그
+        "messages": [AIMessage(content="사용자 승인을 기다리고 있습니다.")],
+    }
 
-    if is_trade_approved:
-        if has_modifications:
-            # 수정사항 있음 → 재시뮬레이션 필요
-            logger.info("✏️ [Trading/HITL-Resume] 수정사항 있음 → 재시뮬레이션 (portfolio_simulator)")
-            return {
-                "trade_approval_id": approval_id,
-                "trade_total_amount": total_amount,
-                "trade_quantity": approval_value.get("user_modifications", {}).get("quantity", quantity),
-                "trade_price": approval_value.get("user_modifications", {}).get("price", price),
-                "trade_action": approval_value.get("user_modifications", {}).get("action", action),
-                "trade_prepared": False,  # 재시뮬레이션 필요
-                "trade_approved": True,
-                "user_modifications": None,  # 수정사항 처리 완료
-                "messages": [AIMessage(content="수정된 주문으로 재시뮬레이션을 시작합니다.")],
-            }
-        else:
-            # 수정사항 없음 → 매매 실행
-            logger.info("✅ [Trading/HITL-Resume] 승인됨 → 매매 준비 (execute_trade)")
-            return {
-                "trade_approval_id": approval_id,
-                "trade_total_amount": total_amount,
-                "trade_prepared": True,  # ← 핵심: execute_trade 진행 가능
-                "trade_approved": True,
-                "user_modifications": None,
-                "messages": [AIMessage(content="매매를 실행합니다.")],
-            }
-    else:
-        # 거부됨
-        logger.info("❌ [Trading/HITL-Resume] 거부됨")
+
+async def trade_hitl_resume_node(state: TradingState) -> TradingState:
+    """
+    매매 HITL 승인 처리 노드 - Resume 후 사용자 결정을 처리합니다.
+
+    trade_hitl_node에서 interrupt한 후,
+    사용자 승인이 들어오면 이 노드가 실행됩니다.
+    """
+    logger.info("=" * 60)
+    logger.info("🔄 [Trading/HITL-Resume] 노드 진입 - 사용자 응답 처리")
+    logger.info("  - user_pending_approval: %s", state.get("user_pending_approval"))
+    logger.info("  - user_decision: %s", state.get("user_decision"))
+    logger.info("=" * 60)
+
+    # user_pending_approval이 아직도 False면 이 노드는 실행되지 않아야 함
+    # (graph edge 조건: user_decision is not None)
+    user_decision = state.get("user_decision")
+    modifications = state.get("user_modifications")
+
+    if not user_decision:
+        # 사용자 응답이 없으면 대기 상태 유지
+        logger.info("⏳ [Trading/HITL-Resume] 사용자 응답 대기 중")
+        return {}
+
+    # 4-1. 거부(Rejected) 처리
+    if user_decision == "rejected":
+        logger.info("❌ [Trading/HITL-Resume] 사용자가 매매를 거부했습니다")
         return {
-            "trade_approval_id": approval_id,
-            "trade_prepared": False,
             "trade_approved": False,
+            "trade_prepared": False,
+            "user_pending_approval": False,
+            "user_decision": None,
             "messages": [AIMessage(content="사용자가 매매를 거부했습니다.")],
         }
 
+    # 4-2. 수정(Modified) 처리: 재시뮬레이션을 위해 Planner 노드 상태로 돌아가야 함
+    if modifications:
+        logger.info("✏️ [Trading/HITL-Resume] 사용자 수정사항 반영: 재시뮬레이션을 위해 상태 업데이트")
+        action = state.get("trade_action", "buy")
+        quantity = modifications.get("quantity", state.get("trade_quantity"))
+        price = modifications.get("price", state.get("trade_price"))
+        action = modifications.get("action", action)
+
+        # 수정된 값으로 상태를 업데이트하고, trade_prepared=False로 설정하여
+        # 그래프가 재시뮬레이션(simulator) 노드로 이동하도록 유도
+        return {
+            "trade_quantity": quantity,
+            "trade_price": price,
+            "trade_action": action,
+            "trade_total_amount": quantity * price,
+            "trade_approved": True,
+            "trade_prepared": False,  # <--- 재시뮬레이션 필요 힌트
+            "user_pending_approval": False,
+            "user_decision": None,
+            "messages": [
+                AIMessage(content=f"수정된 주문({action} {quantity}주 @ {price:,}원)으로 재시뮬레이션을 시작합니다.")
+            ],
+        }
+
+    # 4-3. 승인(Approved) 처리: 매매 실행 노드로 이동
+    logger.info("🎉 [Trading/HITL-Resume] 최종 승인됨! trade_prepared=True 반환")
+    return {
+        "trade_approved": True,
+        "trade_prepared": True,
+        "user_pending_approval": False,
+        "user_decision": None,
+        "messages": [AIMessage(content="매매 승인 완료. 실행 단계로 이동합니다.")],
+    }
 
 async def execute_trade_node(state: TradingState) -> TradingState:
     """
@@ -742,5 +721,6 @@ __all__ = [
     "execute_trade_node",
     "portfolio_simulator_node",
     "trade_hitl_node",
+    "trade_hitl_resume_node",
     "trade_planner_node",
 ]

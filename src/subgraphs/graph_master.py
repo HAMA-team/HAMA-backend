@@ -10,7 +10,6 @@ Supervisor의 역할:
 import logging
 import uuid
 from datetime import datetime
-from functools import lru_cache
 from typing import Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -508,10 +507,9 @@ def build_supervisor(intervention_required: bool = False, llm: Optional[BaseChat
 # ==================== Graph 컴파일 ====================
 
 
-@lru_cache(maxsize=16)
-def get_compiled_graph(intervention_required: bool, use_checkpointer: bool = True):
+async def get_compiled_graph(intervention_required: bool, use_checkpointer: bool = True):
     """
-    컴파일된 Supervisor graph 반환 (캐싱)
+    컴파일된 Supervisor graph 반환 (비동기)
 
     Args:
         intervention_required: 분석/전략 단계부터 HITL 필요 여부
@@ -526,7 +524,7 @@ def get_compiled_graph(intervention_required: bool, use_checkpointer: bool = Tru
     if use_checkpointer:
         # Checkpointer 추가 (상태 관리 및 HITL 승인 처리를 위해 필수)
         from src.utils.checkpointer_factory import get_checkpointer
-        checkpointer = get_checkpointer()
+        checkpointer = await get_checkpointer()
         compiled_graph = supervisor_workflow.compile(
             checkpointer=checkpointer
         )
@@ -550,9 +548,9 @@ def get_compiled_graph(intervention_required: bool, use_checkpointer: bool = Tru
 
 # ==================== Main Interface ====================
 
-def build_graph(intervention_required: bool = False, use_checkpointer: bool = True, **kwargs):
+async def build_graph(intervention_required: bool = False, use_checkpointer: bool = True, **kwargs):
     """
-    Supervisor graph 생성 (기존 API 호환)
+    Supervisor graph 생성 (비동기)
 
     Args:
         intervention_required: 분석/전략 단계부터 HITL 필요 여부 (False: 매매만 HITL, True: 모든 단계 HITL)
@@ -565,9 +563,9 @@ def build_graph(intervention_required: bool = False, use_checkpointer: bool = Tr
 
     Examples:
         >>> # API 사용 (checkpointer 필요)
-        >>> graph = build_graph(intervention_required=False)
+        >>> graph = await build_graph(intervention_required=False)
 
         >>> # LangGraph Studio 사용 (checkpointer 불필요)
-        >>> graph = build_graph(intervention_required=True, use_checkpointer=False)
+        >>> graph = await build_graph(intervention_required=True, use_checkpointer=False)
     """
-    return get_compiled_graph(intervention_required=intervention_required, use_checkpointer=use_checkpointer)
+    return await get_compiled_graph(intervention_required=intervention_required, use_checkpointer=use_checkpointer)

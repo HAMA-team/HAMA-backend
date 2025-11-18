@@ -140,7 +140,14 @@ def build_research_subgraph():
     # 종료
     workflow.add_edge("synthesis", END)
 
-    app = workflow.compile(name="research_agent")
+    # ⚠️ 중요: SubGraph는 checkpointer를 사용하지 않음!
+    # Master graph의 checkpointer를 상속하여 상태를 공유합니다.
+    try:
+        app = workflow.compile(name="research_agent")
+        logger.info("✅ [Research] Checkpointer 없이 컴파일 (Master graph 상속)")
+    except Exception as exc:
+        logger.warning("⚠️ [Research] 컴파일 실패: %s", exc)
+        raise
 
     logger.info("✅ [Research] 서브그래프 빌드 완료 (planner → approval_check → workers 병렬 실행)")
 
